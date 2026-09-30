@@ -17,11 +17,12 @@
 //   btn <name> <0|1>             name: trigger, b, x, system, joystick, a (a = claim the laser, no click)
 //   scroll <x> <y>               joystick deflection -1..1
 //   show | hide                  connect (take the hand role) or disconnect (give it back)
-//   role right|left|stylus       which role to hint while connected, from now on (the helper
-//                                sends POINTER_ROLE). A Frame controller in your hand takes
-//                                its hand's role back (it counts as used while held), so a
+//   role right|left|stylus|treadmill  which role to hint while connected, from now on (the
+//                                helper sends POINTER_ROLE). A Frame controller in your hand
+//                                takes its hand's role back (it counts as used while held), so a
 //                                controller used beside the pointer needs the pointer on the
-//                                other hand, or on no hand at all
+//                                other hand, or on no hand at all. Treadmill is no hand: its
+//                                bindings are under /user/treadmill (docs/gaze-first.md, test 1)
 //
 // The device starts disconnected, so it never holds a hand role at boot (holding
 // the right hand while SteamVR started left the Steam UI stuck loading). It
@@ -30,7 +31,8 @@
 // SteamVR keeps a hand role reserved for a disconnected device that still hints
 // that hand, so the real controller would never get it back otherwise.
 //
-// Settings (steamvr.vrsettings section "driver_ft_pointer"): role (int, 2 = right hand, 5 = stylus).
+// Settings (steamvr.vrsettings section "driver_ft_pointer"): role (int, 2 = right hand, 4 = treadmill,
+// 5 = stylus).
 #include <openvr_driver.h>
 
 #include <atomic>
@@ -343,7 +345,8 @@ private:
             state_.role = !std::strcmp(name, "left")     ? TrackedControllerRole_LeftHand
                           : !std::strcmp(name, "right")  ? TrackedControllerRole_RightHand
                           : !std::strcmp(name, "stylus") ? TrackedControllerRole_Stylus
-                                                         : state_.role;
+                          : !std::strcmp(name, "treadmill") ? TrackedControllerRole_Treadmill
+                                                            : state_.role;
         } else if (std::sscanf(cmd, "btn %31s %d", name, &v) == 2) {
             for (int i = 0; i < kButtons; ++i)
                 if (std::strcmp(name, kButtonNames[i]) == 0) state_.buttons[i] = v != 0;

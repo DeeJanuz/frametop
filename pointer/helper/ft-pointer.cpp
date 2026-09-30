@@ -177,10 +177,11 @@
 // precision, the default), or clicks at once where the pointer is (direct). And in gaze mode a
 // moving controller doesn't take the pointer away (last used wins is off): the gaze points,
 // and the controllers are its tools.
-//   POINTER_ROLE (right, left, or stylus): the hand role our device takes while connected. A
+//   POINTER_ROLE (right, left, stylus, or treadmill): the role our device takes while connected. A
 // Frame controller in your hand counts as used through its touch sensors and takes its hand's
 // role back, and then no click lands (see "no hand role" in the main loop): with a controller in
-// the right hand as the precision tool, the pointer needs the left hand, or the stylus role.
+// the right hand as the precision tool, the pointer needs the left hand, or a role that's no
+// hand. Treadmill is being tested for that (docs/gaze-first.md, test 1).
 //
 // Hands (POINTER_HANDS, off by default; needs hand tracking, hands/): ft-hands publishes
 // pinches and grips (hands/include/fh_gestures.h), read here every frame.
@@ -713,7 +714,7 @@ int main() {
         const auto gm = conf.find("POINTER_GAZE_MOUSE");
         gazeMousePrecision = gm == conf.end() || gm->second != "direct";
         const auto ro = conf.find("POINTER_ROLE");
-        role = ro != conf.end() && (ro->second == "left" || ro->second == "stylus") ? ro->second : "right";
+        role = ro != conf.end() && (ro->second == "left" || ro->second == "stylus" || ro->second == "treadmill") ? ro->second : "right";
         pickupScale = std::clamp(ConfDouble(conf, "POINTER_CONTROLLER_PICKUP", 1), 0.5, 5.0);
         const auto ig = conf.find("POINTER_IGNORE");
         ignore = ParseIgnore(ig == conf.end() ? "" : ig->second);
