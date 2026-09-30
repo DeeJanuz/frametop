@@ -5,6 +5,7 @@ Documentation=file://@REPO@/README.md
 # Needs SteamVR's IPC; it starts and stops with SteamVR.
 After=steamvr.service frametop-input-relay.service
 PartOf=steamvr.service
+Requisite=steamvr.service
 
 [Service]
 # Runs in the dev container (built there against its libraries). The helper process

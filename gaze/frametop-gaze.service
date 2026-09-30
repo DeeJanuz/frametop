@@ -5,6 +5,7 @@ Documentation=file://@REPO@/gaze/README.md
 # Needs SteamVR's IPC (ft-gaze is an overlay client); it starts and stops with SteamVR.
 After=steamvr.service frametop-pointer.service
 PartOf=steamvr.service
+Requisite=steamvr.service
 
 [Service]
 # Host Python; it runs ft-gaze in the dev container (distrobox enter), which quits when

@@ -1034,7 +1034,11 @@ extern "C" {
 
 bool ft_vr_init(void) {
     vr::EVRInitError err = vr::VRInitError_None;
-    vr::VR_Init(&err, vr::VRApplication_Overlay);
+    vr::VR_Init(&err, vr::VRApplication_Background);
+    if (err == vr::VRInitError_None) {
+        vr::VR_Shutdown();
+        vr::VR_Init(&err, vr::VRApplication_Overlay);
+    }
     if (err != vr::VRInitError_None) {
         std::fprintf(stderr, "openvr: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
         return false;

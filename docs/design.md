@@ -64,6 +64,8 @@ SteamVR's dashboard and every overlay it hosts are driven by the vrcompositor `l
 
 Driver poses are in SteamVR's raw tracking space, and client programs work in the standing universe, which on the Frame is about 1.6 m above raw. Mixing them up put the laser's origin 1.6 m above your head. The helper converts using the headset's pose in both spaces every frame.
 
+Frametop's SteamVR clients (ft-pointer, ft-screens, ft-gaze) connect as a background app first and switch to an overlay app only once that works. `VR_Init` as an overlay app starts vrserver itself when none is running, and one started that way from the dev container never finds the headset. At a boot where the gamescope session timed out, systemd dropped `steamvr.service`'s start job, the pointer service (ordered only `After=` it) started anyway, and its vrserver made every SteamVR launch fail with `HmdNotFound`. SteamOS's health check then kept resetting the Steam client and tried to fall back to the previous OS slot. The units also say `Requisite=steamvr.service`, so they don't start at all when SteamVR's start fails.
+
 The driver starts disconnected, because holding the right-hand role while SteamVR starts leaves the Steam UI stuck on its loading icon. It connects when the mouse is used and claims the right hand. SteamVR keeps a hand role reserved for a disconnected device that still asks for it, so the driver switches its role hint between right hand (connected) and opt-out (not connected).
 
 ### The cursor

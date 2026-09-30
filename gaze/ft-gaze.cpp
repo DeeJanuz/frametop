@@ -351,7 +351,11 @@ int main(int argc, char **argv) {
             stdinClosed = true;
         }).detach();
     vr::EVRInitError err = vr::VRInitError_None;
-    vr::VR_Init(&err, vr::VRApplication_Overlay);
+    vr::VR_Init(&err, vr::VRApplication_Background);
+    if (err == vr::VRInitError_None) {
+        vr::VR_Shutdown();
+        vr::VR_Init(&err, vr::VRApplication_Overlay);
+    }
     if (err != vr::VRInitError_None) {
         std::fprintf(stderr, "ft-gaze: SteamVR: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
         return 1;
