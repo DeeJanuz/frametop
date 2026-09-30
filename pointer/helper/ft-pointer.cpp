@@ -1353,8 +1353,9 @@ int main() {
             if (debug) std::fflush(stdout);
         }
 
-        // Didn't get the hand role (a held controller keeps it): release, back off.
-        if (active && tnow - wokeAt > std::chrono::seconds(1) && ours != vr::k_unTrackedDeviceIndexInvalid &&
+        // Didn't get the hand role (a held controller keeps it): release, back off. Treadmill is
+        // no hand, and SteamVR reports no role for it (it's /user/treadmill): nothing to lose.
+        if (active && role != "treadmill" && tnow - wokeAt > std::chrono::seconds(1) && ours != vr::k_unTrackedDeviceIndexInvalid &&
             sys->GetControllerRoleForTrackedDeviceIndex(ours) == vr::TrackedControllerRole_Invalid) {
             active = false;
             claimPending = claimHeld = false;

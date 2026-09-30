@@ -60,6 +60,19 @@ Calibration, in one head-locked panel:
 - A Frame controller in the hand takes its hand's role back through its touch sensors, so a device that needs a hand role loses it whenever both controllers are held. That's why the laser has to live somewhere else.
 - vrserver's web socket (`/input/getstate.json` and `request_input_state_updates`, as frame-voice uses) lists each controller's `/input/trigger/click`, `/input/bumper/click`, `/input/grip/click`, `/input/thumbstick/click`, `/input/thumbstick/x` and `y`, `/input/system/click`, and each device's `side`. The headset has `/proximity`, but it flickers off for 0.3 to 0.5 s at a time while worn, so the quick check follows SteamVR's activity level (as the helper already does) rather than the raw sensor. Reading the socket takes nothing from anyone. A controller's path is `/devices/cv/<serial>` instead of `/user/hand/<side>` while our device holds that hand.
 
+## Test results (2026-09-30)
+
+Run with the headset on its stand and the controllers on (`pointer/probe/lasertest`, `input/vrws.py`):
+
+1. **Laser on the treadmill role: works.** Our device held the dashboard laser with no hand role. SteamVR gives a device the `/user/treadmill` path only if it hints treadmill when it's added, so the driver hints a role that's no hand from `Activate`; a hint changed on connecting kept it at `/devices/ft_pointer/ft_pointer_0`. `GetControllerRoleForTrackedDeviceIndex` reports no role for it, so the helper's "no hand role" release skips treadmill.
+2. **Muting through the helper's action sets: doesn't work.** SteamVR reported those actions inactive (`vrstatus`: `"active": []`) while its laser mouse had input focus, as frame-voice found on 2026-09-26, and a trigger pull moved the laser to its controller until the release. **Muting through the compositor binding works:** `pointer/bindings/vrcompositor_frame_controller_gazefirst.json` is the stock binding without its trigger and bumper laser entries, selected with `POST /input/selectconfig.action` on vrserver's port 27062 (a JSON body `{"app_key": "openvr.component.vrcompositor", "controller_type": "frame_controller", "url": "file:///..."}`; a form-encoded one gets "Parse failed"). `GET /input/getactions.json?app_key=openvr.component.vrcompositor` shows the choice (`current_binding_url`). With it, the triggers showed no laser. Selecting the stock file puts it back.
+3. **Snap back: works** in 11 to 15 ms after a grip or a Steam button summon. A trigger held the laser until its release (0.4 to 1 s), which the muting removes. Our device also takes the laser from "none".
+4. **Web socket: works.** Every click, the thumbstick axes, and both thumbsticks clicked together arrive. The headset's `/proximity` flickers off for 0.3 to 0.5 s at a time while worn, so the quick check goes by SteamVR's activity level instead.
+
+Also found: the bumpers, the thumbsticks' movement, and their clicks switch Steam's dashboard into its controller (gamepad) mode, and the laser owner goes to "none"; both grips go back to laser mode. Steam's own Frame controller binding (`steam_vrgamepad_bindings_frame_controller.json`, app `steam.client`) has only haptics, so that input reaches Steam's UI some other way (most likely Steam Input's virtual gamepad), and a SteamVR binding can't mute it.
+
+Decided after the tests: gaze replaces the laser pointer's controls, never the controller mode's. Controller mode takes precedence while it's on, and leaving it gives the laser back to the gaze. Right click is one grip held with a trigger (the bumpers belong to controller mode).
+
 ## Tests before building
 
 One headset session, about 30 minutes, with the user wearing the headset. Installing the test driver needs a SteamVR restart, which closes everything in VR, so it's done at the start of the session and only when the user says so.

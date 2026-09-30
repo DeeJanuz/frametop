@@ -157,19 +157,30 @@ def main():
         return (name.endswith("/click") or name in ("/input/thumbstick/x", "/input/thumbstick/y",
                                                    "/input/trigger/value", "/proximity"))
 
-    devices = getstate()
     names = {}
-    for d in devices:
-        names[d["root_path"]] = f"{d['root_path']} ({d.get('controller_type', '?')}{', ' + d['side'] if d.get('side') else ''})"
-        print("device", names[d["root_path"]])
     ws = VrSocket()
     ws.open(f"frametop_vrws_{os.getpid()}")
-    for d in devices:
-        ws.subscribe(d["root_path"])
+
+    def follow_new():
+        """Subscribe to devices that appeared (vrserver only streams changes, and a device
+        that connects later, or changes its path with a role, is a new subscription)."""
+        for d in getstate():
+            path = d["root_path"]
+            name = f"{path} ({d.get('controller_type', '?')}{', ' + d['side'] if d.get('side') else ''})"
+            if names.get(path) != name:
+                names[path] = name
+                print(f"{time.monotonic() - start:9.3f}  device {name}", flush=True)
+                ws.subscribe(path)
+
     start = time.monotonic()
+    follow_new()
+    next_poll = start + 2
     last, counts = {}, {}
     try:
         while not seconds or time.monotonic() - start < seconds:
+            if time.monotonic() >= next_poll:
+                next_poll = time.monotonic() + 2
+                follow_new()
             msg = ws.recv(timeout=0.5)
             if not isinstance(msg, dict) or msg.get("type") != "update_component_states":
                 continue

@@ -117,7 +117,9 @@ public:
         props->SetStringProperty(c, Prop_ControllerType_String, "ft_pointer");
         props->SetStringProperty(c, Prop_InputProfilePath_String, "{ft_pointer}/input/ft_pointer_profile.json");
         props->SetStringProperty(c, Prop_RenderModelName_String, "{ft_pointer}/rendermodels/ft_pointer_invisible");
-        props->SetInt32Property(c, Prop_ControllerRoleHint_Int32, TrackedControllerRole_OptOut);  // until "show"
+        // A hand only while shown (see the top); a role that's no hand from the start, since
+        // SteamVR gives a treadmill its path only when the device is added (docs/gaze-first.md).
+        props->SetInt32Property(c, Prop_ControllerRoleHint_Int32, HintFor(false));
         props->SetInt32Property(c, Prop_DeviceClass_Int32, TrackedDeviceClass_Controller);
         props->SetBoolProperty(c, Prop_NeverTracked_Bool, false);
 
@@ -213,12 +215,11 @@ public:
         }
         if (snapshot.role > 0 && snapshot.role != role_) {
             role_ = snapshot.role;
-            if (hinted_) VRProperties()->SetInt32Property(container_, Prop_ControllerRoleHint_Int32, role_);
+            VRProperties()->SetInt32Property(container_, Prop_ControllerRoleHint_Int32, HintFor(hinted_));
         }
         if (snapshot.visible != hinted_) {
             // Claim the hand before connecting; give it up when disconnecting.
-            VRProperties()->SetInt32Property(container_, Prop_ControllerRoleHint_Int32,
-                                             snapshot.visible ? role_ : int32_t(TrackedControllerRole_OptOut));
+            VRProperties()->SetInt32Property(container_, Prop_ControllerRoleHint_Int32, HintFor(snapshot.visible));
             hinted_ = snapshot.visible;
         }
         const bool ok = hmd.bPoseIsValid && snapshot.visible;
@@ -239,7 +240,11 @@ private:
     uint32_t objectId_ = k_unTrackedDeviceIndexInvalid;
     PropertyContainerHandle_t container_ = k_ulInvalidPropertyContainer;
     int32_t role_ = TrackedControllerRole_RightHand;
-    bool hinted_ = false;  // whether the role hint currently claims role_
+    bool hinted_ = false;  // whether we're shown (a hand role is hinted only then)
+    int32_t HintFor(bool shown) const {
+        const bool hand = role_ == TrackedControllerRole_LeftHand || role_ == TrackedControllerRole_RightHand;
+        return shown || !hand ? role_ : int32_t(TrackedControllerRole_OptOut);
+    }
     DriverPose_t pose_{};
     VRInputComponentHandle_t buttons_[kButtons] = {};
     VRInputComponentHandle_t scrollX_ = 0, scrollY_ = 0;
