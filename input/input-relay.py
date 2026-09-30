@@ -778,45 +778,51 @@ def main():
                 return
             words = data.decode(errors="replace").split()
             cmd = words[0] if words else ""
-            if cmd == "keyboard":
-                # From ft-screens (unbound, no reply): where typing goes, repeated every second.
-                desktop = len(words) > 1 and words[1] == "desktop"
-                state["desktop_until"] = now + 3.0 if desktop else 0.0
-                continue
-            if cmd == "vrbtn" and len(words) == 3 and words[1] in VR_BUTTONS and words[2] in ("0", "1"):
-                vr_button(words[1], int(words[2]), now)
-                continue
-            if cmd == "vrhello":
-                vr_bind(now)
-                continue
-            if cmd == "gazeawake" and len(words) == 2:
-                if state["pointer"]:
-                    state["pointer"].gaze_awake_until = now + 12.0 if words[1] == "1" else 0.0
-                continue
-            if not addr:
-                continue  # unbound sender, nowhere to reply
-            if cmd == "devices":
-                reply(addr, {"t": "devices", "pointer_mode": state["pointer"] is not None,
-                             "actions": ACTIONS,
-                             "nodes": [n.describe() for n in nodes.values() if n.candidate]})
-            elif cmd == "watch":
-                seconds = float(words[1]) if len(words) > 1 else 30
-                watchers[addr] = now + min(seconds, 600)
-                reply(addr, {"t": "watching", "seconds": seconds})
-            elif cmd == "reload":
-                load_config()
-                apply_roles()
-                if state["pointer"]:
-                    state["pointer"].send("reload")
-                vr_bind(now)
-                reply(addr, {"t": "reloaded"})
-            elif cmd == "vrcapture":
-                seconds = float(words[1]) if len(words) > 1 else 30
-                state["vr_capture_until"] = now + min(seconds, 120) if seconds > 0 else 0.0
-                vr_bind(now)
-                reply(addr, {"t": "vrcapture", "seconds": seconds})
-            else:
-                reply(addr, {"t": "error", "error": f"unknown command {cmd!r}"})
+            # One malformed datagram must not end the relay: it would drop every grab,
+            # including the volume keys that keep gamescope from aborting. The control
+            # socket is an abstract socket, so any local process can send to it.
+            try:
+                if cmd == "keyboard":
+                    # From ft-screens (unbound, no reply): where typing goes, repeated every second.
+                    desktop = len(words) > 1 and words[1] == "desktop"
+                    state["desktop_until"] = now + 3.0 if desktop else 0.0
+                    continue
+                if cmd == "vrbtn" and len(words) == 3 and words[1] in VR_BUTTONS and words[2] in ("0", "1"):
+                    vr_button(words[1], int(words[2]), now)
+                    continue
+                if cmd == "vrhello":
+                    vr_bind(now)
+                    continue
+                if cmd == "gazeawake" and len(words) == 2:
+                    if state["pointer"]:
+                        state["pointer"].gaze_awake_until = now + 12.0 if words[1] == "1" else 0.0
+                    continue
+                if not addr:
+                    continue  # unbound sender, nowhere to reply
+                if cmd == "devices":
+                    reply(addr, {"t": "devices", "pointer_mode": state["pointer"] is not None,
+                                 "actions": ACTIONS,
+                                 "nodes": [n.describe() for n in nodes.values() if n.candidate]})
+                elif cmd == "watch":
+                    seconds = float(words[1]) if len(words) > 1 else 30
+                    watchers[addr] = now + min(seconds, 600)
+                    reply(addr, {"t": "watching", "seconds": seconds})
+                elif cmd == "reload":
+                    load_config()
+                    apply_roles()
+                    if state["pointer"]:
+                        state["pointer"].send("reload")
+                    vr_bind(now)
+                    reply(addr, {"t": "reloaded"})
+                elif cmd == "vrcapture":
+                    seconds = float(words[1]) if len(words) > 1 else 30
+                    state["vr_capture_until"] = now + min(seconds, 120) if seconds > 0 else 0.0
+                    vr_bind(now)
+                    reply(addr, {"t": "vrcapture", "seconds": seconds})
+                else:
+                    reply(addr, {"t": "error", "error": f"unknown command {cmd!r}"})
+            except Exception as e:
+                log(f"bad control datagram {data!r}: {e!r}")
 
     def broadcast(node, etype, code, value, now):
         if not watchers or not node.candidate:
