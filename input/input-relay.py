@@ -277,21 +277,48 @@ def remap_volume(fd, restore=False):
 
     Returns how many keymap entries are volume keys or stand-ins, or None when the
     device has no keymap to change (uinput devices, some platform buttons).
+
+    A failed query isn't always the end of the keymap: some drivers report EINVAL
+    for indices inside a sparse map, and stopping there would leave the rest of
+    the volume keys real, where one reaching gamescope with nothing focused ends
+    the whole VR session. Scan on past isolated failures, and only call it the
+    end after several in a row. A failed swap restores the entries already
+    changed, so the device is left exactly as it was instead of half-remapped;
+    the caller sees the failure and its volume keys stay real, as for any device
+    whose keys can't be taken over.
     """
     swap = VOLUME_ORIGINAL if restore else VOLUME_STANDIN
     found = 0
+    misses = 0
+    changed = []
     for index in range(8192):
         entry = bytearray(KEYMAP_ENTRY.pack(INPUT_KEYMAP_BY_INDEX, 0, index, 0, b""))
         try:
             fcntl.ioctl(fd, EVIOCGKEYCODE_V2, entry)
         except OSError:
-            return found if index else None  # past the last entry
+            if index == 0:
+                return None  # no keymap at all
+            misses += 1
+            if misses >= 32:
+                return found  # past the last entry
+            continue
+        misses = 0
         _, length, _, code, scancode = KEYMAP_ENTRY.unpack(entry)
         if code in VOLUME_CODES:
             found += 1
         if code in swap:
-            fcntl.ioctl(fd, EVIOCSKEYCODE_V2,
-                        KEYMAP_ENTRY.pack(INPUT_KEYMAP_BY_INDEX, length, index, swap[code], scancode))
+            try:
+                fcntl.ioctl(fd, EVIOCSKEYCODE_V2,
+                            KEYMAP_ENTRY.pack(INPUT_KEYMAP_BY_INDEX, length, index, swap[code], scancode))
+            except OSError:
+                for r_length, r_index, r_code, r_scancode in changed:
+                    try:
+                        fcntl.ioctl(fd, EVIOCSKEYCODE_V2,
+                                    KEYMAP_ENTRY.pack(INPUT_KEYMAP_BY_INDEX, r_length, r_index, r_code, r_scancode))
+                    except OSError:
+                        pass  # nothing more we can do; the log tells what's left
+                raise
+            changed.append((length, index, code, scancode))
     return found
 
 
@@ -678,9 +705,11 @@ def main():
         try:
             found = remap_volume(node.fd)
         except OSError as e:
+            # remap_volume restored the entries it had already changed, so the
+            # keymap is as it was: no half-remapped state with some real volume
+            # keys left where gamescope can see them. found=None keeps the
+            # grab fallback below for devices that have only volume keys.
             log(f"remapping volume keys failed for {node.name}: {e}")
-            # Some entries may have changed already: handle their stand-ins and restore them.
-            node.remapped = True
             found = None
         if found:
             node.remapped = True
