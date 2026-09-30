@@ -289,6 +289,10 @@ def plan(layout, count, panel_size=None):
     p = layout["preset"]
     rows = max(1, min(int(p.get("rows", 1)), count))
     cols = math.ceil(count / rows)
+    # A row setting above what the screens fill leaves empty grid rows (4 screens,
+    # 3 rows -> cols 2 -> a third row with nothing in it), and max() over an empty
+    # row crashes plan(). Trim rows to what the screens actually fill.
+    rows = max(1, math.ceil(count / cols))
     d = max(0.3, float(p.get("distance", 2.0)))
     gap = max(0.0, float(p.get("gap", 0.05)))
     height = float(p.get("height", 0.0))
