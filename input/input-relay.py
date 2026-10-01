@@ -1094,6 +1094,11 @@ def main():
                 # New here: a new device, or one that came back in the same place.
                 for old in [n for n in nodes.values() if n.path == path]:
                     drop(old, "replaced by a new device node")
+                # A new node is root's alone until udev gives it to the input group, a moment
+                # after it appears. Opened in that gap, it would fail and never be tried
+                # again: leave it for the next scan instead.
+                if not os.access(path, os.R_OK):
+                    continue
                 seen[path] = ino
                 node = probe(path)
                 if node and node.volume_keys and not take_volume(node):
