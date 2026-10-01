@@ -1,0 +1,15 @@
+{
+	"default_bindings": [
+		{"controller_type": "frame_controller", "binding_url": "bindings_frame_controller.json"}
+	],
+	"actions": [
+		{"name": "/actions/focus/in/y", "type": "boolean"},
+		{"name": "/actions/focus/in/trigger", "type": "boolean"}
+	],
+	"action_sets": [
+		{"name": "/actions/focus", "usage": "leftright"}
+	],
+	"localization": [
+		{"language_tag": "en_US", "/actions/focus": "Focus test", "/actions/focus/in/y": "Y", "/actions/focus/in/trigger": "Trigger"}
+	]
+}

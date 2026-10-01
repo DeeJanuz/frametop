@@ -1,5 +1,7 @@
 # Gaze first: plan
 
+**Abandoned on 2026-09-30.** Steam reads the Frame controllers itself, outside SteamVR's bindings, and every press and release it sees takes SteamVR out of laser mode. Gaze mode stays a mouse feature; `docs/gaze-controllers.md` on `experimental` explains what was tried and why it doesn't work. This branch keeps the plan, the probes, and the code for reference; it isn't merged.
+
 Gaze first makes the eyes the pointer for everything flat in VR, and the controllers its buttons. With gaze on and no game running, the gaze drives Frametop's 3D pointer (the `ft_pointer` driver) everywhere the mouse can go, SteamVR's dashboard included. Either controller's trigger clicks where you look, and the controllers stop showing lasers. The work happens on branch `gaze-first` (worktree `~/frametop/.worktrees/gaze-first`, from `experimental`) and is merged into `experimental` after it's been tested in the headset.
 
 The decisions below were made with the user on 2026-09-30. Nothing is built yet: the first step is a headset session with four tests (see "Tests before building").

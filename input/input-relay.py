@@ -19,8 +19,9 @@ keyboard node for its extra buttons). Roles, from ~/.config/frametop-input.json
   ignore       not grabbed, only observed for identification in the settings app
 Buttons and keys of pointer devices go through a per-device map to actions
 (left, right, middle, back, scroll_up, scroll_down, dashboard, recenter,
-pointer_toggle, follow_toggle = head follow on or off, gaze_toggle = gaze mode on or off
-(the pointer goes where you look; see pointer/helper/ft-pointer.cpp), gaze_precision = while
+pointer_toggle, follow_toggle = head follow on or off, gaze_toggle = gaze mode on or off,
+remembered as POINTER_GAZE (the pointer goes where you look; see pointer/helper/ft-pointer.cpp
+and input/gazefirst.py), gaze_precision = while
 held, the pointer stops where you look and the button's device (the mouse, or that
 controller's aim) steers it, and the release clicks there, gaze_drag = the same, but pressed
 at once, so it drags ("precision|gazedrag mouse|left|right|keyboard 1|0" to the helper), sens_up, sens_down,
@@ -84,6 +85,7 @@ Control socket (abstract datagram @frametop_relay, JSON replies to the sender):
   vrcapture <s>     take every controller button for s seconds (0: stop), so the settings
                     app can capture one; watchers see them as events with id frame_controller
   vrbtn, vrhello, gazeawake   from the pointer helper (above)
+  gazefirst 1|0               from the pointer helper: gaze first on or off (input/gazefirst.py)
   textfield 1|0     from the desktop's input method (above)
 
 Runs on the Frame host as a user service (frametop-input-relay.service). The
@@ -109,6 +111,8 @@ import struct
 import subprocess
 import sys
 import time
+
+import gazefirst
 
 # Linux input constants (include/uapi/linux/input-event-codes.h, input.h, uinput.h).
 EV_SYN, EV_KEY, EV_REL, EV_MSC = 0x00, 0x01, 0x02, 0x04
@@ -465,9 +469,6 @@ class Pointer:
         elif name == "follow_toggle":
             self.send("follow toggle")  # until the next restart; the setting is POINTER_FOLLOW
             log("head follow toggled")
-        elif name == "gaze_toggle":
-            self.send("gaze toggle")  # until the next restart; the setting is POINTER_GAZE
-            log("gaze mode toggled")
         elif name == "screens_toggle":
             try:
                 self.sock.sendto(b"toggle", SCREENS)
@@ -658,6 +659,8 @@ def main():
                 reply(addr, {"t": "event", "id": VR_DEVICE, "path": "", "name": "Steam Frame controllers",
                              "type": "vr", "code": button, "value": value})
         action = state["rules"]["controller_buttons"].get(button)
+        if gaze.on and button.split("/")[-1] in ("trigger", "bumper"):
+            return  # gaze first has them (input/gazefirst.py)
         if state["pointer"] and action in ACTIONS and action not in ("key", "none"):
             do_action(action, value, now, button.split("/")[0])
 
@@ -684,7 +687,10 @@ def main():
 
     def do_action(action, value, now, source="mouse"):
         """A mapped mouse or controller button, or key combination (pointer mode only)."""
-        if action == "keyboard_toggle":
+        if action == "gaze_toggle":
+            if value == 1:
+                gaze.toggle()  # remembered (POINTER_GAZE), like the toggle macro
+        elif action == "keyboard_toggle":
             if value == 1 and vr_keyboard_mode() != "never":
                 vr_keyboard("toggle")
         else:
@@ -882,6 +888,9 @@ def main():
             if cmd == "textfield" and len(words) == 2:
                 text_field(words[1] == "1")
                 continue
+            if cmd == "gazefirst" and len(words) == 2:
+                gaze.message(words, now)
+                continue
             if cmd == "gazeawake" and len(words) == 2:
                 if state["pointer"]:
                     state["pointer"].gaze_awake_until = now + 12.0 if words[1] == "1" else 0.0
@@ -925,6 +934,17 @@ def main():
             else:
                 reply(addr, msg)
 
+    def to_helper(command):
+        try:
+            screens_sock.sendto(command.encode(), HELPER)
+        except OSError:
+            pass  # helper not running
+
+    # Gaze first (input/gazefirst.py): the controllers' trigger, bumper, thumbstick, and the
+    # toggle macro, from vrserver's web socket; SteamVR's and Steam's muting.
+    gaze = gazefirst.GazeFirst(to_helper, log)
+    atexit.register(gaze.shutdown)
+
     vr_bind(time.monotonic())  # a helper that's already running keeps its buttons in step
     waiting = False  # a keyboard's grab waits for its keys to come up
     while True:
@@ -959,11 +979,12 @@ def main():
             if added:
                 apply_roles()
 
-        ready, _, _ = select.select(list(nodes) + [control], [], [],
-                                    volume.timeout(now, pointer.timeout() if pointer else 0.5))
+        ready, _, _ = select.select(list(nodes) + [control] + ([gaze] if gaze.ws else []), [], [],
+                                    min(gaze.timeout(), volume.timeout(now, pointer.timeout() if pointer else 0.5)))
         now = time.monotonic()
         if pointer:
             pointer.tick(now)
+        gaze.tick(now)
         volume.tick(now)
         if state["vr_capture_until"] and now >= state["vr_capture_until"]:
             vr_bind(now)  # capture over: back to the mapped buttons
@@ -972,6 +993,10 @@ def main():
         for fd in ready:
             if fd is control:
                 handle_control(now)
+                continue
+            if fd is gaze:
+                if gaze.ws:
+                    gaze.readable(now)
                 continue
             node = nodes[fd]
             try:

@@ -1,0 +1,15 @@
+{
+	"action_manifest_version": 0,
+	"controller_type": "frame_controller",
+	"description": "focustest (pointer/probe/focustest.cpp)",
+	"name": "focustest",
+	"bindings": {
+		"/actions/focus": {
+			"sources": [
+				{"path": "/user/hand/right/input/y", "mode": "button", "inputs": {"click": {"output": "/actions/focus/in/y"}}},
+				{"path": "/user/hand/right/input/trigger", "mode": "button", "inputs": {"click": {"output": "/actions/focus/in/trigger"}}},
+				{"path": "/user/hand/left/input/trigger", "mode": "button", "inputs": {"click": {"output": "/actions/focus/in/trigger"}}}
+			]
+		}
+	}
+}

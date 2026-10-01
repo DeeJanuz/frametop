@@ -44,12 +44,22 @@ def getstate(timeout=3):
 
 
 class VrSocket:
-    def __init__(self, timeout=3):
-        self.sock = socket.create_connection((HOST, PORT), timeout=timeout)
+    """vrserver's web socket, or with `url` (ws://host:port/path) any other local one, such as
+    Steam's CEF debugger (input/steamui.py)."""
+
+    def __init__(self, timeout=3, url=None):
+        if url:
+            hostport, path = url.removeprefix("ws://").split("/", 1)
+            host, port = hostport.rsplit(":", 1)
+            extra = ""
+        else:
+            host, port, path, hostport = HOST, PORT, "", f"{HOST}:{PORT}"
+            extra = f"Origin: {ORIGIN}\r\nReferer: {HEADERS['Referer']}\r\n"
+        self.sock = socket.create_connection((host, int(port)), timeout=timeout)
         key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f"GET / HTTP/1.1\r\nHost: {HOST}:{PORT}\r\nUpgrade: websocket\r\n"
+        self.sock.sendall((f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\nUpgrade: websocket\r\n"
                            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
-                           f"Origin: {ORIGIN}\r\nReferer: {HEADERS['Referer']}\r\n\r\n").encode())
+                           f"{extra}\r\n").encode())
         head = b""
         while b"\r\n\r\n" not in head:
             chunk = self.sock.recv(4096)
@@ -105,6 +115,10 @@ class VrSocket:
             self.buf += chunk
         out, self.buf = self.buf[:n], self.buf[n:]
         return out
+
+    def pending(self):
+        """A message (or part of one) is already read and waiting."""
+        return bool(self.buf)
 
     def recv(self, timeout=None):
         """The next text message as parsed JSON (None for one that isn't JSON), or None at

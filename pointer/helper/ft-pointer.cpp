@@ -150,8 +150,8 @@
 // release it when the mouse is idle ("gazeawake 1|0" tells it). A controller that moves
 // still releases it (the mouse is gaze mode's only pointer device), and in games the mouse
 // wakes it and idling releases it, as without gaze.
-//   The dot only shows while the mouse moves it (within POINTER_GAZE_SHOW, 1 s), while a
-// press is held, and briefly for each click (a pulse);
+//   With POINTER_GAZE_DOT=moving, the dot only shows while the mouse moves it (within
+// POINTER_GAZE_SHOW, 1 s), while a press is held, and briefly for each click (a pulse);
 // otherwise it's transparent (still there for the laser to land on). The gaze moving it
 // doesn't show it: you know where you're looking.
 //   When the mouse took the pointer and you then click, the nudge was probably onto what
@@ -182,6 +182,25 @@
 // role back, and then no click lands (see "no hand role" in the main loop): with a controller in
 // the right hand as the precision tool, the pointer needs the left hand, or a role that's no
 // hand. Treadmill is being tested for that (docs/gaze-first.md, test 1).
+//
+// Gaze first (docs/gaze-first.md): with gaze mode on outside games, the relay mutes the Frame
+// controllers in SteamVR and in Steam's UI, and sends their trigger and bumper here ("ctrl
+// <left|right> <trigger|bumper> 1|0", from vrserver's web socket). A press stops the pointer
+// where you look, like the mouse's held-back press. Moving the controller past
+// POINTER_TRIGGER_DEADZONE (1 deg: its position seen from the eye, as the press began) within
+// POINTER_GAZE_HOLD steers the pointer at POINTER_TRIGGER_GAIN (0.5), and the release clicks
+// there (a lesson, as with the mouse). Held still that long instead, it's a real press, and the
+// controller drags at POINTER_GAZE_DRAG_GAIN (1). The trigger is the left button, the bumper the
+// right. "gazefirst 1|0" tells the relay when gaze first is on (gaze mode, no game, headset on).
+//   Steam reads the controllers as a gamepad, and SteamVR leaves laser mode about 40 ms after
+// each press and each release Steam sees, whatever the bindings say. So while gaze first is on
+// and the pointer is awake, the helper takes the laser back whenever it isn't ours (on no device,
+// or on a controller) with the driver's "a" (switchlaserhand), at most every 100 ms
+// (POINTER_GAZE_KEEP_LASER, on): a blink of 20 to 40 ms. A controller's click or press waits for
+// the laser: until it has left and come back after the last press or release (100 ms at least),
+// or 250 ms.
+//   POINTER_GAZE_DOT: always (the default) shows the dot all the time in gaze mode, which also
+// covers those blinks; moving shows it as described under gaze mode.
 //
 // Hands (POINTER_HANDS, off by default; needs hand tracking, hands/): ft-hands publishes
 // pinches and grips (hands/include/fh_gestures.h), read here every frame.
@@ -669,6 +688,10 @@ int main() {
     // Gaze mode (see the top); gazeConf is POINTER_GAZE as last read, like followConf.
     bool gazeOn = false, gazeConf = false;
     double gazeRetake = 5, gazeNudgeMax = 8, gazeHold = 0.5, gazeShow = 1;
+    // Gaze first (see the top): POINTER_GAZE_DOT, POINTER_GAZE_KEEP_LASER, POINTER_TRIGGER_GAIN,
+    // POINTER_TRIGGER_DEADZONE.
+    bool gazeDotAlways = true, keepLaser = true;
+    double triggerGain = 0.5, triggerDeadzone = 1.0;
     // Hands (see the top): POINTER_HANDS, POINTER_PINCH_GAIN, POINTER_PINCH_DEADZONE, POINTER_GRIP_GAIN.
     bool handsOn = false;
     double pinchGain = 0.5, pinchDeadzone = 1.5, gripGain = 1.0, handBelow = 0.35, typingHold = 1.0;
@@ -702,6 +725,11 @@ int main() {
         gazeShow = std::clamp(ConfDouble(conf, "POINTER_GAZE_SHOW", 1), 0.0, 30.0);
         const bool wantGaze = ConfDouble(conf, "POINTER_GAZE", 0) != 0;
         if (wantGaze != gazeConf) gazeOn = gazeConf = wantGaze;
+        const auto gd = conf.find("POINTER_GAZE_DOT");
+        gazeDotAlways = gd == conf.end() || gd->second != "moving";
+        keepLaser = ConfDouble(conf, "POINTER_GAZE_KEEP_LASER", 1) != 0;
+        triggerGain = std::clamp(ConfDouble(conf, "POINTER_TRIGGER_GAIN", 0.5), 0.05, 3.0);
+        triggerDeadzone = std::clamp(ConfDouble(conf, "POINTER_TRIGGER_DEADZONE", 1.0), 0.0, 10.0);
         handsOn = ConfDouble(conf, "POINTER_HANDS", 0) != 0;
         pinchGain = std::clamp(ConfDouble(conf, "POINTER_PINCH_GAIN", 0.5), 0.05, 3.0);
         pinchDeadzone = std::clamp(ConfDouble(conf, "POINTER_PINCH_DEADZONE", 1.5), 0.0, 10.0);
@@ -857,6 +885,9 @@ int main() {
         bool grip = false;      // pressed at once and dragging (a grip, gaze drag), not a click on release
         bool engaged = false;   // past the dead zone
         bool pressed = false;   // a real press went out (a grip or gaze drag, or a pinch without gaze mode)
+        bool ctrlPos = false;   // gaze first's trigger or bumper: steered by the controller's position
+        bool promote = false;   // held still for POINTER_GAZE_HOLD, it becomes a real press
+        bool right = false;     // the right button (the bumper)
         Vec3 origin;
         vr::TrackedDeviceIndex_t ctrl = vr::k_unTrackedDeviceIndexInvalid;
         double refYaw = 0, refPitch = 0, startYaw = 0, startPitch = 0, lastYaw = 0, lastPitch = 0;
@@ -867,6 +898,18 @@ int main() {
         bool drag, down;
     };
     std::vector<DevicePress> devicePresses;
+    // "ctrl <left|right> <trigger|bumper> 1|0" from the relay, done in the frame (see Gaze first).
+    struct CtrlPress {
+        std::string side;
+        bool right, down;
+    };
+    std::vector<CtrlPress> ctrlPresses;
+    bool ctrlCancel = false;  // "ctrlcancel": the held trigger or bumper ends without a click
+    // Gaze first's laser keeper, and its controller clicks' wait (see the top): who has the
+    // laser, since when it's ours, whether it left after the last controller press or release.
+    vr::TrackedDeviceIndex_t primary = vr::k_unTrackedDeviceIndexInvalid;
+    Clock::time_point ctrlEventAt{}, laserOursSince{}, keepPressAt{};
+    bool laserLeft = false, keepHeld = false;
     uint32_t seenBegins[2][2] = {}, seenEnds[2][2] = {};  // [pinch, grip][side], as last read
     bool handBaseline = false;
     int handOpens = 0;
@@ -874,10 +917,13 @@ int main() {
     Clock::time_point handUsed{};  // a gesture began then (keeps the pointer, like gaze mode)
     Clock::time_point lastTyping{};  // the relay's last "typing": a key on a keyboard
     // Gaze mode outside games, and its dot (see the top): lastMove/lastHeld/pulseAt.
-    bool inGame = false, gazeAwake = false;
-    Clock::time_point inGameAt{}, gazeAwakeAt{};
+    bool inGame = false, gazeAwake = false, gazeFirst = false;
+    Clock::time_point inGameAt{}, gazeAwakeAt{}, gazeFirstAt{};
     Clock::time_point lastMove{}, lastHeld{}, pulseAt{};
-    // The left button, as sent to the driver.
+    // The left button, as sent to the driver; pressRight: the next press is the right button
+    // instead (gaze first's bumper), heldButton: the one pressed.
+    bool pressRight = false;
+    std::string heldButton = "trigger";
     auto pressLeft = [&] {
         // ft-screens sends the keyboard to the panel clicked last; it sees clicks on
         // its own screens, but only we know when one lands on another panel.
@@ -907,14 +953,16 @@ int main() {
         tiltYaw = tiltPitch = 0;  // a new drag starts untilted
         dropHoldUntil = {};
         pulseAt = Clock::now();
-        SendTo(out, "ft_pointer", "btn trigger 1");
+        heldButton = pressRight ? "b" : "trigger";
+        pressRight = false;
+        SendTo(out, "ft_pointer", "btn " + heldButton + " 1");
     };
     auto releaseLeft = [&] {
         leftHeld = false;
         tilting = false;
         // Hold the drag pose (tilt, frozen distance) while SteamVR finishes the drop.
         dropHoldUntil = Clock::now() + std::chrono::milliseconds(500);
-        SendTo(out, "ft_pointer", "btn trigger 0");
+        SendTo(out, "ft_pointer", "btn " + heldButton + " 0");
         // ft-screens releases a button held on its screens in KWin even when SteamVR hands
         // the release to some other overlay (its catcher usually gets it; this is the backstop).
         SendTo(out, "ft_screens", "up");
@@ -1141,6 +1189,15 @@ int main() {
                 gazeAwakeAt = t;
                 SendTo(out, "frametop_relay", awake ? "gazeawake 1" : "gazeawake 0");
             }
+            // Gaze first (see the top): the relay mutes the controllers while it's on.
+            const bool first = gazeOn && !inGame && !headsetOff;
+            if (first != gazeFirst || t - gazeFirstAt > std::chrono::seconds(5)) {
+                if (first != gazeFirst) std::printf("gaze first %s\n", first ? "on" : "off");
+                if (first != gazeFirst) std::fflush(stdout);
+                gazeFirst = first;
+                gazeFirstAt = t;
+                SendTo(out, "frametop_relay", first ? "gazefirst 1" : "gazefirst 0");
+            }
         }
 
         // Commands from the relay.
@@ -1163,6 +1220,23 @@ int main() {
             if (std::sscanf(buf, "gz %lf %lf %lf %lf", &g[0], &g[1], &g[2], &g[3]) == 4) {
                 gz = {g[0], g[1], g[2], g[3], Clock::now()};
                 continue;
+            }
+            if (std::strcmp(buf, "ctrlcancel") == 0) {  // the relay's macro fired, or it lost the controllers
+                ctrlCancel = true;
+                ctrlPresses.clear();
+                continue;
+            }
+            {
+                char side[8], button[16];
+                int v;
+                if (std::sscanf(buf, "ctrl %7s %15s %d", side, button, &v) == 3) {
+                    lastMouse = Clock::now();
+                    if (!active) wake(Clock::now());
+                    ctrlPresses.push_back({side, !std::strcmp(button, "bumper"), v != 0});
+                    ctrlEventAt = Clock::now();
+                    laserLeft = false;
+                    continue;
+                }
             }
             {
                 char kind[16], source[16];
@@ -1197,6 +1271,13 @@ int main() {
             }
             if (std::strncmp(buf, "overlays", 8) == 0) {
                 overlays.Request(sender, senderLen);  // answered from the list's thread
+                continue;
+            }
+            if (std::strcmp(buf, "gazefirst ?") == 0) {  // why gaze first is on or off
+                char msg[160];
+                std::snprintf(msg, sizeof msg, "ok first %d gaze %d game %d headset %s awake %d laser %d ours %d", gazeFirst,
+                              gazeOn, inGame, headsetOff ? "off" : "on", active, int(primary), int(ours));
+                reply(msg);
                 continue;
             }
             if (std::strncmp(buf, "gaze", 4) == 0) {
@@ -1463,11 +1544,12 @@ int main() {
                     if (gazeOn) gazeOwns = true, nudging = false;  // no click: the pointer goes back to the gaze
                 } else {
                     clickPress = true;  // the click is on the release, where the pointer is now
+                    pressRight = hold.right;
                     gazeBack = nudgeMoved < 0.2;
                 }
             }
             if (debug)
-                std::printf("hold %s %s%s\n", hold.src == Src::Hand ? (hold.grip ? "grip" : "pinch") : hold.grip ? "gaze drag" : "gaze precision",
+                std::printf("hold %s %s%s\n", hold.src == Src::Hand ? (hold.grip ? "grip" : "pinch") : hold.ctrlPos ? (hold.right ? "bumper" : "trigger") : hold.grip ? "gaze drag" : "gaze precision",
                             lost ? "lost" : "released", hold.pressed ? "" : lost ? " (no click)" : " (click)");
             if (debug) std::fflush(stdout);
             hold = {};
@@ -1553,6 +1635,15 @@ int main() {
             cp = std::asin(std::clamp(f.y, -1.0, 1.0)) * 180 / M_PI;
             return true;
         };
+        // A controller's position seen from `from`: yaw and pitch, degrees (gaze first's holds).
+        auto controllerPosAngles = [&](vr::TrackedDeviceIndex_t i, const Vec3 &from, double &cy, double &cp) {
+            if (i >= vr::k_unMaxTrackedDeviceCount || !all[i].bPoseIsValid) return false;
+            const auto &m = all[i].mDeviceToAbsoluteTracking.m;
+            const Vec3 d = Normalize(Vec3{m[0][3], m[1][3], m[2][3]} - from);
+            cy = std::atan2(-d.x, -d.z) * 180 / M_PI;
+            cp = std::asin(std::clamp(d.y, -1.0, 1.0)) * 180 / M_PI;
+            return true;
+        };
         // The Frame controller in a hand (not our own device, which may hold that hand's role).
         auto controllerFor = [&](const std::string &hand) {
             const int32_t want = hand == "left" ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand;
@@ -1589,10 +1680,37 @@ int main() {
             if (debug) std::fflush(stdout);
         }
         devicePresses.clear();
+        // Gaze first's trigger and bumper (see the top): a held-back press at the gaze, steered
+        // by the controller's position seen from the eye as it began.
+        if (ctrlCancel) {
+            ctrlCancel = false;
+            if (hold.src != Src::None && hold.ctrlPos) endHold(true);
+        }
+        for (const CtrlPress &p : ctrlPresses) {
+            const int side = p.side == "right";
+            if (!p.down) {
+                if (hold.src != Src::None && hold.ctrlPos && hold.side == side && hold.right == p.right) endHold(false);
+                continue;
+            }
+            if (hold.src != Src::None || leftHeld || aimHeld || clickPress || clickRelease || !hmd.bPoseIsValid) continue;
+            Hold h;
+            h.src = Src::Controller, h.ctrlPos = h.promote = true, h.right = p.right, h.side = side, h.origin = eye;
+            h.ctrl = controllerFor(p.side);
+            if (!controllerPosAngles(h.ctrl, h.origin, h.refYaw, h.refPitch)) h.src = Src::Mouse;  // no pose: the mouse steers
+            hold = h;
+            startHold(false);
+            if (debug) std::printf("hold %s %s began\n", p.side.c_str(), p.right ? "bumper" : "trigger");
+            if (debug) std::fflush(stdout);
+        }
+        ctrlPresses.clear();
         if (hold.src == Src::Controller) {
             double cy, cp;
-            if (controllerAngles(hold.ctrl, cy, cp))
+            if (hold.ctrlPos) {
+                if (controllerPosAngles(hold.ctrl, hold.origin, cy, cp))
+                    steer(cy, cp, hold.pressed ? 0.3 : triggerDeadzone, hold.pressed ? dragGain : triggerGain);
+            } else if (controllerAngles(hold.ctrl, cy, cp)) {
                 steer(cy, cp, precisionDeadzone, hold.grip ? dragGain : precisionGain);
+            }
         }
         fh_gestures_t hg;
         const bool handOk = handsOn && handFile.Read(hg);
@@ -1896,7 +2014,7 @@ int main() {
                 // the page, with SteamVR's hit dot hidden on it.
                 const Vec3 near = eye + sight * SETTINGS_DOT, far = eye + sight * SETTINGS_CATCHER;
                 double alpha = 1;
-                if (gazeOn) {
+                if (gazeOn && !gazeDotAlways) {
                     auto secs = [&](Clock::time_point t) { return std::chrono::duration<double>(tnow - t).count(); };
                     alpha = std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
                 }
@@ -1921,7 +2039,7 @@ int main() {
                 double scale = 1, alpha = 1;
                 if (gazeOn) {
                     auto secs = [&](Clock::time_point t) { return std::chrono::duration<double>(tnow - t).count(); };
-                    alpha = std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
+                    alpha = gazeDotAlways ? 1.0 : std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
                     const double pulse = secs(pulseAt);
                     if (pulse < 0.6) {
                         scale = 1 + 1.5 * std::max(0.0, 1 - pulse / 0.3);
@@ -1993,7 +2111,52 @@ int main() {
             gazeBack = true;
             pressLeft();
         }
-        if (clickPress) {
+
+        // Gaze first (see the top): take the laser back whenever it isn't ours, and let a
+        // controller's press or click out only once it's back.
+        primary = overlay->GetPrimaryDashboardDevice();
+        if (primary == ours && ours != vr::k_unTrackedDeviceIndexInvalid) {
+            if (laserOursSince == Clock::time_point{}) laserOursSince = tnow;
+        } else {
+            laserOursSince = {};
+            laserLeft = true;
+        }
+        const bool keeping = keepLaser && gazeOn && !inGame && active && !headsetOff &&
+                             ours != vr::k_unTrackedDeviceIndexInvalid && sys->IsTrackedDeviceConnected(ours) &&
+                             tnow - wokeAt > std::chrono::milliseconds(600);
+        if (keepHeld && tnow - keepPressAt >= std::chrono::milliseconds(40)) {
+            SendTo(out, "ft_pointer", "btn a 0");
+            keepHeld = false;
+        }
+        if (keeping && primary != ours && !keepHeld && !claimPending && !claimHeld &&
+            tnow - keepPressAt >= std::chrono::milliseconds(100)) {
+            SendTo(out, "ft_pointer", "btn a 1");
+            keepHeld = true;
+            keepPressAt = tnow;
+            if (debug) std::printf("laser keeper: laser on %d, taking it back\n", int(primary));
+            if (debug) std::fflush(stdout);
+        }
+        auto laserReady = [&] {
+            if (ctrlEventAt == Clock::time_point{} || !keeping) return true;
+            const auto since = tnow - ctrlEventAt;
+            if (since > std::chrono::seconds(1)) return true;  // never came back: don't hold the click forever
+            if (laserOursSince == Clock::time_point{} || tnow - laserOursSince < std::chrono::milliseconds(25)) return false;
+            return since >= std::chrono::milliseconds(250) || (laserLeft && since >= std::chrono::milliseconds(100));
+        };
+        // A trigger or bumper held still for POINTER_GAZE_HOLD: a real press, then the
+        // controller drags (from where it is now).
+        if (aimHeld && aimHand && hold.promote && !hold.engaged &&
+            tnow - aimSince >= std::chrono::duration<double>(gazeHold) && laserReady()) {
+            aimHeld = aimHand = false;
+            hold.pressed = hold.grip = true;
+            if (hold.src == Src::Controller) controllerPosAngles(hold.ctrl, hold.origin, hold.refYaw, hold.refPitch);
+            gazeBack = true;
+            pressRight = hold.right;
+            pressLeft();
+            if (debug) std::printf("hold %s: pressed (held still)\n", hold.right ? "bumper" : "trigger");
+            if (debug) std::fflush(stdout);
+        }
+        if (clickPress && laserReady()) {
             clickPress = false;
             pressLeft();
             clickRelease = true;

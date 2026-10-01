@@ -16,6 +16,9 @@
 // window.__frametopGaze:
 //   mode    "off" (pass everything), "log" (pass, and log), "block" (drop all but `allow`),
 //           "auto" (block while the dashboard is in laser mode, pass in gamepad mode)
+//   until   with "block" or "auto": blocking stops at this time (Date.now(), ms) unless it's
+//           moved on. The input relay (input/gazefirst.py) sets it 15 s ahead every 10 s or so,
+//           so if the relay dies, the controllers come back to Steam's UI by themselves.
 //   allow   buttons that always pass: the Steam button's guide and quick menu, and Steam's
 //           own dummy input
 //   log     the last 256 events: [ms, "down"|"up"|"analog", button, controller, passed]
@@ -44,7 +47,7 @@
         if (G.log.length > 256) G.log.shift();
     };
     G.blocks = button => {
-        if (G.allow.includes(button)) return false;
+        if (G.allow.includes(button) || (G.until && Date.now() > G.until)) return false;
         return G.mode === "block" || (G.mode === "auto" && !G.gamepadMode());
     };
     if (proto.OnButtonDown && proto.OnButtonDown.__frametop !== VERSION) {

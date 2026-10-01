@@ -2,9 +2,10 @@
 // Prints the dashboard's primary device and every controller's role whenever either changes,
 // and the dashboard and role events. With --snapback, when the laser goes to any device but
 // ours (the ft_pointer driver's), it presses our /input/a (switchlaserhand) to take it back,
-// at most every 100 ms, and prints how long that took.
+// at most every 100 ms, and prints how long that took. With --reclaim MS it also takes the
+// laser back when it has been on no device (gamepad mode) for MS milliseconds.
 // Runs as a background OpenVR client (in the dev container).
-// Usage: lasertest [--snapback] [--seconds N]
+// Usage: lasertest [--snapback] [--reclaim MS] [--seconds N]
 #include <openvr.h>
 
 #include <sys/socket.h>
@@ -47,12 +48,13 @@ static std::string Describe(vr::IVRSystem *sys, vr::TrackedDeviceIndex_t i) {
 
 int main(int argc, char **argv) {
     bool snapback = false;
-    double seconds = 0;
+    double seconds = 0, reclaimMs = 0;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--snapback")) snapback = true;
         else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[++i]);
+        else if (!std::strcmp(argv[i], "--reclaim") && i + 1 < argc) reclaimMs = std::atof(argv[++i]);
         else {
-            std::fprintf(stderr, "usage: %s [--snapback] [--seconds N]\n", argv[0]);
+            std::fprintf(stderr, "usage: %s [--snapback] [--reclaim MS] [--seconds N]\n", argv[0]);
             return 2;
         }
     }
@@ -67,7 +69,7 @@ int main(int argc, char **argv) {
     const auto start = Clock::now();
     auto ms = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); };
     std::string lastPrimary, lastRoles;
-    Clock::time_point lostAt{}, pressedAt{};
+    Clock::time_point lostAt{}, pressedAt{}, noneSince{};
     bool pressed = false;
     while (!g_stop && (seconds <= 0 || ms() < seconds * 1000)) {
         vr::VREvent_t ev;
@@ -112,19 +114,28 @@ int main(int argc, char **argv) {
             }
             if (primary != ours && ours != vr::k_unTrackedDeviceIndexInvalid && primary != vr::k_unTrackedDeviceIndexInvalid)
                 lostAt = Clock::now();
+            noneSince = primary == vr::k_unTrackedDeviceIndexInvalid ? Clock::now() : Clock::time_point{};
             lastPrimary = p;
         }
-        if (snapback) {
+        if (snapback || reclaimMs > 0) {
             const auto now = Clock::now();
             if (pressed && now - pressedAt > std::chrono::milliseconds(40)) {
                 Send("btn a 0");
                 pressed = false;
             }
-            if (!pressed && lostAt != Clock::time_point{} && now - pressedAt > std::chrono::milliseconds(100)) {
+            if (snapback && !pressed && lostAt != Clock::time_point{} && now - pressedAt > std::chrono::milliseconds(100)) {
                 Send("btn a 1");
                 pressed = true;
                 pressedAt = now;
                 std::printf("%9.1f ms  snapback: pressed our a\n", ms());
+            }
+            if (!pressed && reclaimMs > 0 && noneSince != Clock::time_point{} && ours != vr::k_unTrackedDeviceIndexInvalid &&
+                sys->IsTrackedDeviceConnected(ours) &&
+                now - noneSince > std::chrono::milliseconds(int(reclaimMs)) && now - pressedAt > std::chrono::milliseconds(100)) {
+                Send("btn a 1");
+                pressed = true;
+                pressedAt = now;
+                std::printf("%9.1f ms  reclaim: pressed our a\n", ms());
             }
         }
         std::fflush(stdout);
