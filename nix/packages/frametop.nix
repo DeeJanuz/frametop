@@ -132,7 +132,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   passthru = {
-    inherit scriptPython appPython;
+    inherit scriptPython appPython withSettingsApps;
     tree = share;
   };
 
