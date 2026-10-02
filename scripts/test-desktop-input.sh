@@ -10,6 +10,8 @@ gcc -std=c11 -Wall -Wextra -Werror tests/desktop-mouse-test.c -lm -o build/deskt
 build/desktop-mouse-test
 gcc -std=c11 -Wall -Wextra -Werror tests/controller-fallback-test.c -o build/controller-fallback-test
 build/controller-fallback-test
+gcc -std=c11 -Wall -Wextra -Werror tests/desktop-handoff-test.c -o build/desktop-handoff-test
+build/desktop-handoff-test
 gcc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags libdrm) tests/desktop-cursor-test.c -o build/desktop-cursor-test
 build/desktop-cursor-test
 gcc -std=c11 -Wall -Wextra -Werror tests/cursor-cache-test.c $(pkg-config --cflags --libs wlroots-0.20 wayland-server wayland-client libdrm pixman-1) -o build/cursor-cache-test

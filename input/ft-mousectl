@@ -39,7 +39,8 @@ def query(address, command):
 def status():
     result = {'relay': query(RELAY, 'mouse-mode?'), 'desktop': query(SCREENS, 'mouse?'),
               'pointer': query(HELPER, 'pointerstatus'),
-              'controllerFallback': query(SCREENS, 'mouse-presence?')}
+              'controllerFallback': query(SCREENS, 'mouse-presence?'),
+              'desktopPolicy': query(SCREENS, 'desktop-policy?')}
     result['ready'] = bool(result['relay'].get('supported') and result['desktop'].get('supported')
                            and 'desktopInput' in result['pointer'])
     result['active'] = bool(result['ready'] and result['relay'].get('mode') == 'desktop'
@@ -124,6 +125,8 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('status')
     sub.add_parser('layout')
+    policy = sub.add_parser('policy', help='Choose desktop mouse/pointer ownership (runtime only)')
+    policy.add_argument('mode', choices=('mouse', 'pointer', 'last-active'))
     for name in ('desktop', 'spatial'):
         sub.add_parser(name).add_argument('--save', action='store_true')
     pos = sub.add_parser('position')
@@ -135,6 +138,11 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == 'status': result = status()
+        elif args.command == 'policy':
+            require_ready()
+            if request(SCREENS, 'desktop-policy '+args.mode) != 'ok':
+                raise RuntimeError('Desktop policy rejected')
+            result = query(SCREENS, 'desktop-policy?')
         elif args.command in ('desktop', 'spatial'): result = switch(args.command, args.save)
         else:
             require_ready()

@@ -26,6 +26,7 @@
 // Runs in the dev container (wlroots 0.20); KWin connects from the host.
 #define _GNU_SOURCE
 #include "controller-fallback.h"
+#include "desktop-handoff.h"
 #include <drm_fourcc.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
@@ -112,6 +113,10 @@ struct server {
     bool desktop_mouse, cursor_ready, cursor_frame_pending;
     struct ft_controller_fallback controller_fallback;
     bool controller_desktop;
+    struct ft_handoff handoff;
+    struct ft_event controller_position[MAX_SCREENS];
+    bool controller_position_known[MAX_SCREENS];
+    unsigned long mouse_events_ignored;
     uint32_t controller_buttons;
     struct ft_cursor_cache cursor_cache;
     const char *cursor_error;
@@ -374,11 +379,10 @@ static void deliver_pointer_event(const struct ft_event *e, void *data) {
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
-static void update_controller_fallback(struct server *s) {
-    bool active = s->desktop_mouse && !s->mouse.buttons &&
-        ft_fallback_active(&s->controller_fallback, now_ms());
-    if (active == s->controller_desktop) return;
-    // Release controller-owned presses before the native seat takes over.
+static void set_desktop_owner(struct server *s, bool pointer) {
+    if (pointer == s->controller_desktop) return;
+    // Claims are refused during a held drag. Legacy disconnect recovery may
+    // still revoke a stale controller, releasing its buttons safely.
     for (unsigned bit = 0; bit < 8; ++bit)
         if (s->controller_buttons & (1u << bit))
             wlr_seat_pointer_notify_button(s->seat, now_ms(), BTN_LEFT+bit,
@@ -387,34 +391,70 @@ static void update_controller_fallback(struct server *s) {
     wlr_seat_pointer_notify_clear_focus(s->seat);
     wlr_seat_pointer_notify_frame(s->seat);
     s->pointer_focus = NULL;
-    s->controller_desktop = active;
-    wlr_log(WLR_INFO, "desktop controller fallback %s (mouse %s, telemetry %s)",
-            active ? "active" : "inactive", s->controller_fallback.present ? "present" : "absent",
-            s->controller_fallback.known && (uint32_t)(now_ms()-s->controller_fallback.received)<3000 ? "fresh" : "unknown/stale");
+    s->controller_desktop = pointer;
+    wlr_log(WLR_INFO, "desktop owner %s (policy %s)", pointer ? "pointer" : "mouse",
+            ft_handoff_name(s->handoff.policy));
     ft_vr_cursor_move(-1, 0, 0, 1, false);
+}
+
+static void update_controller_fallback(struct server *s) {
+    bool active = s->desktop_mouse && !s->mouse.buttons &&
+        ft_fallback_active(&s->controller_fallback, now_ms());
+    if (s->desktop_mouse && s->handoff.policy != FT_PREFER_MOUSE) {
+        active = s->controller_desktop;
+        if (!s->mouse.buttons && !s->controller_buttons &&
+            (s->handoff.policy == FT_PREFER_POINTER ||
+             ft_fallback_active(&s->controller_fallback, now_ms()))) active = true;
+    }
+    set_desktop_owner(s, active);
+}
+
+static bool claim_desktop_mouse(struct server *s) {
+    if (!ft_handoff_claim(&s->handoff, false, now_ms(), s->mouse.buttons, s->controller_buttons)) {
+        ++s->mouse_events_ignored;
+        return false;
+    }
+    ft_fallback_presence(&s->controller_fallback, true, s->controller_fallback.enabled, now_ms());
+    set_desktop_owner(s, false);
+    return true;
 }
 
 static void handle_vr_event(const struct ft_event *e, void *data) {
     struct server *s = data;
-    // Native mouse mode owns the desktop seat. Controller lasers still operate
-    // SteamVR, games and FrameTop's separate screen placement controls.
+    // Events here are panel content, not SteamVR or separate screen grab bars.
+    bool desktop = e->screen >= 0 && e->screen < s->n_config;
+    if (desktop && e->type == FT_MOTION) {
+        s->controller_position[e->screen] = *e;
+        s->controller_position_known[e->screen] = true;
+    }
     update_controller_fallback(s);
-    if (s->desktop_mouse && !s->controller_desktop && e->screen < s->n_config &&
-        (e->type == FT_MOTION || e->type == FT_BUTTON || e->type == FT_SCROLL || e->type == FT_LEAVE)) { ++s->vr_mouse_ignored; return; }
-    if (s->controller_desktop && e->screen < s->n_config && e->type == FT_BUTTON && e->button >= BTN_LEFT && e->button < BTN_LEFT+8) {
-        uint32_t bit = 1u << (e->button-BTN_LEFT);
-        if (e->pressed) s->controller_buttons |= bit;
-        else s->controller_buttons &= ~bit;
+    if (s->desktop_mouse && desktop) {
+        bool pointer_event = e->type == FT_MOTION || e->type == FT_BUTTON ||
+                             e->type == FT_SCROLL || e->type == FT_LEAVE;
+        uint32_t bit = e->type == FT_BUTTON && e->button >= BTN_LEFT && e->button < BTN_LEFT+8
+            ? 1u << (e->button-BTN_LEFT) : 0;
+        bool action = (e->type == FT_BUTTON && e->pressed && bit) ||
+                      (e->type == FT_SCROLL && (e->dx != 0 || e->dy != 0));
+        if (action && s->handoff.policy != FT_PREFER_MOUSE &&
+            ft_handoff_claim(&s->handoff, true, now_ms(), s->mouse.buttons, s->controller_buttons)) {
+            set_desktop_owner(s, true);
+            if (e->type == FT_SCROLL && s->controller_position_known[e->screen])
+                deliver_pointer_event(&s->controller_position[e->screen], s);
+        }
+        if (pointer_event && (!s->controller_desktop || s->mouse.buttons ||
+            (e->type == FT_BUTTON && !e->pressed && !(s->controller_buttons & bit)) ||
+            (e->type == FT_LEAVE && s->controller_buttons))) {
+            ++s->vr_mouse_ignored; return;
+        }
+        if (bit) {
+            if (e->pressed) s->controller_buttons |= bit;
+            else s->controller_buttons &= ~bit;
+        }
     }
     deliver_pointer_event(e, data);
 }
 
 static void desktop_motion(struct server *s) {
-    // A real mouse packet wins immediately, before the next hotplug heartbeat.
-    if (s->controller_desktop) {
-        ft_fallback_presence(&s->controller_fallback, true, s->controller_fallback.enabled, now_ms());
-        update_controller_fallback(s);
-    }
     int index = ft_mouse_target(&s->mouse);
     if (index < 0 || !s->screens[index]) return;
     const struct ft_mouse_output *o = &s->mouse.outputs[index];
@@ -680,7 +720,23 @@ static int control_readable(int fd, uint32_t mask, void *data) {
         double scale, wheel_x, wheel_y;
         double mx, my, mw, mh;
         char mode[16], tail;
-        if (strcmp(buf, "mouse-presence?") == 0) {
+        if (strcmp(buf, "desktop-policy?") == 0) {
+            snprintf(reply, sizeof reply,
+                "{\"supported\":true,\"policy\":\"%s\",\"owner\":\"%s\",\"mouseButtons\":%u,\"pointerButtons\":%u,\"mouseEventsIgnored\":%lu}",
+                ft_handoff_name(s->handoff.policy), s->controller_desktop ? "pointer" : "mouse",
+                s->mouse.buttons, s->controller_buttons, s->mouse_events_ignored);
+        } else if (sscanf(buf, "desktop-policy %15s %c", mode, &tail) == 1) {
+            if (s->mouse.buttons || s->controller_buttons ||
+                (strcmp(mode, "mouse") && strcmp(mode, "pointer") && strcmp(mode, "last-active")))
+                snprintf(reply, sizeof reply, "error policy or held button");
+            else {
+                s->handoff = (struct ft_handoff){.policy = !strcmp(mode, "last-active") ? FT_LAST_ACTIVE :
+                    !strcmp(mode, "pointer") ? FT_PREFER_POINTER : FT_PREFER_MOUSE};
+                set_desktop_owner(s, s->handoff.policy == FT_PREFER_POINTER);
+                update_controller_fallback(s);
+                snprintf(reply, sizeof reply, "ok");
+            }
+        } else if (strcmp(buf, "mouse-presence?") == 0) {
             snprintf(reply, sizeof reply,
                      "{\"supported\":true,\"known\":%s,\"present\":%s,\"enabled\":%s,\"controllerDesktop\":%s,\"fresh\":%s}",
                      s->controller_fallback.known ? "true" : "false",
@@ -714,7 +770,7 @@ static int control_readable(int fd, uint32_t mask, void *data) {
                 snprintf(reply, sizeof reply, "error invalid mouse output or held button");
             else { s->scale[index-1] = scale; snprintf(reply, sizeof reply, "ok"); }
         } else if (sscanf(buf, "mouse-mode %15s %c", mode, &tail) == 1) {
-            if (s->mouse.buttons || (strcmp(mode, "desktop") && strcmp(mode, "spatial")))
+            if (s->mouse.buttons || s->controller_buttons || (strcmp(mode, "desktop") && strcmp(mode, "spatial")))
                 snprintf(reply, sizeof reply, "error mouse mode or held button");
             else if (!strcmp(mode, "desktop") && !ft_mouse_move(&s->mouse, 0, 0))
                 snprintf(reply, sizeof reply, "error configure mouse layout first");
@@ -729,22 +785,25 @@ static int control_readable(int fd, uint32_t mask, void *data) {
                 snprintf(reply, sizeof reply, "ok");
             }
         } else if (sscanf(buf, "mouse-move %lf %lf %c", &mx, &my, &tail) == 2) {
-            if (!s->desktop_mouse || (s->vr && !ft_vr_screens_shown()) || !ft_mouse_move(&s->mouse, mx, my))
+            if (!s->desktop_mouse || (s->vr && !ft_vr_screens_shown()) || !isfinite(mx) || !isfinite(my) || fabs(mx)>16384 || fabs(my)>16384)
                 snprintf(reply, sizeof reply, "error desktop mouse unavailable or invalid motion");
-            else { desktop_motion(s); ++s->mouse_motions; snprintf(reply, sizeof reply, "ok"); }
+            else { if ((mx != 0 || my != 0) && claim_desktop_mouse(s) && ft_mouse_move(&s->mouse, mx, my)) { desktop_motion(s); ++s->mouse_motions; } snprintf(reply, sizeof reply, "ok"); }
         } else if (sscanf(buf, "mouse-position %d %lf %lf %c", &index, &mx, &my, &tail) == 3) {
-            if (!s->desktop_mouse || s->mouse.buttons || index < 1 || index > MAX_SCREENS ||
+            if (!s->desktop_mouse || s->mouse.buttons || s->controller_buttons || index < 1 || index > MAX_SCREENS ||
                 !s->mouse.outputs[index-1].enabled || !isfinite(mx) || !isfinite(my) ||
                 mx < 0 || my < 0 || mx >= s->mouse.outputs[index-1].width || my >= s->mouse.outputs[index-1].height)
                 snprintf(reply, sizeof reply, "error mouse position or held button");
             else {
                 ft_mouse_position(&s->mouse, s->mouse.outputs[index-1].x+mx, s->mouse.outputs[index-1].y+my);
-                desktop_motion(s); snprintf(reply, sizeof reply, "ok");
+                if (claim_desktop_mouse(s)) desktop_motion(s);
+                snprintf(reply, sizeof reply, "ok");
             }
         } else if (sscanf(buf, "mouse-button %u %d %c", &code, &value, &tail) == 2) {
             if (!s->desktop_mouse || (value != 0 && value != 1) ||
                 (s->vr && !ft_vr_screens_shown() && value) || code < BTN_LEFT || code > BTN_TASK)
                 snprintf(reply, sizeof reply, "error mouse button or hidden desktop");
+            else if ((!value && !(s->mouse.buttons & (1u << (code-BTN_LEFT)))) || !claim_desktop_mouse(s))
+                snprintf(reply, sizeof reply, "ok");
             else {
                 desktop_motion(s);
                 int target = ft_mouse_target(&s->mouse);
@@ -765,6 +824,8 @@ static int control_readable(int fd, uint32_t mask, void *data) {
                 !s->mouse.outputs[target].enabled ||
                 !isfinite(wheel_x) || !isfinite(wheel_y) || fabs(wheel_x)>120 || fabs(wheel_y)>120)
                 snprintf(reply, sizeof reply, "error mouse wheel or hidden desktop");
+            else if ((wheel_x == 0 && wheel_y == 0) || !claim_desktop_mouse(s))
+                snprintf(reply, sizeof reply, "ok");
             else {
                 desktop_motion(s);
                 struct ft_event event = {.type = FT_SCROLL, .screen = target, .dx = wheel_x, .dy = -wheel_y};
@@ -809,11 +870,13 @@ static int control_readable(int fd, uint32_t mask, void *data) {
             else if (strcmp(button, "middle") == 0) e.button = BTN_MIDDLE;
             if (got >= 2 && strcmp(what, "leave") == 0) e.type = FT_LEAVE;
             else if (got >= 4 && strcmp(what, "move") == 0) e.type = FT_MOTION;
+            else if (got >= 4 && strcmp(what, "scroll") == 0 && isfinite(x) && isfinite(y) && fabs(x)<=120 && fabs(y)<=120)
+                e.type = FT_SCROLL, e.dx = x, e.dy = y;
             else if (got >= 4 && (strcmp(what, "down") == 0 || strcmp(what, "up") == 0))
                 e.type = FT_BUTTON, e.pressed = what[0] == 'd';
             else index = 0;
             if (index < 1 || index > MAX_SCREENS || !s->screens[index - 1]) {
-                snprintf(reply, sizeof reply, "error input <screen> move|down|up|leave [x y [button]]");
+                snprintf(reply, sizeof reply, "error input <screen> move|down|up|scroll|leave [x y [button]]");
             } else {
                 handle_vr_event(&e, s);
                 snprintf(reply, sizeof reply, "ok");

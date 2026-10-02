@@ -102,3 +102,20 @@ with `input/ft-mousectl desktop --save`; no driver bindings or SteamVR defaults
 are changed by installation. The new native mode suppresses virtual gaze, hand
 gesture and gaze-click input while selected. Switch back to spatial mode to
 use those features. Ordinary VR keyboard events remain available.
+
+## Experimental desktop handoff
+
+`input/ft-mousectl policy last-active` enables shared desktop input. Controller
+clicks and nonzero scrolls inside desktop monitors take ownership; aiming alone
+does not. Native mouse motion, clicks and scrolling reclaim ownership. Same
+millisecond claims favor the mouse. Held buttons keep ownership until released;
+other-device events are discarded rather than replayed after the drag. SteamVR
+controls and separate monitor grab/placement bars do not participate.
+
+`input/ft-mousectl policy mouse` restores the original mouse-first behavior
+(including configured mouse-absent fallback). `policy pointer` reserves desktop
+input for the controller. Changes refuse while either device holds a desktop
+button. `status` reports policy, owner, held buttons and ignored mouse events.
+These choices are runtime-only and reset to `mouse` when the desktop restarts.
+The original PR checkpoint is retained on `checkpoint/desktop-input-before-handoff`;
+this experiment is developed separately on `feat/desktop-input-handoff`.
