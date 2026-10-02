@@ -7,7 +7,7 @@
   homeManager ? "github:nix-community/home-manager",
 }:
 let
-  frametop = builtins.getFlake ("git+file://" + toString ../..);
+  frametop = builtins.getFlake ("git+file://" + toString ../.. + "?shallow=1");
   home-manager = builtins.getFlake homeManager;
 in
 (home-manager.lib.homeManagerConfiguration {
