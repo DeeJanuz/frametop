@@ -214,11 +214,59 @@ def check_host():
     else:
         report("FAIL", "launcher", f"Desktop starts {session}, which doesn't exist")
 
+    check_nix_vrclient()
+
     if systemctl("is-enabled", "frametop-power") == "enabled":
         if os.access(BACKLIGHT, os.W_OK):
             report("ok", "backlight", "ft-powerd can turn the displays off")
         else:
             report("FAIL", "backlight", f"{BACKLIGHT} isn't writable, so ft-powerd can't turn the displays off")
+
+
+def elf_needed(path):
+    """The NEEDED entries of a 64-bit little-endian ELF file (None if it can't be read)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        if data[:6] != b"\x7fELF\x02\x01":
+            return None
+        phoff, = struct.unpack_from("<Q", data, 0x20)
+        phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+        loads, dynamic = [], None
+        for i in range(phnum):
+            ptype, _, offset, vaddr, _, filesz = struct.unpack_from("<IIQQQQ", data, phoff + i * phentsize)
+            if ptype == 1:
+                loads.append((vaddr, offset, filesz))
+            elif ptype == 2:
+                dynamic = (offset, filesz)
+        entries = [struct.unpack_from("<qQ", data, dynamic[0] + i) for i in range(0, dynamic[1], 16)]
+        strtab = next(v for tag, v in entries if tag == 5)  # DT_STRTAB, an address
+        strtab = next(off + strtab - va for va, off, size in loads if va <= strtab < va + size)
+        return [data[strtab + v:data.index(b"\0", strtab + v)].decode() for tag, v in entries if tag == 1]
+    except (OSError, ValueError, StopIteration, TypeError, struct.error):
+        return None
+
+
+def check_nix_vrclient():
+    """Programs from the Nix packages link nixpkgs' libopenvr_api, which loads SteamVR's
+    vrclient.so into them. Their loader never looks in /usr/lib, so vrclient.so may only
+    need libraries a Nix program has loaded already (glibc's, libstdc++, libgcc_s)."""
+    session = launcher_session() or ""
+    units = [systemctl("show", "-p", "ExecStart", "--value", u + ".service") for u in UNITS]
+    if not any("/nix/store/" in x for x in [session] + units):
+        return
+    vrclient = f"{STEAMVR_BIN}/vrclient.so"
+    needed = elf_needed(vrclient)
+    if needed is None:
+        report("warn", "vrclient.so", f"can't read {vrclient}'s libraries, for the Nix-built programs")
+        return
+    known = re.compile(r"(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|ld-linux-[\w-]+)\.so(\.\d+)*$")
+    others = [n for n in needed if not known.match(n)]
+    if others:
+        report("FAIL", "vrclient.so", f"needs {', '.join(others)}, which the Nix-built programs can't load "
+               "(nix/README.md, Known risks)")
+    else:
+        report("ok", "vrclient.so", "needs only libraries the Nix-built programs have")
 
 
 def launcher_session():
@@ -238,7 +286,8 @@ def installed_binaries():
     for unit in UNITS:
         argv = re.search(r"argv\[\]=([^;]*)", systemctl("show", "-p", "ExecStart", "--value", unit + ".service"))
         for arg in (argv.group(1).split() if argv else []):
-            if not arg.startswith(HOME) or not os.path.isfile(arg):
+            # The repo's builds, or the Nix packages' (nix/README.md).
+            if not arg.startswith((HOME, "/nix/store/")) or not os.path.isfile(arg):
                 continue
             if is_elf(arg):
                 found[arg] = unit
