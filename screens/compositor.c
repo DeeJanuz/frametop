@@ -58,6 +58,7 @@
 #include <wlr/util/log.h>
 
 #include "vr.h"
+#include "controller-click.h"
 
 #define MAX_SCREENS 24  // screens and spare outputs
 
@@ -104,6 +105,7 @@ struct server {
     struct wl_list buffers;  // tracked_buffer
     struct wl_event_source *tick;
     struct screen *pointer_focus;
+    struct ft_controller_click controller_click;
     pid_t child;
     // Where typing goes: the screens after a click on one, Steam after a click on another
     // panel. The input relay grabs the keyboards while it's the screens (see keys_update).
@@ -291,6 +293,11 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
         s->kb_close_at = 0;
         return;
     }
+    if (e->screen < 0 || e->screen >= MAX_SCREENS || !s->screens[e->screen]) return;
+    struct ft_event filtered = *e;
+    if (e->screen < s->n_config &&
+        !ft_controller_click_filter(&s->controller_click, &filtered, s->scale[e->screen])) return;
+    e = &filtered;
     if (e->screen < 0 || e->screen >= MAX_SCREENS || !s->screens[e->screen]) return;
     struct screen *sc = s->screens[e->screen];
     struct wlr_surface *surface = sc->toplevel->base->surface;
@@ -514,7 +521,18 @@ static int control_readable(int fd, uint32_t mask, void *data) {
         unsigned code;
         int value, index, w, h;
         double scale;
-        if (sscanf(buf, "size %d %d %d", &index, &w, &h) == 3) {
+        char tail;
+        if (strcmp(buf, "controller-click?") == 0) {
+            snprintf(reply, sizeof reply,
+                "{\"supported\":true,\"threshold\":%.3f,\"held\":%s,\"dragging\":%s,\"suppressedMotions\":%lu,\"clicks\":%lu,\"drags\":%lu}",
+                s->controller_click.threshold, s->controller_click.held ? "true" : "false",
+                s->controller_click.dragging ? "true" : "false", s->controller_click.suppressed,
+                s->controller_click.clicks, s->controller_click.drags);
+        } else if (sscanf(buf, "controller-click %lf %c", &scale, &tail) == 1) {
+            if (!isfinite(scale) || scale < 0 || scale > 64 || s->controller_click.buttons)
+                snprintf(reply, sizeof reply, "error threshold or held controller button");
+            else { s->controller_click.threshold = scale; snprintf(reply, sizeof reply, "ok"); }
+        } else if (sscanf(buf, "size %d %d %d", &index, &w, &h) == 3) {
             // A new resolution for a screen, live: KWin resizes the screen to match. (KWin makes
             // it this size times its scale; ft-floatd sends spares' sizes divided by theirs.)
             const int min_w = index - 1 < s->n_config ? 320 : 64, min_h = index - 1 < s->n_config ? 200 : 64;
@@ -641,6 +659,7 @@ static bool setup_dmabuf(struct server *s) {
 
 int main(int argc, char **argv) {
     struct server s = {0};
+    s.controller_click.threshold = 8;
     for (int i = 0; i < MAX_SCREENS; ++i) s.scale[i] = 1;
     s.kb_screen = -1;
     const char *socket_name = "ft-screens-0", *control_name = "ft_screens";

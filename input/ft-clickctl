@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Controller desktop click stability over local IPC; no SteamVR client."""
+import argparse
+import json
+import math
+import socket
+
+def request(command):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+        client.bind(''); client.settimeout(2)
+        client.sendto(command.encode(), '\0ft_screens')
+        response=client.recv(8192).decode()
+    if response.startswith('error'): raise RuntimeError(response)
+    return response
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    sub=parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('status')
+    sub.add_parser('threshold').add_argument('pixels', type=float)
+    args=parser.parse_args()
+    try:
+        if args.command == 'threshold':
+            if not math.isfinite(args.pixels) or not 0 <= args.pixels <= 64:
+                raise ValueError('Threshold must be 0–64 logical pixels; 0 disables stabilization')
+            if request(f'controller-click {args.pixels:g}') != 'ok': raise RuntimeError('Threshold rejected')
+        print(json.dumps(json.loads(request('controller-click?')), indent=2))
+    except (OSError, ValueError, RuntimeError) as error: parser.exit(1, str(error)+'\n')
+if __name__ == '__main__': main()
