@@ -11,3 +11,6 @@ frametop-report-*.txt
 *.pgm
 .venv/
 .frame-job.d/
+# nix build output links (nix/README.md)
+/result
+/result-*
