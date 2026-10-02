@@ -25,8 +25,10 @@
 //   COMMAND     run with WAYLAND_DISPLAY set to our socket (e.g. the Frametop session)
 // Runs in the dev container (wlroots 0.20); KWin connects from the host.
 #define _GNU_SOURCE
+#include "controller-fallback.h"
 #include <drm_fourcc.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,8 +60,11 @@
 #include <wlr/util/log.h>
 
 #include "vr.h"
+#include "desktop-mouse.h"
+#include "desktop-cursor.h"
+#include "cursor-cache.h"
 
-#define MAX_SCREENS 24  // screens and spare outputs
+#define MAX_SCREENS FT_MOUSE_OUTPUTS  // screens and spare outputs
 
 struct config {
     int width, height;
@@ -104,6 +109,19 @@ struct server {
     struct wl_list buffers;  // tracked_buffer
     struct wl_event_source *tick;
     struct screen *pointer_focus;
+    bool desktop_mouse, cursor_ready, cursor_frame_pending;
+    struct ft_controller_fallback controller_fallback;
+    bool controller_desktop;
+    uint32_t controller_buttons;
+    struct ft_cursor_cache cursor_cache;
+    const char *cursor_error;
+    const char *cursor_buffer;
+    struct wlr_buffer *cursor_held;
+    struct ft_mouse mouse;
+    struct wlr_surface *cursor_surface;
+    int cursor_hx, cursor_hy;
+    struct wl_listener request_cursor, cursor_commit, cursor_destroy;
+    unsigned long mouse_motions, mouse_clicks, mouse_wheels, vr_mouse_ignored;
     pid_t child;
     // Where typing goes: the screens after a click on one, Steam after a click on another
     // panel. The input relay grabs the keyboards while it's the screens (see keys_update).
@@ -201,6 +219,8 @@ static void screen_destroy(struct wl_listener *l, void *data) {
     if (sc->held) wlr_buffer_unlock(sc->held);
     ft_vr_screen_destroy(sc->index);
     if (sc->server->pointer_focus == sc) sc->server->pointer_focus = NULL;
+    sc->server->mouse.outputs[sc->index].enabled = false;
+    if (sc->server->mouse.grab == sc->index) sc->server->mouse.buttons = 0, sc->server->mouse.grab = -1;
     if (sc->decoration) wl_list_remove(&sc->decoration_destroy.link);
     sc->server->screens[sc->index] = NULL;
     wl_list_remove(&sc->commit.link);
@@ -275,7 +295,7 @@ static void new_decoration(struct wl_listener *l, void *data) {
 
 static void panel_key(struct server *s, uint32_t code, bool pressed);
 
-static void handle_vr_event(const struct ft_event *e, void *data) {
+static void deliver_pointer_event(const struct ft_event *e, void *data) {
     struct server *s = data;
     if (e->type == FT_QUIT) {
         wl_display_terminate(s->display);
@@ -335,11 +355,11 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
             }
             if (e->dy != 0)
                 wlr_seat_pointer_notify_axis(s->seat, t, WL_POINTER_AXIS_VERTICAL_SCROLL, e->dy * 15,
-                                             (int32_t)(e->dy * 120), WL_POINTER_AXIS_SOURCE_WHEEL,
+                                             (int32_t)llround(e->dy * 120), WL_POINTER_AXIS_SOURCE_WHEEL,
                                              WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
             if (e->dx != 0)
                 wlr_seat_pointer_notify_axis(s->seat, t, WL_POINTER_AXIS_HORIZONTAL_SCROLL, e->dx * 15,
-                                             (int32_t)(e->dx * 120), WL_POINTER_AXIS_SOURCE_WHEEL,
+                                             (int32_t)llround(e->dx * 120), WL_POINTER_AXIS_SOURCE_WHEEL,
                                              WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
             break;
         case FT_LEAVE:
@@ -354,11 +374,150 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
     wlr_seat_pointer_notify_frame(s->seat);
 }
 
+static void update_controller_fallback(struct server *s) {
+    bool active = s->desktop_mouse && !s->mouse.buttons &&
+        ft_fallback_active(&s->controller_fallback, now_ms());
+    if (active == s->controller_desktop) return;
+    // Release controller-owned presses before the native seat takes over.
+    for (unsigned bit = 0; bit < 8; ++bit)
+        if (s->controller_buttons & (1u << bit))
+            wlr_seat_pointer_notify_button(s->seat, now_ms(), BTN_LEFT+bit,
+                                           WL_POINTER_BUTTON_STATE_RELEASED);
+    s->controller_buttons = 0;
+    wlr_seat_pointer_notify_clear_focus(s->seat);
+    wlr_seat_pointer_notify_frame(s->seat);
+    s->pointer_focus = NULL;
+    s->controller_desktop = active;
+    wlr_log(WLR_INFO, "desktop controller fallback %s (mouse %s, telemetry %s)",
+            active ? "active" : "inactive", s->controller_fallback.present ? "present" : "absent",
+            s->controller_fallback.known && (uint32_t)(now_ms()-s->controller_fallback.received)<3000 ? "fresh" : "unknown/stale");
+    ft_vr_cursor_move(-1, 0, 0, 1, false);
+}
+
+static void handle_vr_event(const struct ft_event *e, void *data) {
+    struct server *s = data;
+    // Native mouse mode owns the desktop seat. Controller lasers still operate
+    // SteamVR, games and FrameTop's separate screen placement controls.
+    update_controller_fallback(s);
+    if (s->desktop_mouse && !s->controller_desktop && e->screen < s->n_config &&
+        (e->type == FT_MOTION || e->type == FT_BUTTON || e->type == FT_SCROLL || e->type == FT_LEAVE)) { ++s->vr_mouse_ignored; return; }
+    if (s->controller_desktop && e->screen < s->n_config && e->type == FT_BUTTON && e->button >= BTN_LEFT && e->button < BTN_LEFT+8) {
+        uint32_t bit = 1u << (e->button-BTN_LEFT);
+        if (e->pressed) s->controller_buttons |= bit;
+        else s->controller_buttons &= ~bit;
+    }
+    deliver_pointer_event(e, data);
+}
+
+static void desktop_motion(struct server *s) {
+    // A real mouse packet wins immediately, before the next hotplug heartbeat.
+    if (s->controller_desktop) {
+        ft_fallback_presence(&s->controller_fallback, true, s->controller_fallback.enabled, now_ms());
+        update_controller_fallback(s);
+    }
+    int index = ft_mouse_target(&s->mouse);
+    if (index < 0 || !s->screens[index]) return;
+    const struct ft_mouse_output *o = &s->mouse.outputs[index];
+    struct ft_event event = {.type = FT_MOTION, .screen = index,
+        .x = (s->mouse.x-o->x)*o->scale, .y = (s->mouse.y-o->y)*o->scale};
+    deliver_pointer_event(&event, s);
+    const struct ft_mouse_output *display = &s->mouse.outputs[s->mouse.screen];
+    ft_vr_cursor_move(s->mouse.screen, (s->mouse.x-display->x)*display->scale,
+                     (s->mouse.y-display->y)*display->scale, display->scale, s->desktop_mouse);
+}
+
+static void cursor_hide(struct server *s) {
+    ft_vr_cursor_image(NULL, 0, 0, 0, 0, 1);
+    if (s->cursor_held) wlr_buffer_unlock(s->cursor_held);
+    s->cursor_held = NULL;
+}
+static void cursor_update(struct server *s) {
+    struct wlr_surface *surface = s->cursor_surface;
+    struct wlr_buffer *buffer = surface ? ft_cursor_cached(&s->cursor_cache, surface) : NULL;
+    s->cursor_ready = false;
+    s->cursor_error = "no cached KDE cursor buffer";
+    if (surface) s->cursor_frame_pending = true;
+    s->cursor_buffer = "none";
+    if (!buffer) { cursor_hide(s); return; }
+    if (buffer->width < 1 || buffer->height < 1 || buffer->width > 512 || buffer->height > 512) {
+        cursor_hide(s); return;
+    }
+    int scale = surface->current.scale > 0 ? surface->current.scale : 1;
+    if (scale > 8 || s->cursor_hx < -512 || s->cursor_hy < -512 || s->cursor_hx > 512 || s->cursor_hy > 512) {
+        s->cursor_error = "invalid cursor scale or hotspot";
+        cursor_hide(s); return;
+    }
+    struct wlr_dmabuf_attributes dma;
+    if (wlr_buffer_get_dmabuf(buffer, &dma)) {
+        s->cursor_buffer = "dmabuf";
+        struct ft_dmabuf b = {.width = dma.width, .height = dma.height, .format = dma.format,
+                             .modifier = dma.modifier, .n_planes = dma.n_planes};
+        for (int i = 0; i < dma.n_planes && i < 4; ++i) {
+            b.offset[i] = dma.offset[i]; b.stride[i] = dma.stride[i]; b.fd[i] = dma.fd[i];
+        }
+        track_buffer(s, buffer);
+        s->cursor_ready = ft_vr_cursor_dmabuf(buffer, &b, s->cursor_hx*scale, s->cursor_hy*scale, scale);
+        s->cursor_error = s->cursor_ready ? "" : "SteamVR rejected GPU cursor";
+        if (s->cursor_ready) {
+            wlr_buffer_lock(buffer);
+            if (s->cursor_held) wlr_buffer_unlock(s->cursor_held);
+            s->cursor_held = buffer;
+        } else cursor_hide(s);
+        return;
+    }
+    s->cursor_buffer = "shm";
+    void *data; uint32_t format; size_t stride;
+    if (!wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
+        s->cursor_error = "KDE cursor buffer cannot be read";
+        cursor_hide(s); return;
+    }
+    uint8_t *rgba = malloc((size_t)buffer->width*buffer->height*4);
+    s->cursor_error = "unsupported cursor format or allocation failed";
+    if (rgba && ft_cursor_rgba(rgba, data, buffer->width, buffer->height, stride, format)) {
+        s->cursor_error = "SteamVR rejected cursor texture";
+        s->cursor_ready = ft_vr_cursor_image(rgba, buffer->width, buffer->height,
+                                            s->cursor_hx*scale, s->cursor_hy*scale, scale);
+        if (s->cursor_ready) s->cursor_error = "";
+    }
+    free(rgba);
+    wlr_buffer_end_data_ptr_access(buffer);
+    if (!s->cursor_ready) cursor_hide(s);
+    else if (s->cursor_held) { wlr_buffer_unlock(s->cursor_held); s->cursor_held = NULL; }
+}
+
+static void cursor_committed(struct wl_listener *l, void *data) {
+    struct server *s = wl_container_of(l, s, cursor_commit);
+    cursor_update(s);
+}
+static void cursor_destroyed(struct wl_listener *l, void *data) {
+    struct server *s = wl_container_of(l, s, cursor_destroy);
+    wl_list_remove(&s->cursor_commit.link); wl_list_remove(&s->cursor_destroy.link);
+    s->cursor_surface = NULL; s->cursor_ready = false;
+    cursor_hide(s);
+}
+static void cursor_requested(struct wl_listener *l, void *data) {
+    struct server *s = wl_container_of(l, s, request_cursor);
+    struct wlr_seat_pointer_request_set_cursor_event *e = data;
+    if (e->seat_client != s->seat->pointer_state.focused_client) return;
+    if (s->cursor_surface) {
+        wl_list_remove(&s->cursor_commit.link); wl_list_remove(&s->cursor_destroy.link);
+    }
+    s->cursor_surface = e->surface; s->cursor_hx = e->hotspot_x; s->cursor_hy = e->hotspot_y;
+    if (e->surface) {
+        s->cursor_commit.notify = cursor_committed;
+        s->cursor_destroy.notify = cursor_destroyed;
+        wl_signal_add(&e->surface->events.commit, &s->cursor_commit);
+        wl_signal_add(&e->surface->events.destroy, &s->cursor_destroy);
+    }
+    cursor_update(s);
+}
+
 // Tell the input relay where typing goes, on a change and every second: while it's the
 // desktop, the relay grabs pass-through keyboards so SteamVR (and the Steam app with
 // gamescope's focus) doesn't get the keys too. Without word from us for a few seconds,
 // the relay gives the keyboards back, so a closed desktop doesn't keep them.
 static void keys_update(struct server *s) {
+    if (!s->vr) return;  // the isolated test desktop must never route live keyboards
     if (!s->vr) return;  // a test instance leaves the running desktop's keyboards alone
     const bool desktop = s->keys_clicked && ft_vr_screens_shown();
     const uint32_t t = now_ms();
@@ -377,6 +536,7 @@ static void keys_update(struct server *s) {
 // Every ~11 ms (90 Hz): SteamVR events, and frame callbacks for screens that committed.
 static int tick(void *data) {
     struct server *s = data;
+    update_controller_fallback(s);
     ft_vr_poll(handle_vr_event, s);
     if (++s->ticks % 9 == 0) keys_update(s);
     if (s->kb_close_at && s->ticks >= s->kb_close_at) {
@@ -388,6 +548,10 @@ static int tick(void *data) {
     }
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
+    if (s->cursor_surface && s->cursor_frame_pending) {
+        s->cursor_frame_pending = false;
+        wlr_surface_send_frame_done(s->cursor_surface, &now);
+    }
     for (int i = 0; i < MAX_SCREENS; ++i) {
         struct screen *sc = s->screens[i];
         if (sc && sc->frame_pending) {
@@ -513,8 +677,100 @@ static int control_readable(int fd, uint32_t mask, void *data) {
         buf[n] = 0;
         unsigned code;
         int value, index, w, h;
-        double scale;
-        if (sscanf(buf, "size %d %d %d", &index, &w, &h) == 3) {
+        double scale, wheel_x, wheel_y;
+        double mx, my, mw, mh;
+        char mode[16], tail;
+        if (strcmp(buf, "mouse-presence?") == 0) {
+            snprintf(reply, sizeof reply,
+                     "{\"supported\":true,\"known\":%s,\"present\":%s,\"enabled\":%s,\"controllerDesktop\":%s,\"fresh\":%s}",
+                     s->controller_fallback.known ? "true" : "false",
+                     s->controller_fallback.present ? "true" : "false",
+                     s->controller_fallback.enabled ? "true" : "false",
+                     s->controller_desktop ? "true" : "false",
+                     s->controller_fallback.known && (uint32_t)(now_ms()-s->controller_fallback.received)<3000 ? "true" : "false");
+        } else if (sscanf(buf, "mouse-presence %d %d %c", &index, &value, &tail) == 2) {
+            if ((index != 0 && index != 1) || (value != 0 && value != 1))
+                snprintf(reply, sizeof reply, "error invalid presence");
+            else {
+                ft_fallback_presence(&s->controller_fallback, index, value, now_ms());
+                update_controller_fallback(s);
+                snprintf(reply, sizeof reply, "ok");
+            }
+        } else if (strcmp(buf, "mouse?") == 0) {
+            snprintf(reply, sizeof reply,
+                "{\"supported\":true,\"mode\":\"%s\",\"screen\":%d,\"x\":%.3f,\"y\":%.3f,"
+                "\"buttons\":%u,\"cursorReady\":%s,\"cursorSource\":\"kde\",\"cursorCache\":true,\"cursorBuffer\":\"%s\",\"cursorError\":\"%s\","
+                "\"motionEvents\":%lu,\"buttonEvents\":%lu,\"wheelEvents\":%lu,\"controllerEventsIgnored\":%lu}",
+                s->desktop_mouse ? "desktop" : "spatial", s->mouse.screen+1, s->mouse.x, s->mouse.y,
+                s->mouse.buttons, s->cursor_ready ? "true" : "false", s->cursor_buffer ? s->cursor_buffer : "none", s->cursor_error ? s->cursor_error : "no cursor request", s->mouse_motions,
+                s->mouse_clicks, s->mouse_wheels, s->vr_mouse_ignored);
+        } else if (sscanf(buf, "mouse-output-off %d %c", &index, &tail) == 1) {
+            if (index < 1 || index > MAX_SCREENS || s->mouse.buttons)
+                snprintf(reply, sizeof reply, "error invalid mouse output or held button");
+            else { s->mouse.outputs[index-1].enabled = false; snprintf(reply, sizeof reply, "ok"); }
+        } else if (sscanf(buf, "mouse-layout %d %lf %lf %lf %lf %lf %c", &index, &mx, &my, &mw, &mh, &scale, &tail) == 6) {
+            if (index < 1 || index > MAX_SCREENS || !s->screens[index-1] ||
+                !ft_mouse_output_set(&s->mouse, index-1, mx, my, mw, mh, scale))
+                snprintf(reply, sizeof reply, "error invalid mouse output or held button");
+            else { s->scale[index-1] = scale; snprintf(reply, sizeof reply, "ok"); }
+        } else if (sscanf(buf, "mouse-mode %15s %c", mode, &tail) == 1) {
+            if (s->mouse.buttons || (strcmp(mode, "desktop") && strcmp(mode, "spatial")))
+                snprintf(reply, sizeof reply, "error mouse mode or held button");
+            else if (!strcmp(mode, "desktop") && !ft_mouse_move(&s->mouse, 0, 0))
+                snprintf(reply, sizeof reply, "error configure mouse layout first");
+            else {
+                s->desktop_mouse = !strcmp(mode, "desktop");
+                if (s->desktop_mouse) desktop_motion(s);
+                else {
+                    wlr_seat_pointer_notify_clear_focus(s->seat); s->pointer_focus = NULL;
+                    wlr_seat_pointer_notify_frame(s->seat);
+                    ft_vr_cursor_move(-1, 0, 0, 1, false);
+                }
+                snprintf(reply, sizeof reply, "ok");
+            }
+        } else if (sscanf(buf, "mouse-move %lf %lf %c", &mx, &my, &tail) == 2) {
+            if (!s->desktop_mouse || (s->vr && !ft_vr_screens_shown()) || !ft_mouse_move(&s->mouse, mx, my))
+                snprintf(reply, sizeof reply, "error desktop mouse unavailable or invalid motion");
+            else { desktop_motion(s); ++s->mouse_motions; snprintf(reply, sizeof reply, "ok"); }
+        } else if (sscanf(buf, "mouse-position %d %lf %lf %c", &index, &mx, &my, &tail) == 3) {
+            if (!s->desktop_mouse || s->mouse.buttons || index < 1 || index > MAX_SCREENS ||
+                !s->mouse.outputs[index-1].enabled || !isfinite(mx) || !isfinite(my) ||
+                mx < 0 || my < 0 || mx >= s->mouse.outputs[index-1].width || my >= s->mouse.outputs[index-1].height)
+                snprintf(reply, sizeof reply, "error mouse position or held button");
+            else {
+                ft_mouse_position(&s->mouse, s->mouse.outputs[index-1].x+mx, s->mouse.outputs[index-1].y+my);
+                desktop_motion(s); snprintf(reply, sizeof reply, "ok");
+            }
+        } else if (sscanf(buf, "mouse-button %u %d %c", &code, &value, &tail) == 2) {
+            if (!s->desktop_mouse || (value != 0 && value != 1) ||
+                (s->vr && !ft_vr_screens_shown() && value) || code < BTN_LEFT || code > BTN_TASK)
+                snprintf(reply, sizeof reply, "error mouse button or hidden desktop");
+            else {
+                desktop_motion(s);
+                int target = ft_mouse_target(&s->mouse);
+                const struct ft_mouse_output *o = target >= 0 ? &s->mouse.outputs[target] : NULL;
+                if (!o || !s->screens[target]) snprintf(reply, sizeof reply, "error no mouse surface");
+                else {
+                    struct ft_event event = {.type = FT_BUTTON, .screen = target, .button = code, .pressed = value,
+                        .x = (s->mouse.x-o->x)*o->scale, .y = (s->mouse.y-o->y)*o->scale};
+                    deliver_pointer_event(&event, s);
+                    ft_mouse_button(&s->mouse, code, value); ++s->mouse_clicks;
+                    if (!s->mouse.buttons) desktop_motion(s);
+                    snprintf(reply, sizeof reply, "ok");
+                }
+            }
+        } else if (sscanf(buf, "mouse-wheel %lf %lf %c", &wheel_x, &wheel_y, &tail) == 2) {
+            int target = ft_mouse_target(&s->mouse);
+            if (!s->desktop_mouse || (s->vr && !ft_vr_screens_shown()) || target < 0 || !s->screens[target] ||
+                !s->mouse.outputs[target].enabled ||
+                !isfinite(wheel_x) || !isfinite(wheel_y) || fabs(wheel_x)>120 || fabs(wheel_y)>120)
+                snprintf(reply, sizeof reply, "error mouse wheel or hidden desktop");
+            else {
+                desktop_motion(s);
+                struct ft_event event = {.type = FT_SCROLL, .screen = target, .dx = wheel_x, .dy = -wheel_y};
+                deliver_pointer_event(&event, s); ++s->mouse_wheels; snprintf(reply, sizeof reply, "ok");
+            }
+        } else if (sscanf(buf, "size %d %d %d", &index, &w, &h) == 3) {
             // A new resolution for a screen, live: KWin resizes the screen to match. (KWin makes
             // it this size times its scale; ft-floatd sends spares' sizes divided by theirs.)
             const int min_w = index - 1 < s->n_config ? 320 : 64, min_h = index - 1 < s->n_config ? 200 : 64;
@@ -641,6 +897,7 @@ static bool setup_dmabuf(struct server *s) {
 
 int main(int argc, char **argv) {
     struct server s = {0};
+    ft_mouse_init(&s.mouse);
     for (int i = 0; i < MAX_SCREENS; ++i) s.scale[i] = 1;
     s.kb_screen = -1;
     const char *socket_name = "ft-screens-0", *control_name = "ft_screens";
@@ -685,7 +942,8 @@ int main(int argc, char **argv) {
     s.display = wl_display_create();
     s.loop = wl_display_get_event_loop(s.display);
     wl_list_init(&s.buffers);
-    wlr_compositor_create(s.display, 6, NULL);
+    struct wlr_compositor *compositor = wlr_compositor_create(s.display, 6, NULL);
+    ft_cursor_cache_init(&s.cursor_cache, compositor);
     wlr_subcompositor_create(s.display);
     const uint32_t shm_formats[] = {DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888};  // wlroots wants DRM codes
     wlr_shm_create(s.display, 1, shm_formats, 2);
@@ -700,6 +958,8 @@ int main(int argc, char **argv) {
     wl_signal_add(&s.decoration->events.new_toplevel_decoration, &s.new_decoration);
 
     s.seat = wlr_seat_create(s.display, "seat0");
+    s.request_cursor.notify = cursor_requested;
+    wl_signal_add(&s.seat->events.request_set_cursor, &s.request_cursor);
     wlr_keyboard_init(&s.keyboard, &keyboard_impl, "ft-screens-keyboard");
     struct xkb_context *xkb = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     struct xkb_keymap *keymap = xkb_keymap_new_from_names(xkb, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
@@ -746,6 +1006,7 @@ int main(int argc, char **argv) {
     // wlroots asserts that nothing still listens to its globals when they go.
     wl_list_remove(&s.new_toplevel.link);
     wl_list_remove(&s.new_decoration.link);
+    ft_cursor_cache_finish(&s.cursor_cache);
     ft_vr_shutdown();
     wl_display_destroy(s.display);
     return 0;

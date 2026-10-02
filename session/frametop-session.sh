@@ -177,6 +177,11 @@ export XDG_CONFIG_HOME=$HOME/.config/frametop
 export XDG_STATE_HOME=$HOME/.local/state/frametop
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
+# Steam's VR session exports a 256px cursor. Use this desktop's own KDE
+# preferences instead of inheriting the dashboard cursor size and theme.
+export XCURSOR_SIZE=$(kreadconfig6 --file kcminputrc --group Mouse --key cursorSize --default 24)
+export XCURSOR_THEME=$(kreadconfig6 --file kcminputrc --group Mouse --key cursorTheme --default breeze_cursors)
+
 # Remote desktop over VNC: session/remote-desktop.sh captures the desktop with
 # krdp on 127.0.0.1, and session/vnc-bridge.sh re-serves its primary screen over VNC. krdpserver runs from the container, so KWin can't
 # match it to an installed app. KWin's permission check for screencast and fake

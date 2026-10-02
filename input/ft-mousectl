@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Native KDE mouse control, entirely over local IPC; no SteamVR client needed."""
+import argparse
+import importlib.util
+import json
+import math
+import os
+from pathlib import Path
+import re
+import socket
+import tempfile
+
+SCREENS = '\0ft_screens'
+RELAY = '\0frametop_relay'
+HELPER = '\0ft_pointer_helper'
+CONF = Path.home() / '.config/frametop.conf'
+
+
+def request(address, command):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.bind('')
+        sock.settimeout(1)
+        sock.sendto(command.encode(), address)
+        result = sock.recv(8192).decode()
+    if result.startswith('error'):
+        raise RuntimeError(result)
+    return result
+
+
+def query(address, command):
+    try:
+        result = json.loads(request(address, command))
+        if not isinstance(result, dict): raise ValueError('Expected an object')
+        return result
+    except (OSError, ValueError, RuntimeError) as error:
+        return {'available': False, 'reason': str(error)}
+
+
+def status():
+    result = {'relay': query(RELAY, 'mouse-mode?'), 'desktop': query(SCREENS, 'mouse?'),
+              'pointer': query(HELPER, 'pointerstatus'),
+              'controllerFallback': query(SCREENS, 'mouse-presence?')}
+    result['ready'] = bool(result['relay'].get('supported') and result['desktop'].get('supported')
+                           and 'desktopInput' in result['pointer'])
+    result['active'] = bool(result['ready'] and result['relay'].get('mode') == 'desktop'
+                            and result['desktop'].get('mode') == 'desktop'
+                            and result['pointer'].get('desktopInput'))
+    return result
+
+
+def require_ready():
+    result = status()
+    if not result['ready']:
+        raise RuntimeError('Native mouse support is not loaded in all three components. '
+                           'Inspect status; the updated desktop and input helpers must be running.')
+    return result
+
+
+def layout_outputs():
+    spec = importlib.util.spec_from_file_location('mouse_layout', Path(__file__).resolve().parents[1] / 'layout/ft_layout.py')
+    ft = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ft)
+    env = ft.nested_env()
+    if env is None: raise RuntimeError('No running FrameTop KDE desktop')
+    outs = ft.outputs(env)
+    if not outs or not any(o.get('enabled') for o in outs):
+        raise RuntimeError('KDE output geometry is unavailable')
+    return outs
+
+
+def configure(outs):
+    commands = []
+    for index, output in enumerate(outs, 1):
+        if not output.get('enabled'):
+            commands.append(f'mouse-output-off {index}')
+            continue
+        scale = float(output['scale'])
+        if not math.isfinite(scale) or not .25 <= scale <= 8:
+            raise ValueError('Invalid KDE output scale')
+        w, h = (math.ceil(output['size'][k]/scale) for k in ('width', 'height'))
+        x, y = (float(output['pos'][k]) for k in ('x', 'y'))
+        if not all(math.isfinite(v) for v in (x, y)) or not (1 <= w <= 16384 and 1 <= h <= 16384):
+            raise ValueError('Invalid KDE output geometry')
+        commands.append(f'mouse-layout {index} {x:g} {y:g} {w} {h} {scale:g}')
+    # Validate the entire geometry before sending any updates.
+    for command in commands:
+        if request(SCREENS, command) != 'ok': raise RuntimeError('Mouse layout rejected')
+
+
+def save_mode(mode, path=None):
+    path = Path(path or CONF)
+    text = path.read_text() if path.exists() else ''
+    pattern = re.compile(r'^\s*MOUSE_MODE\s*=.*$', re.M)
+    text = pattern.sub('MOUSE_MODE='+mode, text) if pattern.search(text) else text.rstrip('\n')+'\nMOUSE_MODE='+mode+'\n'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name+'.', dir=path.parent)
+    try:
+        os.fchmod(fd, (path.stat().st_mode & 0o777) if path.exists() else 0o600)
+        with os.fdopen(fd, 'w') as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+
+def switch(mode, save=False):
+    if mode == 'desktop':
+        require_ready()
+        configure(layout_outputs())
+    # Spatial recovery intentionally works with an absent desktop.
+    result = query(RELAY, 'mouse-mode '+mode)
+    if result.get('ok') is not True: raise RuntimeError(result.get('error', result.get('reason', 'Relay rejected mode')))
+    if save:
+        try: save_mode(mode)
+        except OSError as error:
+            raise RuntimeError(f'Live mode is {mode}, but saving the preference failed: {error}') from error
+    return dict(mode=mode, saved=save)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('status')
+    sub.add_parser('layout')
+    for name in ('desktop', 'spatial'):
+        sub.add_parser(name).add_argument('--save', action='store_true')
+    pos = sub.add_parser('position')
+    pos.add_argument('screen', type=int)
+    pos.add_argument('x', type=float)
+    pos.add_argument('y', type=float)
+    center = sub.add_parser('center')
+    center.add_argument('screen', type=int)
+    args = parser.parse_args()
+    try:
+        if args.command == 'status': result = status()
+        elif args.command in ('desktop', 'spatial'): result = switch(args.command, args.save)
+        else:
+            require_ready()
+            outs = layout_outputs()
+            if args.command == 'layout':
+                configure(outs)
+                result = {'outputs': outs}
+            else:
+                if not 1 <= args.screen <= len(outs): raise ValueError('Invalid screen number')
+                if args.command == 'center':
+                    output = outs[args.screen-1]
+                    x, y = (math.ceil(output['size'][k]/output['scale'])/2 for k in ('width', 'height'))
+                else: x, y = args.x, args.y
+                if not all(math.isfinite(v) for v in (x, y)): raise ValueError('Position must be finite')
+                if request(SCREENS, f'mouse-position {args.screen} {x:g} {y:g}') != 'ok':
+                    raise RuntimeError('Mouse position rejected')
+                result = dict(screen=args.screen, x=x, y=y)
+        print(json.dumps(result, indent=2))
+    except (OSError, RuntimeError, ValueError, KeyError) as error:
+        parser.exit(1, str(error)+'\n')
+
+
+if __name__ == '__main__': main()

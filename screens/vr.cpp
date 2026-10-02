@@ -302,6 +302,12 @@ struct Screen {
     }
 };
 std::map<int, Screen> g_screens;
+struct DesktopCursor {
+    vr::VROverlayHandle_t overlay = vr::k_ulOverlayHandleInvalid;
+    int width = 0, height = 0, hx = 0, hy = 0, scale = 1, screen = -1;
+    double x = 0, y = 0, outputScale = 1;
+    bool enabled = false, image = false;
+} g_cursor;
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
 
 // Hand cutouts (see the top and handcut.h).
@@ -582,6 +588,32 @@ Mat OnSurface(const Screen &s, double u, double v, double dz) {
     m.m[2][0] = float(sn), m.m[2][2] = float(c);
     m.m[0][3] = float(r * sn - dz * sn), m.m[1][3] = float(v), m.m[2][3] = float(r - r * c + dz * c);
     return m;
+}
+
+void UpdateDesktopCursor() {
+    if (g_cursor.overlay == vr::k_ulOverlayHandleInvalid) return;
+    const auto it = g_screens.find(g_cursor.screen);
+    const auto activity = vr::VRSystem()->GetTrackedDeviceActivityLevel(vr::k_unTrackedDeviceIndex_Hmd);
+    const bool off = activity == vr::k_EDeviceActivityLevel_Idle || activity == vr::k_EDeviceActivityLevel_Standby ||
+                     activity == vr::k_EDeviceActivityLevel_Idle_Timeout;
+    Mat pose;
+    if (!g_cursor.enabled || !g_cursor.image || off || it == g_screens.end() ||
+        !it->second.visible || it->second.width < 1 || !ScreenPose(it->second, &pose)) {
+        vr::VROverlay()->HideOverlay(g_cursor.overlay);
+        return;
+    }
+    const Screen &s = it->second;
+    const double perPixel = s.metres / s.width;
+    const double cursorPixel = perPixel * g_cursor.outputScale / g_cursor.scale;
+    const double u = (g_cursor.x - s.width/2.0)*perPixel + (g_cursor.width/2.0-g_cursor.hx)*cursorPixel;
+    const double v = (s.height/2.0-g_cursor.y)*perPixel + (g_cursor.hy-g_cursor.height/2.0)*cursorPixel;
+    const double width = g_cursor.width*cursorPixel;
+    const Mat m = Mul(pose, OnSurface(s, u, v, 0.004));
+    vr::VROverlay()->SetOverlayTransformAbsolute(g_cursor.overlay, vr::TrackingUniverseStanding, &m);
+    vr::VROverlay()->SetOverlayWidthInMeters(g_cursor.overlay, float(width));
+    vr::VROverlay()->SetOverlayCurvature(g_cursor.overlay, s.curve > 0 ? float(std::min(1.0, width/(2*M_PI*s.curve))) : 0);
+    vr::VROverlay()->SetOverlayAlpha(g_cursor.overlay, s.alpha);
+    vr::VROverlay()->ShowOverlay(g_cursor.overlay);
 }
 
 double BarY(const Screen &s) { return -(s.heightMetres() / 2 + s.chrome * 0.06 + s.chrome * 12 / 256); }
@@ -1540,6 +1572,7 @@ bool ft_vr_init(void) {
 
 void ft_vr_shutdown(void) {
     if (!g_vr) return;
+    if (g_cursor.overlay != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(g_cursor.overlay);
     if (g_cutterState == 1)
         for (auto &[i, s] : g_screens) g_cutter.DropPanel(i);  // drops their imports while SteamVR is up
     if (g_catcher != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(g_catcher);
@@ -1568,6 +1601,71 @@ int ft_vr_modifiers(uint32_t format, uint64_t *out, int max) {
 }
 
 bool ft_vr_screens_shown(void) { return g_vr && ModeVisible(); }
+
+static bool EnsureDesktopCursor() {
+    if (!g_vr) return false;
+    if (g_cursor.overlay == vr::k_ulOverlayHandleInvalid) {
+        if (vr::VROverlay()->CreateOverlay("frametop.desktop.cursor", "KDE desktop cursor", &g_cursor.overlay) != vr::VROverlayError_None) return false;
+        vr::VROverlay()->SetOverlayInputMethod(g_cursor.overlay, vr::VROverlayInputMethod_None);
+        vr::VROverlay()->SetOverlaySortOrder(g_cursor.overlay, 200);
+    }
+    return true;
+}
+
+bool ft_vr_cursor_image(const uint8_t *rgba, int width, int height, int hx, int hy, int scale) {
+    if (!rgba) { g_cursor.image = false; UpdateDesktopCursor(); return true; }
+    if (width < 1 || height < 1 || width > 512 || height > 512 || scale < 1 || scale > 8 || !EnsureDesktopCursor()) return false;
+    if (vr::VROverlay()->SetOverlayRaw(g_cursor.overlay, const_cast<uint8_t *>(rgba), width, height, 4) != vr::VROverlayError_None) return false;
+    g_cursor.width = width; g_cursor.height = height; g_cursor.hx = hx; g_cursor.hy = hy; g_cursor.scale = scale;
+    g_cursor.image = true;
+    UpdateDesktopCursor();
+    return true;
+}
+
+void ft_vr_cursor_move(int screen, double x, double y, double scale, bool enabled) {
+    g_cursor.screen = screen; g_cursor.x = x; g_cursor.y = y; g_cursor.outputScale = scale; g_cursor.enabled = enabled;
+    UpdateDesktopCursor();
+}
+
+static vr::SharedTextureHandle_t ImportBuffer(const void *key, const struct ft_dmabuf *b) {
+    auto it = g_imports.find(key);
+    if (it == g_imports.end()) {
+        vr::DmabufAttributes_t a{};
+        a.unWidth = uint32_t(b->width);
+        a.unHeight = uint32_t(b->height);
+        a.unDepth = a.unMipLevels = a.unArrayLayers = a.unSampleCount = 1;
+        a.unFormat = b->format;
+        a.ulModifier = b->modifier;
+        a.unPlaneCount = uint32_t(b->n_planes);
+        for (int i = 0; i < b->n_planes && i < int(vr::MaxDmabufPlaneCount); ++i) {
+            a.plane[i].unOffset = b->offset[i];
+            a.plane[i].unStride = b->stride[i];
+            a.plane[i].nFd = b->fd[i];
+        }
+        vr::SharedTextureHandle_t h = 0;
+        if (!vr::VRIPCResourceManager()->ImportDmabuf(vr::VRApplication_Overlay, &a, &h)) {
+            std::fprintf(stderr, "openvr: ImportDmabuf failed: %dx%d format 0x%x modifier 0x%llx\n", b->width,
+                         b->height, b->format, (unsigned long long)b->modifier);
+            return 0;
+        }
+        it = g_imports.emplace(key, h).first;
+    }
+    return it->second;
+}
+
+bool ft_vr_cursor_dmabuf(const void *key, const struct ft_dmabuf *b, int hx, int hy, int scale) {
+    if (!b || b->width < 1 || b->height < 1 || b->width > 512 || b->height > 512 ||
+        scale < 1 || scale > 8 || !EnsureDesktopCursor()) return false;
+    vr::SharedTextureHandle_t handle = ImportBuffer(key, b);
+    if (!handle) return false;
+    vr::Texture_t tex = {&handle, vr::TextureType_SharedTextureHandle, vr::ColorSpace_Gamma};
+    if (vr::VROverlay()->SetOverlayTexture(g_cursor.overlay, &tex) != vr::VROverlayError_None) return false;
+    g_cursor.width = b->width; g_cursor.height = b->height; g_cursor.hx = hx; g_cursor.hy = hy; g_cursor.scale = scale;
+    g_cursor.image = true;
+    UpdateDesktopCursor();
+    return true;
+}
+
 
 }  // extern "C"
 
@@ -1893,6 +1991,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
     UpdateLasers();
     UpdateControls();
     UpdateGuides();
+    UpdateDesktopCursor();
     UpdateCutouts();
     UpdateCatcher();
 }

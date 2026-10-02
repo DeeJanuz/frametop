@@ -2,6 +2,8 @@
 
 How each part of Frametop works, where its settings live, and the commands for running parts of it by hand. For why it's built this way, see [design.md](design.md).
 
+For independent mouse input, KDE cursor rendering and controller fallback, see [desktop-mouse.md](desktop-mouse.md).
+
 ## The desktop
 
 From the headset, open Launch a program → Desktop. The installer replaces that launcher entry with Frametop's (`~/.local/share/applications/deckard-nested-desktop.desktop`), and `desktops.sh uninstall` gives the stock single-screen desktop back.

@@ -35,6 +35,11 @@ void ft_vr_shutdown(void);
 int ft_vr_modifiers(uint32_t format, uint64_t *out, int max);
 // The screens are showing (by the visibility mode; not counting a wrist-pinned screen).
 bool ft_vr_screens_shown(void);
+// Desktop cursor: KDE supplies the image; this is a non-interactive display
+// overlay only. Mouse input goes straight to the Wayland seat, never SteamVR.
+bool ft_vr_cursor_image(const uint8_t *rgba, int width, int height, int hotspot_x, int hotspot_y, int buffer_scale);
+bool ft_vr_cursor_dmabuf(const void *key, const struct ft_dmabuf *buf, int hotspot_x, int hotspot_y, int buffer_scale);
+void ft_vr_cursor_move(int screen, double pixel_x, double pixel_y, double output_scale, bool enabled);
 // A panel for screen `index`, width in metres, placed in a row in front of the head.
 void ft_vr_screen_create(int index, double metres, int count);
 void ft_vr_screen_destroy(int index);

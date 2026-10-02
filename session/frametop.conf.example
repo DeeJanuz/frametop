@@ -10,6 +10,9 @@ REMOTE=0           # 1 = serve the desktop's primary screen over VNC on the tail
 FLOAT_SLOTS=8      # screens backend: how many windows can float in VR at once (spare outputs; 0 turns it off; restart the desktop after a change)
 FLOAT_MARGIN=300   # floating windows: pixels around each window on its output, so menus have room past its edges
 POINTER=0          # 1 = the mouse drives the universal 3D pointer (ft_pointer driver) instead of a plain mouse
+MOUSE_MODE=spatial # desktop: physical mouse controls KDE directly; controllers remain separate. CLI: input/ft-mousectl desktop --save
+DESKTOP_MOUSE_SPEED=1 # logical desktop pixels per physical mouse count (0.05 to 10)
+DESKTOP_CONTROLLER_FALLBACK=1 # desktop controller pointers when no routed physical mouse is connected
 POINTER_SENSITIVITY=0.03   # degrees per mouse count
 POINTER_IDLE=30    # seconds without mouse use before the controllers get their laser back
 POINTER_WAKE_COUNTS=40     # mouse counts within 1 s needed to wake or re-claim the laser (ignores desk jitter)

@@ -857,9 +857,10 @@ int main() {
     overlay->FindOverlay("system.pointer", &systemPointer);
     Vec3 pivot, tiltOrigin, lastPoint, lastOrigin, lastAim{0, 0, -1};
     Basis tiltBasis{};
+    bool desktopInput = false;  // native desktop input never claims a SteamVR hand
     bool headsetOff = false;  // nobody is wearing the headset (see the main loop)
     auto wake = [&](Clock::time_point t) {
-        if (t < noWakeUntil || headsetOff) return;
+        if (t < noWakeUntil || headsetOff || desktopInput) return;
         wokeAt = t;
         active = true;
         recenter = true;
@@ -1273,7 +1274,7 @@ int main() {
             }
             // Hand gestures in the last two minutes keep it the same way.
             const bool handsRecent = handsOn && handUsed != Clock::time_point{} && t - handUsed < std::chrono::minutes(2);
-            const bool awake = (gazeOn || handsRecent) && !inGame && !headsetOff;
+            const bool awake = (gazeOn || handsRecent) && !inGame && !headsetOff && !desktopInput;
             if (awake != gazeAwake || t - gazeAwakeAt > std::chrono::seconds(5)) {
                 if (awake != gazeAwake)
                     std::printf("%s keeps the pointer: %s\n", gazeOn ? "gaze" : "hand use",
@@ -1363,6 +1364,34 @@ int main() {
             }
             if (std::strncmp(buf, "vrstatus", 8) == 0) {
                 reply(controllerButtons.Status());
+                continue;
+            }
+            if (std::strcmp(buf, "pointerstatus") == 0) {
+                char msg[256];
+                const int role = ours == vr::k_unTrackedDeviceIndexInvalid ? 0 :
+                    int(vr::VRSystem()->GetControllerRoleForTrackedDeviceIndex(ours));
+                std::snprintf(msg, sizeof msg,
+                    "{\"active\":%s,\"headsetOff\":%s,\"gazeMode\":%s,\"handRole\":%d,\"desktopInput\":%s}",
+                    active ? "true" : "false", headsetOff ? "true" : "false",
+                    gazeOn ? "true" : "false", role, desktopInput ? "true" : "false");
+                reply(msg);
+                continue;
+            }
+            if (std::strncmp(buf, "desktopmouse ", 13) == 0) {
+                if (std::strcmp(buf+13, "on") && std::strcmp(buf+13, "off")) {
+                    reply("error desktopmouse on|off");
+                    continue;
+                }
+                desktopInput = std::strcmp(buf+13, "on") == 0;
+                if (desktopInput) {
+                    if (leftHeld) releaseLeft();
+                    active = claimPending = claimHeld = false;
+                    overlay->HideOverlay(cursor); overlay->HideOverlay(marker);
+                    SendTo(out, "ft_pointer", "scroll 0 0");
+                    SendTo(out, "ft_pointer", "btn a 0");
+                    SendTo(out, "ft_pointer", "hide");
+                }
+                reply("ok");
                 continue;
             }
             if (std::strncmp(buf, "overlays", 8) == 0) {
@@ -1752,6 +1781,7 @@ int main() {
             hp = std::asin(std::clamp(f.y, -1.0, 1.0)) * 180 / M_PI;
             return true;
         };
+        if (desktopInput) keyPresses.clear();
         for (const KeyPress &k : keyPresses) {
             (k.right ? keyRightDown : keyLeftDown) = k.down;
             if (!k.down) {
@@ -1841,7 +1871,7 @@ int main() {
                 handBaseline = true, handOpens = handFile.opens;
             }
             // Not over a VR game (unless the dashboard is up), and not with the headset off.
-            const bool allowed = !headsetOff && (!inGame || overlay->IsDashboardVisible());
+            const bool allowed = !desktopInput && !headsetOff && (!inGame || overlay->IsDashboardVisible());
             for (int k = 1; k >= 0; --k)  // grips first: one takes over a pinch
                 for (int s = 0; s < 2; ++s) {
                     const fh_pinch_t &g = slots[k][s];

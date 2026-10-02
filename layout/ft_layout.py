@@ -941,6 +941,29 @@ def send_scales(outs):
                 log(f"screen {i + 1}: scale: {reply}")
     except RuntimeError as e:
         log(f"scale: {e}")
+    finally:
+        if 'sock' in locals(): sock.sock.close()
+    # Native mouse coordinates follow the actual logical KWin output layout.
+    # Capability probing keeps this compatible with older ft-screens builds.
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as probe:
+            probe.bind(''); probe.settimeout(1)
+            probe.sendto(b'mouse?', SCREENS)
+            if not json.loads(probe.recv(8192)).get('supported'): return
+        sock = screens_socket()
+        try:
+            for i, o in enumerate(outs):
+                if not o.get('enabled', True):
+                    sock.ask(f'mouse-output-off {i+1}')
+                    continue
+                scale = float(o.get('scale', 1))
+                size, pos = o.get('size', {}), o.get('pos', {})
+                w = math.ceil(size['width']/scale - 1e-6)
+                h = math.ceil(size['height']/scale - 1e-6)
+                sock.ask(f"mouse-layout {i+1} {pos.get('x',0)} {pos.get('y',0)} {w} {h} {scale:g}")
+        finally: sock.sock.close()
+    except (OSError, ValueError, RuntimeError, KeyError):
+        pass  # old compositor, closing desktop, or a drag in progress; next layout refresh retries
 
 
 def logical_size(o):
@@ -998,6 +1021,7 @@ def apply_scales():
         if moves:
             subprocess.run(["kscreen-doctor", *moves], capture_output=True, env=env, timeout=20)
             args += moves
+            send_scales(outputs(env))
     return args
 
 

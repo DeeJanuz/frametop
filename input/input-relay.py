@@ -115,6 +115,7 @@ import atexit
 import errno
 import fcntl
 import json
+import math
 import os
 import select
 import signal
@@ -129,7 +130,7 @@ EV_SYN, EV_KEY, EV_REL, EV_MSC = 0x00, 0x01, 0x02, 0x04
 SYN_REPORT = 0
 BTN_MISC, KEY_MAX = 0x100, 0x2FF
 KEY_A = 30
-REL_X, REL_Y, REL_WHEEL, REL_MAX = 0x00, 0x01, 0x08, 0x0F
+REL_X, REL_Y, REL_HWHEEL, REL_WHEEL, REL_MAX = 0x00, 0x01, 0x06, 0x08, 0x0F
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA = 0x110, 0x111, 0x112, 0x113, 0x114
 KEY_LEFTMETA, KEY_RIGHTMETA = 125, 126
 KEY_VOLUMEDOWN, KEY_VOLUMEUP = 114, 115
@@ -590,6 +591,75 @@ class Pointer:
         return 0.02 if any(t is not None for t in pending) else 0.5
 
 
+def desktop_mouse_present(nodes):
+    """Only a physical mouse actually routed by this relay owns the desktop."""
+    return any(n.is_mouse and n.role == "pointer" and n.grabbed for n in nodes)
+
+
+def ipc_request(address, command, timeout=.2):
+    """Bounded local request/reply, with no OpenVR client or desktop wake."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.bind("")
+        sock.settimeout(timeout)
+        sock.sendto(command.encode(), address)
+        reply = sock.recv(8192).decode()
+    if reply.startswith("error"):
+        raise RuntimeError(reply)
+    return reply
+
+
+class DesktopMouse:
+    """Physical mouse -> nested KDE seat. Never sends to the VR pointer helper."""
+    def __init__(self, speed=1):
+        if not math.isfinite(speed) or not .05 <= speed <= 10:
+            raise ValueError("Desktop mouse speed must be between .05 and 10")
+        self.speed = speed
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.dx = self.dy = 0
+        self.wheel = [0, 0]
+        self.hires = [0, 0]
+        self.has_hires = [False, False]
+        self.held = set()
+        self.sent = self.failed = 0
+
+    def send(self, command):
+        try:
+            self.sock.sendto(command.encode(), SCREENS)
+            self.sent += 1
+        except OSError:
+            self.failed += 1
+
+    def motion(self, code, value):
+        if code == REL_X: self.dx += value
+        elif code == REL_Y: self.dy += value
+        elif code in (REL_HWHEEL, REL_WHEEL): self.wheel[code == REL_WHEEL] += value
+        elif code in (12, 11):
+            axis = int(code == 11)
+            self.hires[axis] += value
+            self.has_hires[axis] = True
+
+    def flush(self):
+        if self.dx or self.dy:
+            self.send(f"mouse-move {self.dx*self.speed:.6f} {self.dy*self.speed:.6f}")
+            self.dx = self.dy = 0
+        wheel = [self.hires[i]/120 if self.has_hires[i] else self.wheel[i] for i in (0, 1)]
+        if any(wheel): self.send(f"mouse-wheel {wheel[0]:.6f} {wheel[1]:.6f}")
+        self.wheel = [0, 0]; self.hires = [0, 0]; self.has_hires = [False, False]
+
+    def button(self, code, value):
+        if not BTN_LEFT <= code <= 279 or value not in (0, 1): return
+        self.flush()
+        self.send(f"mouse-button {code} {value}")
+        if value: self.held.add(code)
+        else: self.held.discard(code)
+
+    def release_all(self):
+        self.dx = self.dy = 0
+        self.wheel = [0, 0]; self.hires = [0, 0]; self.has_hires = [False, False]
+        for code in sorted(self.held): self.send(f"mouse-button {code} 0")
+        self.held.clear()
+
+
 class Node:
     """One input event node: a candidate device (mouse or keyboard, USB or Bluetooth),
     or any other device with volume keys (candidate False, role "volume")."""
@@ -673,13 +743,22 @@ def main():
     # every second); typing_applied: the grabs match that as of the last apply_roles().
     # vr_capture_until: every controller button is taken until then (the settings app capturing one).
     state = {"pointer": None, "rules": {}, "meta_dashboard": False, "share_keys": False,
-             "desktop_until": 0.0, "typing_applied": None, "vr_capture_until": 0.0}
+             "desktop_until": 0.0, "typing_applied": None, "vr_capture_until": 0.0,
+             "desktop_mouse": None, "mouse_mode": "spatial", "desktop_speed": 1.0,
+             "controller_fallback": True}
 
     def load_config():
         conf = read_config()
         state["rules"] = read_rules()
         state["meta_dashboard"] = conf.get("META_DASHBOARD", "0") == "1"
         state["share_keys"] = conf.get("SHARE_KEYS", "0") == "1"
+        state["mouse_mode"] = "desktop" if conf.get("MOUSE_MODE") == "desktop" else "spatial"
+        state["controller_fallback"] = conf.get("DESKTOP_CONTROLLER_FALLBACK", "1") == "1"
+        try:
+            speed = float(conf.get("DESKTOP_MOUSE_SPEED", "1"))
+            state["desktop_speed"] = speed if math.isfinite(speed) and .05 <= speed <= 10 else 1
+        except ValueError:
+            state["desktop_speed"] = 1
         if conf.get("POINTER", "0") == "1":
             p = state["pointer"] or Pointer(0.03, 30)
             p.sensitivity = float(conf.get("POINTER_SENSITIVITY", "0.03"))
@@ -698,7 +777,9 @@ def main():
 
     def vr_bind(now):
         """Tell the pointer helper which controller buttons to take from games."""
-        if now < state["vr_capture_until"]:
+        if state["desktop_mouse"]:
+            buttons = "-"  # leave every physical controller button to SteamVR/games
+        elif now < state["vr_capture_until"]:
             buttons = "*"
         else:
             state["vr_capture_until"] = 0.0
@@ -721,7 +802,7 @@ def main():
                 reply(addr, {"t": "event", "id": VR_DEVICE, "path": "", "name": "Steam Frame controllers",
                              "type": "vr", "code": button, "value": value})
         action = state["rules"]["controller_buttons"].get(button)
-        if (state["pointer"] or (action and not needs_pointer(action))) and known_action(action) \
+        if not state["desktop_mouse"] and (state["pointer"] or (action and not needs_pointer(action))) and known_action(action) \
                 and action not in ("key", "none") and action not in GAZE_ACTIONS:
             do_action(action, value, now, button.split("/")[0])
 
@@ -902,6 +983,12 @@ def main():
         return "pointer" if has_mouse else "passthrough"
 
     def release_held(node):
+        if node.role == "pointer" and state["desktop_mouse"]:
+            state["desktop_mouse"].release_all()
+            for code in node.held:
+                if code < BTN_MISC: to_screens(code, 0)
+            node.held.clear()
+            return
         for code in node.held:
             if node.role == "passthrough":
                 share_key(node, code, 0)
@@ -995,6 +1082,40 @@ def main():
         except OSError:
             watchers.pop(addr, None)
 
+    def set_mouse_mode(mode, now):
+        if any(keys_down(n) for n in nodes.values() if n.role == "pointer"):
+            raise RuntimeError("Release mouse buttons before switching modes")
+        native = state["desktop_mouse"]
+        if native and native.held:
+            raise RuntimeError("Release mouse buttons before switching modes")
+        if mode == "desktop":
+            ipc_request(SCREENS, "mouse-mode desktop")
+            try:
+                ipc_request(HELPER, "desktopmouse on")
+            except (OSError, RuntimeError):
+                ipc_request(SCREENS, "mouse-mode spatial")
+                raise
+            if native:
+                state["mouse_mode"] = mode
+                return
+            state["desktop_mouse"] = DesktopMouse(state["desktop_speed"])
+            if state["pointer"]:
+                state["pointer"].active = False
+                state["pointer"].dx = state["pointer"].dy = 0
+                state["pointer"].claim_at = state["pointer"].claim_release = None
+                state["pointer"].scroll_until = state["pointer"].system_at = state["pointer"].system_release = None
+        else:
+            # An absent desktop must not prevent explicit spatial recovery.
+            try: ipc_request(SCREENS, "mouse-mode spatial")
+            except OSError: pass
+            ipc_request(HELPER, "desktopmouse off")
+            if native:
+                native.release_all(); native.sock.close()
+            state["desktop_mouse"] = None
+        state["mouse_mode"] = mode
+        vr_bind(now)
+        log(f"mouse mode: {mode}")
+
     def handle_control(now):
         while True:
             try:
@@ -1031,6 +1152,18 @@ def main():
                     reply(addr, {"t": "devices", "pointer_mode": state["pointer"] is not None,
                                  "actions": ACTIONS,
                                  "nodes": [n.describe() for n in nodes.values() if n.candidate]})
+                elif cmd == "mouse-mode?":
+                    native = state["desktop_mouse"]
+                    reply(addr, {"supported": True, "mode": "desktop" if native else "spatial",
+                                 "requestedMode": state["mouse_mode"], "speed": state["desktop_speed"],
+                                 "heldButtons": sorted(native.held) if native else [],
+                                 "sent": native.sent if native else 0, "sendFailures": native.failed if native else 0})
+                elif cmd == "mouse-mode" and len(words) == 2 and words[1] in ("desktop", "spatial"):
+                    try:
+                        set_mouse_mode(words[1], now)
+                        reply(addr, {"mode": words[1], "ok": True})
+                    except (OSError, RuntimeError, ValueError) as error:
+                        reply(addr, {"error": str(error), "ok": False})
                 elif cmd == "watch":
                     seconds = float(words[1]) if len(words) > 1 else 30
                     watchers[addr] = now + min(seconds, 600)
@@ -1078,6 +1211,9 @@ def main():
         if now >= next_scan:
             next_scan = now + 1.0
             reconcile_desktop_keys()
+            if (state["mouse_mode"] == "desktop") != bool(state["desktop_mouse"]):
+                try: set_mouse_mode(state["mouse_mode"], now)
+                except (OSError, RuntimeError, ValueError): pass  # desktop may be starting; retry on the next scan
             current = {}
             for name in os.listdir("/dev/input"):
                 if name.startswith("event"):
@@ -1104,11 +1240,18 @@ def main():
                     added = True
             if added:
                 apply_roles()
+            # Presence, not activity: an idle connected mouse keeps its own seat.
+            present = desktop_mouse_present(nodes.values())
+            try:
+                ipc_request(SCREENS, "mouse-presence %d %d" %
+                            (present, state["controller_fallback"]))
+            except (OSError, RuntimeError, ValueError):
+                pass  # Older/missing compositor: preserve existing native mode.
 
         ready, _, _ = select.select(list(nodes) + [control], [], [],
                                     volume.timeout(now, pointer.timeout() if pointer else 0.5))
         now = time.monotonic()
-        if pointer:
+        if pointer and not state["desktop_mouse"]:
             pointer.tick(now)
         volume.tick(now)
         if state["vr_capture_until"] and now >= state["vr_capture_until"]:
@@ -1160,7 +1303,7 @@ def main():
                                 node.held.add(code)
                             else:
                                 node.held.discard(code)
-                    if (pointer and state["meta_dashboard"] and node.role == "passthrough"
+                    if (pointer and not state["desktop_mouse"] and state["meta_dashboard"] and node.role == "passthrough"
                             and etype == EV_KEY):
                         if code in (KEY_LEFTMETA, KEY_RIGHTMETA):
                             if value == 1:
@@ -1172,6 +1315,14 @@ def main():
                             meta_down = False  # Meta used as a modifier, not a tap
                     continue
                 if etype == EV_KEY:
+                    if state["desktop_mouse"]:
+                        if code >= BTN_LEFT:
+                            state["desktop_mouse"].button(code, value)
+                        else:
+                            to_screens(code, value)
+                        if value: node.held.add(code)
+                        else: node.held.discard(code)
+                        continue
                     action = buttons.get(str(code), DEFAULT_BUTTONS.get(code, "key"))
                     if pointer and action not in ("key", "none"):
                         do_action(action, value, now)
@@ -1186,12 +1337,16 @@ def main():
                     else:
                         node.held.discard(code)
                 elif etype == EV_REL:
-                    if pointer:
+                    if state["desktop_mouse"]:
+                        state["desktop_mouse"].motion(code, value)
+                    elif pointer:
                         pointer.motion(code, value, now)
                     else:
                         mouse.emit(etype, code, value)
                 elif etype == EV_SYN and code == SYN_REPORT:
-                    if pointer:
+                    if state["desktop_mouse"]:
+                        state["desktop_mouse"].flush()
+                    elif pointer:
                         pointer.flush()
                     mouse.sync()
                     keyboard.sync()
