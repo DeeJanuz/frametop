@@ -36,7 +36,7 @@ static inline bool ft_controller_click_filter(struct ft_controller_click *c,
             e->screen = c->screen; e->x = c->x; e->y = c->y;
             ++c->clicks;
         }
-        c->held = false;
+        c->held = false; c->dragging = false;
     } else if (e->type == FT_LEAVE && c->held) {
         return false; // Preserve the implicit grab through tiny edge excursions.
     }

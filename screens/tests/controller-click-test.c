@@ -18,7 +18,7 @@ int main(void) {
     assert(c.dragging && c.drags==1);
     e=event(FT_MOTION,false,101,100);assert(ft_controller_click_filter(&c,&e,1));
     e=event(FT_BUTTON,false,103,100);assert(ft_controller_click_filter(&c,&e,1));
-    assert(e.x==103 && c.clicks==1 && !c.held);
+    assert(e.x==103 && c.clicks==1 && !c.held && !c.dragging);
     e=event(FT_BUTTON,true,100,100);ft_controller_click_filter(&c,&e,1);
     e=event(FT_LEAVE,false,0,0);assert(!ft_controller_click_filter(&c,&e,1));
     e=event(FT_BUTTON,false,800,900);e.screen=1;ft_controller_click_filter(&c,&e,1);
