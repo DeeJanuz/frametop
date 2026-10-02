@@ -3,6 +3,7 @@
   lib,
   stdenv,
   openvr,
+  vrclientDeps,
   src,
 }:
 
@@ -12,12 +13,12 @@ stdenv.mkDerivation {
   inherit src;
   sourceRoot = "source/power";
 
-  buildInputs = [ openvr ];
+  buildInputs = [ openvr ] ++ vrclientDeps.buildInputs;
 
   buildPhase = ''
     runHook preBuild
     $CXX -std=c++17 -O2 -Wall -Wno-unused-parameter -I${openvr}/include/openvr \
-      -o ft-powerd ft-powerd.cpp -lopenvr_api -ldl
+      -o ft-powerd ft-powerd.cpp -lopenvr_api -ldl ${vrclientDeps.ldflags}
     runHook postBuild
   '';
 
@@ -25,6 +26,14 @@ stdenv.mkDerivation {
     runHook preInstall
     install -Dm755 -t $out/bin ft-powerd
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    ${vrclientDeps.check}
+    vrclient_check $out/bin/ft-powerd
+    runHook postInstallCheck
   '';
 
   meta = {

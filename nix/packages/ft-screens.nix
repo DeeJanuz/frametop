@@ -18,6 +18,7 @@
   libGL,
   libgbm,
   openvr,
+  vrclientDeps,
   src,
 }:
 
@@ -48,7 +49,8 @@ stdenv.mkDerivation {
     libGL
     libgbm
     openvr
-  ];
+  ]
+  ++ vrclientDeps.buildInputs;
 
   # The same commands as screens/build.sh, minus the downloads and the /opt/steamvr link.
   buildPhase = ''
@@ -63,7 +65,7 @@ stdenv.mkDerivation {
     $cxx -c -o build/keyboard.o keyboard.cpp
     $cxx -c -o build/handcut.o handcut.cpp
     $cxx -c -o build/handtest.o handtest.cpp
-    vrlibs="$(pkg-config --libs egl glesv2 gbm openvr)"
+    vrlibs="$(pkg-config --libs egl glesv2 gbm openvr) ${vrclientDeps.ldflags}"
     $CXX -o build/ft-screens build/compositor.o build/vr.o build/keyboard.o build/handcut.o \
       $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon) $vrlibs
     $CXX -o build/ft-handtest build/handtest.o build/handcut.o $vrlibs
@@ -74,6 +76,15 @@ stdenv.mkDerivation {
     runHook preInstall
     install -Dm755 -t $out/bin build/ft-screens build/ft-handtest
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    ${vrclientDeps.check}
+    vrclient_check $out/bin/ft-screens
+    vrclient_check $out/bin/ft-handtest
+    runHook postInstallCheck
   '';
 
   meta = {

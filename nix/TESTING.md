@@ -13,7 +13,7 @@ A checklist for the first test of the flake and the Home Manager module on a rea
   - three env hooks in the session script (`FRAMETOP_SCREENS_BIN`, `FRAMETOP_PYTHON`, `FRAMETOP_STARTPLASMA`). With them unset, the scripts behave exactly as before.
 - **Main risks, in order:**
   1. Panels may not render, because nixpkgs' Mesa allocates the dmabufs ft-screens hands to SteamVR.
-  2. `vrclient.so` may need a library the Nix programs can't load.
+  2. `vrclient.so` may need a library the Nix programs don't link (libGL, libEGL, and libuuid are linked for it).
   3. vrserver may reject the zig-built driver.
 
 ## 1. Read-only checks
@@ -24,7 +24,7 @@ ldd --version | head -1                      # expect glibc 2.39
 nix shell nixpkgs#binutils -c readelf -d /opt/steamvr/bin/linuxarm64/vrclient.so | grep NEEDED
 ```
 
-Every NEEDED entry should be glibc's (libc, libm, libdl, libpthread, librt, ld-linux), libstdc++, or libgcc_s. Anything else means the Nix-built programs can't load SteamVR's client library. Stop and report it.
+Every NEEDED entry should be glibc's (libc, libm, libdl, libpthread, librt, ld-linux), libstdc++, libgcc_s, or one the Nix programs link for it: libGL, libEGL, libuuid ([packages/vrclient-deps.nix](packages/vrclient-deps.nix)). On SteamOS 0.3.0 the list is exactly those. Anything else means the Nix-built programs can't load SteamVR's client library: stop and report it, or add it to `vrclient-deps.nix`. Step 4's `update-check.py` checks this against the installed programs.
 
 What's installed now (from `install.sh`, or nothing):
 

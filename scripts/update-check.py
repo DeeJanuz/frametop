@@ -249,24 +249,31 @@ def elf_needed(path):
 
 def check_nix_vrclient():
     """Programs from the Nix packages link nixpkgs' libopenvr_api, which loads SteamVR's
-    vrclient.so into them. Their loader never looks in /usr/lib, so vrclient.so may only
-    need libraries a Nix program has loaded already (glibc's, libstdc++, libgcc_s)."""
-    session = launcher_session() or ""
-    units = [systemctl("show", "-p", "ExecStart", "--value", u + ".service") for u in UNITS]
-    if not any("/nix/store/" in x for x in [session] + units):
+    vrclient.so into them. A library loaded that way finds its own dependencies only among
+    libraries the process already has, or in glibc's own directory (nixpkgs' glibc, never
+    /usr/lib). So each program links the libraries vrclient.so needs beyond glibc
+    (nix/packages/vrclient-deps.nix), and a SteamVR update that adds one breaks them."""
+    programs = sorted(p for p in installed_binaries() if os.path.realpath(p).startswith("/nix/store/")
+                      and "libopenvr_api.so" in (elf_needed(p) or []))
+    if not programs:
         return
     vrclient = f"{STEAMVR_BIN}/vrclient.so"
     needed = elf_needed(vrclient)
     if needed is None:
         report("warn", "vrclient.so", f"can't read {vrclient}'s libraries, for the Nix-built programs")
         return
-    known = re.compile(r"(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|ld-linux-[\w-]+)\.so(\.\d+)*$")
-    others = [n for n in needed if not known.match(n)]
-    if others:
-        report("FAIL", "vrclient.so", f"needs {', '.join(others)}, which the Nix-built programs can't load "
-               "(nix/README.md, Known risks)")
-    else:
-        report("ok", "vrclient.so", "needs only libraries the Nix-built programs have")
+    glibc = re.compile(r"(libc|libm|libdl|libpthread|librt|ld-linux-[\w-]+)\.so(\.\d+)*$")
+    wanted = [n for n in needed if not glibc.match(n)]
+    broken = False
+    for program in programs:
+        missing = [n for n in wanted if n not in (elf_needed(program) or [])]
+        if missing:
+            broken = True
+            report("FAIL", f"vrclient.so in {os.path.basename(program)}",
+                   f"needs {', '.join(missing)}, which it doesn't link, so it can't load SteamVR's "
+                   "client; add them to nix/packages/vrclient-deps.nix")
+    if not broken:
+        report("ok", "vrclient.so", f"the {len(programs)} Nix-built programs link what it needs ({', '.join(wanted)})")
 
 
 def launcher_session():

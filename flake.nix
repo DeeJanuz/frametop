@@ -35,7 +35,8 @@
       mkPackages =
         pkgs:
         let
-          callPackage = lib.callPackageWith (pkgs // packages // { inherit src; });
+          vrclientDeps = import ./nix/packages/vrclient-deps.nix { inherit (pkgs) libGL libuuid; };
+          callPackage = lib.callPackageWith (pkgs // packages // { inherit src vrclientDeps; });
           packages = {
             ft-screens = callPackage ./nix/packages/ft-screens.nix { };
             ft-pointer = callPackage ./nix/packages/ft-pointer.nix { };

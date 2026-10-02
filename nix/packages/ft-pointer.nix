@@ -5,6 +5,7 @@
   lib,
   stdenv,
   openvr,
+  vrclientDeps,
   src,
 }:
 
@@ -14,12 +15,12 @@ stdenv.mkDerivation {
   inherit src;
   sourceRoot = "source/pointer";
 
-  buildInputs = [ openvr ];
+  buildInputs = [ openvr ] ++ vrclientDeps.buildInputs;
 
   buildPhase = ''
     runHook preBuild
     $CXX -std=c++17 -O2 -Wall -Wno-unused-parameter -I${openvr}/include/openvr -Icommon \
-      -o ft-pointer helper/ft-pointer.cpp -lopenvr_api -ldl -lpthread
+      -o ft-pointer helper/ft-pointer.cpp -lopenvr_api -ldl -lpthread ${vrclientDeps.ldflags}
     runHook postBuild
   '';
 
@@ -30,6 +31,14 @@ stdenv.mkDerivation {
     mkdir -p $out/bin
     ln -s ../lib/ft-pointer/bin/ft-pointer $out/bin/ft-pointer
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    ${vrclientDeps.check}
+    vrclient_check $out/lib/ft-pointer/bin/ft-pointer
+    runHook postInstallCheck
   '';
 
   meta = {
