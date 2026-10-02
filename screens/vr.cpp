@@ -1330,7 +1330,8 @@ void UpdateCatcher() {
     for (int k = 0; k < 3; ++k) params.vSource.v[k] = l.m[k][3], params.vDirection.v[k] = -l.m[k][2];
     for (auto &[i, s] : g_screens) {
         if (!s.visible) continue;
-        std::vector<vr::VROverlayHandle_t> parts(s.All().begin(), s.All().end());
+        const auto all = s.All();  // one copy: two calls give two temporaries, not one range
+        std::vector<vr::VROverlayHandle_t> parts(all.begin(), all.end());
         for (const auto &[k, sub] : s.subs) parts.push_back(sub.overlay);
         for (auto o : parts) {
             vr::VROverlayIntersectionResults_t hit;
