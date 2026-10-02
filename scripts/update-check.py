@@ -285,11 +285,11 @@ def check_openvr():
 def check_overlays(desktop_up):
     code, out = run(f"{STEAMVR_BIN}/vrcmd", "--overlays",
                     env=dict(os.environ, LD_LIBRARY_PATH=STEAMVR_BIN))
-    # The format ft-pointer.cpp and ft_layout.py parse: 'key' -- 'name', WxH visible VROverlayType_...
+    # The format the pointer helper (pointer.h) and ft_layout.py parse: 'key' -- 'name', WxH visible VROverlayType_...
     keys = re.findall(r"^'([^']+)' -- '.*VROverlayType_", out, re.M)
     if not keys:
         report("FAIL", "vrcmd --overlays", "lists no overlays in the expected format, so the 3D mouse can't "
-               "find panels (pointer/helper/ft-pointer.cpp and layout/ft_layout.py parse it)")
+               "find panels (pointer/helper/pointer.h and layout/ft_layout.py parse it)")
     elif desktop_up and not any(re.fullmatch(r"frametop\.screen\.\d+", k) for k in keys):
         report("FAIL", "vrcmd --overlays", f"lists {len(keys)} overlays, but none of the desktop's screens")
     else:

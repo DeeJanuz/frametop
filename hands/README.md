@@ -49,7 +49,7 @@ Files, all in `/run/user/UID/frametop-hands/` (private to the user; not `/run/us
 | --- | --- | --- | --- |
 | `cam-ring` | ft-camd | `camd/fhring.h` | ft-hands, `tools/ring.py` |
 | `hands` | ft-hands | `include/fh_hands.h` | ft-screens (`screens/handcut.cpp`) |
-| `gestures` | ft-hands | `include/fh_gestures.h` | the pointer helper (`pointer/helper/ft-pointer.cpp`), `tools/watch_gestures.py` |
+| `gestures` | ft-hands | `include/fh_gestures.h` | the pointer helper (`pointer/helper/pointer_holds.cpp`), `tools/watch_gestures.py` |
 
 The source keeps the `fh_` names and magic strings of frame-hands, the project it started as, so recordings made with it still work.
 
@@ -156,7 +156,7 @@ ft-hands detects a pinch per hand (`track/pinch.h`) and publishes it to the gest
 
 ## Pinches and grips in the pointer
 
-With `POINTER_HANDS=1`, the pointer helper (`pointer/helper/ft-pointer.cpp`) reads the gestures file every frame. It's off by default.
+With `POINTER_HANDS=1`, the pointer helper (`pointer/helper/pointer_holds.cpp`) reads the gestures file every frame. It's off by default.
 
 - **Pinch to click.** In gaze mode a pinch works like the mouse's press: the pointer stops where the gaze put it, and the click comes when the pinch opens, where the pointer is then. A quick tap clicks where you looked. Held, the pinching hand moves the pointer to correct the gaze, and the correction is a lesson for the gaze tracker, as with the mouse.
 - **Without gaze mode,** a pinch is a real press, like the mouse's button: pressed when it closes, released when it opens, and while it's held the hand drags the pointer. A tap is still a click where the pointer is.
