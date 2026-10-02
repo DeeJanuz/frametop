@@ -270,7 +270,9 @@ struct Screen {
     const void *key = nullptr;    // the client buffer on it now, and its dmabuf (for cutouts)
     ft_dmabuf buf{};
     vr::SharedTextureHandle_t plain = 0;  // that buffer's SteamVR import
+    uint64_t frames = 0;          // client frames presented (a cutout buffer's "serial")
     bool cutting = false;         // showing a cutout buffer (side by side) instead
+    vr::SharedTextureHandle_t cutShown = 0;  // ...this one
     double chrome = 0.3;          // the bar's width; the other controls follow it (ChromeSize)
     double grip = 0.04;           // the corner tab's and the round buttons' size
     // A floating window's panel (see the top): the window's rectangle in the buffer, its
@@ -1438,7 +1440,7 @@ void StopCutting(Screen &s) {
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_SideBySide_Parallel, false);
     vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_IgnoreTextureAlpha, true);
     if (s.plain) SetScreenTexture(s, s.plain);
-    s.cutting = false;
+    s.cutting = false, s.cutShown = 0;
 }
 
 // Each tick: for each visible screen with a hand in front of it (for either eye), draw its
@@ -1459,7 +1461,7 @@ void UpdateCutouts() {
         bool cut = hands && s.visible && !s.floating && s.key && s.width > 0 && ScreenPose(s, &p) &&
                    handcut::Project({p, s.metres, s.heightMetres(), s.curve, s.width, s.height}, g_hands.capsules(),
                                     eyes, spots);
-        const handcut::Output *out = cut && CutterReady() ? g_cutter.Composite(i, s.key, s.buf, spots) : nullptr;
+        const handcut::Output *out = cut && CutterReady() ? g_cutter.Composite(i, s.key, s.frames, s.buf, spots) : nullptr;
         const vr::SharedTextureHandle_t h = out ? ImportCutout(out) : 0;
         if (!h) {
             StopCutting(s);
@@ -1470,7 +1472,7 @@ void UpdateCutouts() {
             vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_SideBySide_Parallel, true);
             s.cutting = true;
         }
-        SetScreenTexture(s, h);
+        if (h != s.cutShown) SetScreenTexture(s, h), s.cutShown = h;   // the same buffer stays: no new frame for SteamVR
     }
 }
 
@@ -1699,7 +1701,7 @@ bool ft_vr_screen_present(int index, const void *key, const struct ft_dmabuf *b)
         PlaceChrome(s);  // the height changed
         std::printf("screen %d: %dx%d\n", index + 1, s.width, s.height);
     }
-    s.key = key, s.buf = *b, s.plain = it->second;
+    s.key = key, s.buf = *b, s.plain = it->second, ++s.frames;
     // While cutting, the next tick draws the new buffer with the cutouts (never floating).
     if (!s.cutting) SetScreenTexture(s, it->second);
     vr::SharedTextureHandle_t handle = it->second;
@@ -2131,9 +2133,18 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             g_hands.SetPrediction(g_hands.predicting(), ms);
         else if (std::strcmp(word, "state") != 0)
             return (void)std::snprintf(reply, size, "error cutouts on|off|state|predict on|off|lead <ms>");
-        std::snprintf(reply, size, "ok %s %s %.2f ms, predict %s lead %.0f ms", g_cutouts ? "on" : "off",
-                      g_cutterState > 0 ? "ready" : g_cutterState < 0 ? "unavailable" : "idle", g_cutter.lastMs(),
-                      g_hands.predicting() ? "on" : "off", g_hands.leadMs());
+        // Composite's counts since the last state, per second.
+        static auto since = Clock::now();
+        const double dt = std::max(1e-3, std::chrono::duration<double>(Clock::now() - since).count());
+        since = Clock::now();
+        const handcut::CutStats c = g_cutter.TakeStats();
+        const int calls = c.draws + c.same + c.busy;
+        std::snprintf(reply, size,
+                      "ok %s %s %.2f ms, predict %s lead %.0f ms; per s: %.1f draws (%.1f partial), %.1f same, %.1f busy, "
+                      "%.1f waits; CPU %.2f ms avg %.2f worst",
+                      g_cutouts ? "on" : "off", g_cutterState > 0 ? "ready" : g_cutterState < 0 ? "unavailable" : "idle",
+                      g_cutter.lastMs(), g_hands.predicting() ? "on" : "off", g_hands.leadMs(), c.draws / dt,
+                      c.partial / dt, c.same / dt, c.busy / dt, c.waits / dt, calls ? c.cpuMs / calls : 0.0, c.worstMs);
     } else if (int x0, y0, w0, h0, t0; std::sscanf(cmd, "float %d %lf %d %d %d %d %d", &n, &w, &x0, &y0, &w0, &h0, &t0) == 7) {
         Screen *s = Find(n);
         if (!s || !s->floating) return (void)std::snprintf(reply, size, "error no floating window panel %d", n);
