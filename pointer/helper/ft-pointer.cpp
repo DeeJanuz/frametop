@@ -655,87 +655,37 @@ bool OnSettingsPage(const vr::HmdMatrix34_t &t, Vec3 eye, Vec3 d) {
 // Placement speeds (see "Placement" at the top).
 constexpr double kPlaceDegPerSec = 60;      // tested: 40 deg/s is applied exactly
 
-int main() {
+using Clock = std::chrono::steady_clock;
+
+// Everything the pointer keeps: its settings, what Init sets up, and the state the main loop
+// carries from one frame to the next.
+struct Pointer {
     PointerConfig cfg;
     // Head follow (see the top). followConf is POINTER_FOLLOW as last read: a reload only
     // overrides a "follow" command when the setting itself changed.
     bool follow = false, followConf = false, followReset = true;
     // Gaze mode (see the top); gazeConf is POINTER_GAZE as last read, like followConf.
     bool gazeOn = false, gazeConf = false;
-    // After cfg.Load: a changed POINTER_FOLLOW or POINTER_GAZE turns head follow or gaze mode on or off.
-    auto applyConfig = [&] {
-        if (cfg.follow != followConf) follow = followConf = cfg.follow, followReset = true;
-        if (cfg.gaze != gazeConf) gazeOn = gazeConf = cfg.gaze;
-    };
-    cfg.Load(ReadConfig());
-    applyConfig();
-    const float laserWidth = float(ConfDouble(ReadConfig(), "POINTER_LASER_WIDTH", 0.8));
-
-    vr::EVRInitError err = vr::VRInitError_None;
-    while (true) {
-        vr::VR_Init(&err, vr::VRApplication_Background);
-        if (err == vr::VRInitError_None) {
-            vr::VR_Shutdown();
-            vr::VR_Init(&err, vr::VRApplication_Overlay);
-        }
-        if (err == vr::VRInitError_None) break;
-        std::fprintf(stderr, "waiting for SteamVR: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-    }
-    auto *sys = vr::VRSystem();
-    auto *overlay = vr::VROverlay();
-
+    // Set in Init, after VR_Init.
+    vr::IVRSystem *sys = nullptr;
+    vr::IVROverlay *overlay = nullptr;
+    // The dot, the marker, and laser mode's overlay, created in Init.
     vr::VROverlayHandle_t cursor = vr::k_ulOverlayHandleInvalid;
-    overlay->CreateOverlay("frametop.pointer.cursor", "Frametop pointer", &cursor);
-    const int texSize = 64;
-    auto tex = DotTexture(texSize);
-    overlay->SetOverlayRaw(cursor, tex.data(), texSize, texSize, 4);
-    overlay->SetOverlayInputMethod(cursor, vr::VROverlayInputMethod_Mouse);  // the laser can land on it
-    overlay->SetOverlaySortOrder(cursor, 200);
-    // Same dot, not interactive, drawn on panels at the hit point; the laser passes through.
     vr::VROverlayHandle_t marker = vr::k_ulOverlayHandleInvalid;
-    overlay->CreateOverlay("frametop.pointer.marker", "Frametop pointer marker", &marker);
-    overlay->SetOverlayRaw(marker, tex.data(), texSize, texSize, 4);
-    overlay->SetOverlayInputMethod(marker, vr::VROverlayInputMethod_None);
-    overlay->SetOverlaySortOrder(marker, 201);
-    // Laser mode (see the top of the file).
     vr::VROverlayHandle_t laserMode = vr::k_ulOverlayHandleInvalid;
-    overlay->CreateOverlay("frametop.pointer.lasermode", "Frametop pointer laser mode", &laserMode);
-    std::vector<uint8_t> clear(4 * 4 * 4, 0);
-    overlay->SetOverlayRaw(laserMode, clear.data(), 4, 4, 4);
-    overlay->SetOverlayWidthInMeters(laserMode, 0.001f);
-    overlay->SetOverlayInputMethod(laserMode, vr::VROverlayInputMethod_Mouse);  // the flag needs an input method
-    overlay->SetOverlayFlag(laserMode, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
-    vr::HmdMatrix34_t below{};
-    below.m[0][0] = below.m[1][1] = below.m[2][2] = 1;
-    below.m[1][3] = -50;
-    overlay->SetOverlayTransformTrackedDeviceRelative(laserMode, vr::k_unTrackedDeviceIndex_Hmd, &below);
     bool laserModeShown = false;
-    // Controller beams keep the user's width; nothing here changes it any more.
-    vr::VRSettings()->SetFloat("dashboard", "laserRayWidthScale", laserWidth);
-
-    const int in = AbstractSocket("ft_pointer_helper", true);
-    const int out = AbstractSocket(nullptr, false);
-    // Frame controller buttons (vrbuttons.h). The build puts the binary in pointer/helper/build.
-    ControllerButtons controllerButtons;
-    {
-        const std::string manifest = ExeDir() + "/../actions/ft_pointer_actions.json";
-        char real[PATH_MAX];
-        controllerButtons.Init(realpath(manifest.c_str(), real) ? real : manifest);
-    }
-    SendTo(out, "frametop_relay", "vrhello");  // the relay answers with the mapped buttons
+    int in = -1, out = -1;  // @ft_pointer_helper, and the socket we send from (opened in Init)
+    ControllerButtons controllerButtons;  // Frame controller buttons (vrbuttons.h)
     OverlayList overlays;
-    overlays.Start();
     std::map<std::string, vr::VROverlayHandle_t> handles;
     std::map<std::string, bool> sceneGraph;  // no texture: plane test instead of ComputeOverlayIntersection
     std::map<std::string, bool> visible;     // refreshed every 50 ms
-    auto lastVisible = std::chrono::steady_clock::now();
+    Clock::time_point lastVisible{};  // set in Init
     // The plane of the last panel the cursor was on, and the last point on it (panel edges).
     Vec3 edgePoint, edgeNormal, edgeLast;
     std::string edgeKey;
 
     bool active = false, recenter = false, anchored = false;
-    using Clock = std::chrono::steady_clock;
     Clock::time_point lastMouse{}, claimAt{}, claimRelease{}, wokeAt{}, noWakeUntil{};
     bool claimPending = false, claimHeld = false;
     // Last used wins: since when each controller has been moving (zero: it isn't).
@@ -761,26 +711,15 @@ int main() {
     // The ft-screens panel the left button was pressed on, and where it was then (see the top).
     std::string pressKey;
     vr::HmdMatrix34_t pressPose{};
-    auto lastDebug = Clock::now();
-    vr::VROverlayHandle_t systemPointer = vr::k_ulOverlayHandleInvalid;
-    overlay->FindOverlay("system.pointer", &systemPointer);
+    Clock::time_point lastDebug{};  // set in Init
+    vr::VROverlayHandle_t systemPointer = vr::k_ulOverlayHandleInvalid;  // found in Init
     Vec3 pivot, tiltOrigin, lastPoint, lastOrigin, lastAim{0, 0, -1};
     Basis tiltBasis{};
     bool headsetOff = false;  // nobody is wearing the headset (see the main loop)
-    auto wake = [&](Clock::time_point t) {
-        if (t < noWakeUntil || headsetOff) return;
-        wokeAt = t;
-        active = true;
-        recenter = true;
-        SendTo(out, "ft_pointer", "role " + cfg.role);  // POINTER_ROLE, before it takes it
-        SendTo(out, "ft_pointer", "show");
-        claimPending = true;  // take the laser without clicking, once SteamVR has bound the device
-        claimAt = t + std::chrono::milliseconds(300);
-    };
     Vec3 anchor;
     double yaw = 0, pitch = 0;
     Vec3 followRef{0, 0, -1};  // head follow's reference direction (see the top)
-    auto followAt = std::chrono::steady_clock::now();  // its last update, for the easing
+    Clock::time_point followAt{};  // its last update, for the easing (set in Init)
     bool following = false;                           // past the leash: easing toward the head
     double followLag = 0;                             // radians the reference trails the head
     std::chrono::steady_clock::time_point leashOutSince{};  // head past the leash since (delay)
@@ -852,6 +791,94 @@ int main() {
     // came up, so a press in progress ends without a click.
     Clock::time_point calPanelUntil{};
     bool calOpened = false;
+    Clock::time_point lastSlow{};  // set in Init
+
+    void ApplyConfig();
+    void Init();
+    int Run();
+};
+
+// After cfg.Load: a changed POINTER_FOLLOW or POINTER_GAZE turns head follow or gaze mode on or off.
+void Pointer::ApplyConfig() {
+    if (cfg.follow != followConf) follow = followConf = cfg.follow, followReset = true;
+    if (cfg.gaze != gazeConf) gazeOn = gazeConf = cfg.gaze;
+}
+
+void Pointer::Init() {
+    cfg.Load(ReadConfig());
+    ApplyConfig();
+    const float laserWidth = float(ConfDouble(ReadConfig(), "POINTER_LASER_WIDTH", 0.8));
+
+    vr::EVRInitError err = vr::VRInitError_None;
+    while (true) {
+        vr::VR_Init(&err, vr::VRApplication_Background);
+        if (err == vr::VRInitError_None) {
+            vr::VR_Shutdown();
+            vr::VR_Init(&err, vr::VRApplication_Overlay);
+        }
+        if (err == vr::VRInitError_None) break;
+        std::fprintf(stderr, "waiting for SteamVR: %s\n", vr::VR_GetVRInitErrorAsEnglishDescription(err));
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    sys = vr::VRSystem();
+    overlay = vr::VROverlay();
+
+    overlay->CreateOverlay("frametop.pointer.cursor", "Frametop pointer", &cursor);
+    const int texSize = 64;
+    auto tex = DotTexture(texSize);
+    overlay->SetOverlayRaw(cursor, tex.data(), texSize, texSize, 4);
+    overlay->SetOverlayInputMethod(cursor, vr::VROverlayInputMethod_Mouse);  // the laser can land on it
+    overlay->SetOverlaySortOrder(cursor, 200);
+    // Same dot, not interactive, drawn on panels at the hit point; the laser passes through.
+    overlay->CreateOverlay("frametop.pointer.marker", "Frametop pointer marker", &marker);
+    overlay->SetOverlayRaw(marker, tex.data(), texSize, texSize, 4);
+    overlay->SetOverlayInputMethod(marker, vr::VROverlayInputMethod_None);
+    overlay->SetOverlaySortOrder(marker, 201);
+    // Laser mode (see the top of the file).
+    overlay->CreateOverlay("frametop.pointer.lasermode", "Frametop pointer laser mode", &laserMode);
+    std::vector<uint8_t> clear(4 * 4 * 4, 0);
+    overlay->SetOverlayRaw(laserMode, clear.data(), 4, 4, 4);
+    overlay->SetOverlayWidthInMeters(laserMode, 0.001f);
+    overlay->SetOverlayInputMethod(laserMode, vr::VROverlayInputMethod_Mouse);  // the flag needs an input method
+    overlay->SetOverlayFlag(laserMode, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, true);
+    vr::HmdMatrix34_t below{};
+    below.m[0][0] = below.m[1][1] = below.m[2][2] = 1;
+    below.m[1][3] = -50;
+    overlay->SetOverlayTransformTrackedDeviceRelative(laserMode, vr::k_unTrackedDeviceIndex_Hmd, &below);
+    // Controller beams keep the user's width; nothing here changes it any more.
+    vr::VRSettings()->SetFloat("dashboard", "laserRayWidthScale", laserWidth);
+
+    in = AbstractSocket("ft_pointer_helper", true);
+    out = AbstractSocket(nullptr, false);
+    // Frame controller buttons (vrbuttons.h). The build puts the binary in pointer/helper/build.
+    {
+        const std::string manifest = ExeDir() + "/../actions/ft_pointer_actions.json";
+        char real[PATH_MAX];
+        controllerButtons.Init(realpath(manifest.c_str(), real) ? real : manifest);
+    }
+    SendTo(out, "frametop_relay", "vrhello");  // the relay answers with the mapped buttons
+    overlays.Start();
+    lastVisible = std::chrono::steady_clock::now();
+    lastDebug = Clock::now();
+    overlay->FindOverlay("system.pointer", &systemPointer);
+    followAt = std::chrono::steady_clock::now();
+    lastSlow = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+
+    std::printf("ft-pointer running: free distance %.2f m, dot %.2f deg\n", cfg.freeDistance, cfg.cursorDeg);
+    std::fflush(stdout);
+}
+
+int Pointer::Run() {
+    auto wake = [&](Clock::time_point t) {
+        if (t < noWakeUntil || headsetOff) return;
+        wokeAt = t;
+        active = true;
+        recenter = true;
+        SendTo(out, "ft_pointer", "role " + cfg.role);  // POINTER_ROLE, before it takes it
+        SendTo(out, "ft_pointer", "show");
+        claimPending = true;  // take the laser without clicking, once SteamVR has bound the device
+        claimAt = t + std::chrono::milliseconds(300);
+    };
     auto pressLeft = [&] {
         // ft-screens sends the keyboard to the panel clicked last; it sees clicks on
         // its own screens, but only we know when one lands on another panel.
@@ -996,7 +1023,6 @@ int main() {
         return gazeOn && cfg.gazeMouseHeld && !inGame && !headsetOff && Clock::now() - gz.at < std::chrono::seconds(1) &&
                !aimHeld && !leftHeld && !tilting && hold.src == Src::None && !clickPress && !clickRelease;
     };
-    auto lastSlow = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
     // --- Panel placement (see "Placement" at the top of the file) ---
     // Device pose, given in the standing universe, sent to the driver in raw space.
@@ -1150,9 +1176,6 @@ int main() {
         std::fflush(stdout);
         return msg;
     };
-
-    std::printf("ft-pointer running: free distance %.2f m, dot %.2f deg\n", cfg.freeDistance, cfg.cursorDeg);
-    std::fflush(stdout);
 
     while (true) {
         // The headset off: SteamVR drops the HMD's activity to idle as soon as it comes off.
@@ -1384,7 +1407,7 @@ int main() {
                 recenter = true;
             } else if (std::strncmp(buf, "reload", 6) == 0) {
                 cfg.Load(ReadConfig());
-                applyConfig();
+                ApplyConfig();
                 lastSlow = Clock::now() - std::chrono::seconds(10);  // apply POINTER_IGNORE now
                 std::printf("reloaded: free distance %.2f m, dot %.2f deg, origin %.2f, head follow %s, leash %.0f deg, "
                             "controller pickup %.1fx, %zu ignored\n",
@@ -2182,4 +2205,10 @@ int main() {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
     }
+}
+
+int main() {
+    Pointer p;
+    p.Init();
+    return p.Run();
 }
