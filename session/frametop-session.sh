@@ -99,12 +99,19 @@ if [ "${1:-}" != --inner ]; then
   fi
 
   # ft-screens runs in the dev container (it's built against Fedora's wlroots); KWin and
-  # Plasma stay on the host and connect to its socket.
+  # Plasma stay on the host and connect to its socket. FRAMETOP_SCREENS_BIN names a build
+  # that runs on the host instead (the Nix package's, nix/README.md).
   socket=ft-screens-0
   read -ra screen_args <<< "$("$here/../layout/ft-layout" screen-args)"
   export FT_SCREEN_COUNT=$(( ${#screen_args[@]} / 2 )) FT_FLOAT_SLOTS=$float_slots
-  "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
-  "$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens" --socket "$socket" \
+  screens_bin=${FRAMETOP_SCREENS_BIN:-}
+  if [ -n "$screens_bin" ]; then
+    screens_cmd=("$screens_bin")
+  else
+    "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
+    screens_cmd=("$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens")
+  fi
+  "${screens_cmd[@]}" --socket "$socket" \
     "${screen_args[@]}" --spares "$float_slots" > /tmp/frametop-screens.log 2>&1 < /dev/null &
   stop_screens() { pkill -x ft-screens 2>/dev/null || true; }
   trap stop_screens EXIT
@@ -211,7 +218,7 @@ fi
 # apps' desktop files with that action, first in XDG_DATA_DIRS, so only this desktop sees
 # them. Written now, before Plasma reads them; ft-floatd keeps them up to date.
 if [ "$float_slots" -gt 0 ]; then
-  python3 "$here/../float/ft_apps.py" >/dev/null 2>&1 || true
+  "${FRAMETOP_PYTHON:-python3}" "$here/../float/ft_apps.py" >/dev/null 2>&1 || true
   export XDG_DATA_DIRS=$HOME/.local/share/frametop/apps:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
 fi
 
@@ -226,6 +233,7 @@ if [ "$float_slots" -gt 0 ]; then
   rm -rf "$deco_dir" "$deco_dir"_try*  # (decoration/apply.sh's copies)
   mkdir -p "$(dirname "$deco_dir")"
   cp -r "$here/../decoration" "$deco_dir"
+  chmod -R u+w "$deco_dir"  # (a read-only source, like the Nix store, would block the rm above next time)
   rm -f "$deco_dir/apply.sh"
   kwriteconfig6 --file "$kwinrc" --group org.kde.kdecoration2 --key library org.kde.kwin.aurorae
   kwriteconfig6 --file "$kwinrc" --group org.kde.kdecoration2 --key theme "$deco"
@@ -238,4 +246,5 @@ fi
 # with both, apps would open twice.
 kwriteconfig6 --file "$XDG_CONFIG_HOME/ksmserverrc" --group General --key loginMode emptySession
 
-dbus-run-session startplasma-wayland
+# FRAMETOP_STARTPLASMA: the host's Plasma, when PATH might find another one first.
+dbus-run-session "${FRAMETOP_STARTPLASMA:-startplasma-wayland}"
