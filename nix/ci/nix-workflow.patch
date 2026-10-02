@@ -1,0 +1,29 @@
+diff --git a/.github/workflows/nix.yml b/.github/workflows/nix.yml
+index 2f30f38..c11765b 100644
+--- a/.github/workflows/nix.yml
++++ b/.github/workflows/nix.yml
+@@ -22,7 +22,7 @@ jobs:
+     runs-on: ubuntu-24.04-arm
+     timeout-minutes: 120
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@v5
+ 
+       # Determinate Nix (flakes on by default).
+       - uses: DeterminateSystems/determinate-nix-action@v3
+@@ -33,8 +33,13 @@ jobs:
+         with:
+           use-flakehub: false
+ 
+-      - name: Check the flake (both systems evaluate; checks build)
+-        run: nix flake check --all-systems -L
++      # Both systems evaluate; only this one's checks can build here (an arm runner can't
++      # build x86_64 derivations).
++      - name: Evaluate the flake for both systems
++        run: nix flake check --all-systems --no-build
++
++      - name: Check the flake (builds this system's checks)
++        run: nix flake check -L
+ 
+       - name: Build every package
+         run: |
