@@ -745,7 +745,10 @@ class Daemon:
         Returns (reply, pid or None)."""
         if app:
             app = app.removesuffix(".desktop")
-            info = Gio.DesktopAppInfo.new(app + ".desktop")
+            try:
+                info = Gio.DesktopAppInfo.new(app + ".desktop")
+            except TypeError:  # PyGObject raises for the NULL a missing desktop file returns
+                info = None
             if info is None:
                 return f"error no app {app}", None
             pids = []
