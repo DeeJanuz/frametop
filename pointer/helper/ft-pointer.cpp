@@ -299,6 +299,7 @@
 // POINTER_ROLE (right): gaze precision and keyboard clicks, above.
 #include <openvr.h>
 
+#include "pointer_config.h"
 #include "vrbuttons.h"
 #include "vrmath.h"
 
@@ -336,30 +337,6 @@ extern "C" {
 namespace {
 
 using namespace md;
-
-std::map<std::string, std::string> ReadConfig() {
-    std::map<std::string, std::string> conf;
-    const char *home = std::getenv("HOME");
-    std::ifstream in(std::string(home ? home : "") + "/.config/frametop.conf");
-    std::string line;
-    while (std::getline(in, line)) {
-        line = line.substr(0, line.find('#'));
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        auto trim = [](std::string s) {
-            s.erase(0, s.find_first_not_of(" \t"));
-            s.erase(s.find_last_not_of(" \t") + 1);
-            return s;
-        };
-        conf[trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
-    }
-    return conf;
-}
-
-double ConfDouble(const std::map<std::string, std::string> &c, const char *key, double fallback) {
-    auto it = c.find(key);
-    return it == c.end() ? fallback : std::atof(it->second.c_str());
-}
 
 // Hand gestures from ft-hands (see "Hands" at the top): /run/user/UID/frametop-hands/gestures,
 // mapped read-only. Version 1 files have pinches only; their grips read as zero.
@@ -596,23 +573,6 @@ private:
     std::vector<std::pair<sockaddr_un, socklen_t>> waiting_;
 };
 
-// POINTER_IGNORE: overlay keys the pointer passes through, as if they weren't there
-// (display-only panels such as a performance overlay). Comma-separated shell patterns
-// (fnmatch, no escapes), so "vendor.app*" covers an app's overlays.
-std::vector<std::string> ParseIgnore(const std::string &list) {
-    std::vector<std::string> out;
-    size_t at = 0;
-    while (at <= list.size()) {
-        const size_t comma = std::min(list.find(',', at), list.size());
-        std::string item = list.substr(at, comma - at);
-        item.erase(0, item.find_first_not_of(" \t"));
-        item.erase(item.find_last_not_of(" \t") + 1);
-        if (!item.empty()) out.push_back(item);
-        at = comma + 1;
-    }
-    return out;
-}
-
 bool Ignored(const std::vector<std::string> &patterns, const std::string &key) {
     for (const auto &p : patterns)
         if (fnmatch(p.c_str(), key.c_str(), FNM_NOESCAPE) == 0) return true;
@@ -696,70 +656,19 @@ bool OnSettingsPage(const vr::HmdMatrix34_t &t, Vec3 eye, Vec3 d) {
 constexpr double kPlaceDegPerSec = 60;      // tested: 40 deg/s is applied exactly
 
 int main() {
-    double freeDistance = 1.5, cursorDeg = 0.4, originFraction = 0.95, originMargin = 0.15, sceneRadius = 0.5,
-           edgeReach = 0.3, grabOffset = 0.075,
-           slideSpeed = 0.5, leashDeg = 10, leashReturn = 0.2, leashDelay = 0.2, followReach = 70;
+    PointerConfig cfg;
     // Head follow (see the top). followConf is POINTER_FOLLOW as last read: a reload only
     // overrides a "follow" command when the setting itself changed.
     bool follow = false, followConf = false, followReset = true;
     // Gaze mode (see the top); gazeConf is POINTER_GAZE as last read, like followConf.
     bool gazeOn = false, gazeConf = false;
-    double gazeRetake = 5, gazeNudgeMax = 55, gazeHold = 0.5, gazeShow = 1;
-    bool gazeDotAlways = true;  // POINTER_GAZE_DOT (see the top)
-    double headDeadzone = 0.5, keyTap = 0.25;  // POINTER_HEAD_DEADZONE, POINTER_KEY_TAP (keyboard clicks, see the top)
-    // Hands (see the top): POINTER_HANDS, POINTER_PINCH_GAIN, POINTER_PINCH_DEADZONE, POINTER_GRIP_GAIN.
-    bool handsOn = false;
-    double pinchGain = 0.5, pinchDeadzone = 1.5, gripGain = 1.0, handBelow = 0.35, typingHold = 1.0;
-    // Gaze precision (see the top): POINTER_GAZE_MOUSE (precision: the mouse's left button
-    // holds back its press in gaze mode; direct: it clicks at once), POINTER_ROLE.
-    bool gazeMousePrecision = true;
-    bool gazeMouseHeld = true;  // POINTER_GAZE_MOUSE_MOVE (see the top)
-    std::string role = "right";
-    double pickupScale = 1;  // POINTER_CONTROLLER_PICKUP: scales the controller-moved limits
-    std::vector<std::string> ignore;  // POINTER_IGNORE (see ParseIgnore)
-    auto loadConfig = [&] {
-        const auto conf = ReadConfig();
-        freeDistance = std::clamp(ConfDouble(conf, "POINTER_DISTANCE", 1.5), 0.3, 10.0);
-        cursorDeg = std::clamp(ConfDouble(conf, "POINTER_CURSOR_DEG", 0.4), 0.05, 5.0);
-        originFraction = std::clamp(ConfDouble(conf, "POINTER_ORIGIN_FRACTION", 0.95), 0.0, 0.98);
-        originMargin = std::clamp(ConfDouble(conf, "POINTER_ORIGIN_MARGIN", 0.15), 0.0, 1.0);
-        sceneRadius = std::clamp(ConfDouble(conf, "POINTER_SCENE_RADIUS", 0.5), 0.05, 2.0);
-        edgeReach = std::clamp(ConfDouble(conf, "POINTER_EDGE_REACH", 0.3), 0.0, 2.0);
-        grabOffset = std::clamp(ConfDouble(conf, "LAYOUT_GRAB_OFFSET", 0.075), 0.0, 1.0);
-        slideSpeed = std::clamp(ConfDouble(conf, "LAYOUT_SLIDE_SPEED", 0.5), 0.02, 2.0);
-        leashDeg = std::clamp(ConfDouble(conf, "POINTER_LEASH_DEG", 10), 0.0, 90.0);
-        leashReturn = std::clamp(ConfDouble(conf, "POINTER_LEASH_RETURN", 0.2), 0.0, 5.0);
-        leashDelay = std::clamp(ConfDouble(conf, "POINTER_LEASH_DELAY", 0.2), 0.0, 5.0);
-        followReach = std::clamp(ConfDouble(conf, "POINTER_FOLLOW_REACH", 70), 10.0, 89.0);
-        const bool wantFollow = ConfDouble(conf, "POINTER_FOLLOW", 0) != 0;
-        if (wantFollow != followConf) follow = followConf = wantFollow, followReset = true;
-        gazeRetake = std::clamp(ConfDouble(conf, "POINTER_GAZE_RETAKE", 5), 1.0, 45.0);
-        gazeNudgeMax = std::clamp(ConfDouble(conf, "POINTER_GAZE_NUDGE_MAX", 55), 1.0, 110.0);
-        gazeHold = std::clamp(ConfDouble(conf, "POINTER_GAZE_HOLD", 0.5), 0.1, 5.0);
-        gazeShow = std::clamp(ConfDouble(conf, "POINTER_GAZE_SHOW", 1), 0.0, 30.0);
-        headDeadzone = std::clamp(ConfDouble(conf, "POINTER_HEAD_DEADZONE", 0.5), 0.0, 5.0);
-        keyTap = std::clamp(ConfDouble(conf, "POINTER_KEY_TAP", 0.25), 0.0, 1.0);
-        const auto gd = conf.find("POINTER_GAZE_DOT");
-        gazeDotAlways = gd == conf.end() || gd->second != "moving";
-        const bool wantGaze = ConfDouble(conf, "POINTER_GAZE", 0) != 0;
-        if (wantGaze != gazeConf) gazeOn = gazeConf = wantGaze;
-        handsOn = ConfDouble(conf, "POINTER_HANDS", 0) != 0;
-        pinchGain = std::clamp(ConfDouble(conf, "POINTER_PINCH_GAIN", 0.5), 0.05, 3.0);
-        pinchDeadzone = std::clamp(ConfDouble(conf, "POINTER_PINCH_DEADZONE", 1.5), 0.0, 10.0);
-        gripGain = std::clamp(ConfDouble(conf, "POINTER_GRIP_GAIN", 1.0), 0.05, 3.0);
-        handBelow = std::clamp(ConfDouble(conf, "POINTER_GRIP_BELOW", 0.35), 0.05, 1.0);
-        typingHold = std::clamp(ConfDouble(conf, "POINTER_PINCH_TYPING", 1.0), 0.0, 5.0);
-        const auto gm = conf.find("POINTER_GAZE_MOUSE");
-        gazeMousePrecision = gm == conf.end() || gm->second != "direct";
-        const auto mm = conf.find("POINTER_GAZE_MOUSE_MOVE");
-        gazeMouseHeld = mm == conf.end() || mm->second != "free";
-        const auto ro = conf.find("POINTER_ROLE");
-        role = ro != conf.end() && (ro->second == "left" || ro->second == "stylus") ? ro->second : "right";
-        pickupScale = std::clamp(ConfDouble(conf, "POINTER_CONTROLLER_PICKUP", 1), 0.5, 5.0);
-        const auto ig = conf.find("POINTER_IGNORE");
-        ignore = ParseIgnore(ig == conf.end() ? "" : ig->second);
+    // After cfg.Load: a changed POINTER_FOLLOW or POINTER_GAZE turns head follow or gaze mode on or off.
+    auto applyConfig = [&] {
+        if (cfg.follow != followConf) follow = followConf = cfg.follow, followReset = true;
+        if (cfg.gaze != gazeConf) gazeOn = gazeConf = cfg.gaze;
     };
-    loadConfig();
+    cfg.Load(ReadConfig());
+    applyConfig();
     const float laserWidth = float(ConfDouble(ReadConfig(), "POINTER_LASER_WIDTH", 0.8));
 
     vr::EVRInitError err = vr::VRInitError_None;
@@ -863,7 +772,7 @@ int main() {
         wokeAt = t;
         active = true;
         recenter = true;
-        SendTo(out, "ft_pointer", "role " + role);  // POINTER_ROLE, before it takes it
+        SendTo(out, "ft_pointer", "role " + cfg.role);  // POINTER_ROLE, before it takes it
         SendTo(out, "ft_pointer", "show");
         claimPending = true;  // take the laser without clicking, once SteamVR has bound the device
         claimAt = t + std::chrono::milliseconds(300);
@@ -955,7 +864,7 @@ int main() {
             const double ty = std::atan2(-d.x, -d.z) * 180 / M_PI, tp = std::asin(std::clamp(d.y, -1.0, 1.0)) * 180 / M_PI;
             const double off = std::hypot(std::remainder(ty - nudgeRawHy, 360.0), tp - nudgeRawHp);
             char msg[160];
-            if (off <= gazeNudgeMax)
+            if (off <= cfg.gazeNudgeMax)
                 std::snprintf(msg, sizeof msg, "lesson %.3f %.3f %.3f %.3f", nudgeRawHy, nudgeRawHp, ty, tp);
             else
                 std::snprintf(msg, sizeof msg, "recheck %.0f", off);
@@ -995,7 +904,7 @@ int main() {
     // The left button, from the relay's "btn trigger", with gaze mode's held-back press (see
     // the top).
     auto canAim = [&] {
-        return gazeOn && gazeMousePrecision && gazeOwns && !aimHeld && !clickPress && !clickRelease &&
+        return gazeOn && cfg.gazeMousePrecision && gazeOwns && !aimHeld && !clickPress && !clickRelease &&
                hold.src == Src::None;
     };
     // Hold the press back: the pointer stops where the gaze put it.
@@ -1084,7 +993,7 @@ int main() {
     // POINTER_GAZE_MOUSE_MOVE=held (see the top): the gaze is fresh and nothing is pressed, so a
     // mouse move doesn't move the pointer.
     auto mouseMoveHeld = [&] {
-        return gazeOn && gazeMouseHeld && !inGame && !headsetOff && Clock::now() - gz.at < std::chrono::seconds(1) &&
+        return gazeOn && cfg.gazeMouseHeld && !inGame && !headsetOff && Clock::now() - gz.at < std::chrono::seconds(1) &&
                !aimHeld && !leftHeld && !tilting && hold.src == Src::None && !clickPress && !clickRelease;
     };
     auto lastSlow = std::chrono::steady_clock::now() - std::chrono::seconds(10);
@@ -1220,7 +1129,7 @@ int main() {
             }
             // 2. Slide the device slowly: fast moves are accelerated by the dashboard.
             const Basis d1{turn(d0.x), turn(d0.y), turn(d0.z)};
-            const int tsteps = std::max(4, int(Length(o1 - eye) / slideSpeed * 60));
+            const int tsteps = std::max(4, int(Length(o1 - eye) / cfg.slideSpeed * 60));
             for (int i = 1; i <= tsteps; ++i) {
                 sendPose(eye + (o1 - eye) * (double(i) / tsteps), d1);
                 sleepMs(16);
@@ -1242,7 +1151,7 @@ int main() {
         return msg;
     };
 
-    std::printf("ft-pointer running: free distance %.2f m, dot %.2f deg\n", freeDistance, cursorDeg);
+    std::printf("ft-pointer running: free distance %.2f m, dot %.2f deg\n", cfg.freeDistance, cfg.cursorDeg);
     std::fflush(stdout);
 
     while (true) {
@@ -1272,7 +1181,7 @@ int main() {
                 inGame = vr::VRApplications()->GetCurrentSceneProcessId() != 0;
             }
             // Hand gestures in the last two minutes keep it the same way.
-            const bool handsRecent = handsOn && handUsed != Clock::time_point{} && t - handUsed < std::chrono::minutes(2);
+            const bool handsRecent = cfg.handsOn && handUsed != Clock::time_point{} && t - handUsed < std::chrono::minutes(2);
             const bool awake = (gazeOn || handsRecent) && !inGame && !headsetOff;
             if (awake != gazeAwake || t - gazeAwakeAt > std::chrono::seconds(5)) {
                 if (awake != gazeAwake)
@@ -1401,7 +1310,7 @@ int main() {
             }
             if (std::sscanf(buf, "place %127s %lf %lf %lf %lf %lf %lf %lf", key, &px, &py, &pz, &pyaw, &ppitch, &proll,
                             &pgrab) >= 6) {
-                reply(place(key, {px, py, pz}, PanelBasis(pyaw, ppitch, proll), pgrab >= 0 ? pgrab : grabOffset));
+                reply(place(key, {px, py, pz}, PanelBasis(pyaw, ppitch, proll), pgrab >= 0 ? pgrab : cfg.grabOffset));
                 continue;
             }
             if (std::sscanf(buf, "measure %127s", key) == 1) {
@@ -1474,12 +1383,13 @@ int main() {
             } else if (std::strncmp(buf, "recenter", 8) == 0) {
                 recenter = true;
             } else if (std::strncmp(buf, "reload", 6) == 0) {
-                loadConfig();
+                cfg.Load(ReadConfig());
+                applyConfig();
                 lastSlow = Clock::now() - std::chrono::seconds(10);  // apply POINTER_IGNORE now
                 std::printf("reloaded: free distance %.2f m, dot %.2f deg, origin %.2f, head follow %s, leash %.0f deg, "
                             "controller pickup %.1fx, %zu ignored\n",
-                            freeDistance, cursorDeg, originFraction, follow ? "on" : "off", leashDeg, pickupScale,
-                            ignore.size());
+                            cfg.freeDistance, cfg.cursorDeg, cfg.originFraction, follow ? "on" : "off", cfg.leashDeg, cfg.pickupScale,
+                            cfg.ignore.size());
                 std::fflush(stdout);
             } else if (std::strncmp(buf, "follow", 6) == 0) {
                 const char *arg = buf + 6;
@@ -1487,7 +1397,7 @@ int main() {
                 const bool was = follow;
                 follow = std::strncmp(arg, "on", 2) == 0 ? true : std::strncmp(arg, "off", 3) == 0 ? false : !follow;
                 if (follow && !was) followReset = true;
-                std::printf("head follow %s (leash %.0f deg)\n", follow ? "on" : "off", leashDeg);
+                std::printf("head follow %s (leash %.0f deg)\n", follow ? "on" : "off", cfg.leashDeg);
                 std::fflush(stdout);
             } else if (std::strncmp(buf, "show", 4) == 0) {
                 if (!active) wake(Clock::now());
@@ -1557,7 +1467,7 @@ int main() {
                 const auto &v = all[i].vVelocity.v, &w = all[i].vAngularVelocity.v;
                 const double speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
                 const double spin = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
-                if (speed <= 0.35 * pickupScale && spin <= 2.0 * pickupScale) {
+                if (speed <= 0.35 * cfg.pickupScale && spin <= 2.0 * cfg.pickupScale) {
                     movingSince[i] = {};
                     continue;
                 }
@@ -1599,7 +1509,7 @@ int main() {
             const Vec3 g = Rotate(hmd.mDeviceToAbsoluteTracking, Direction(gz.hy, gz.hp));
             if (!gazeOwns && havePoint) {
                 const double off = std::acos(std::clamp(Dot(g, Normalize(lastPoint - eye)), -1.0, 1.0)) * 180 / M_PI;
-                if (off > gazeRetake && tnow - lastMouse > std::chrono::milliseconds(300)) {
+                if (off > cfg.gazeRetake && tnow - lastMouse > std::chrono::milliseconds(300)) {
                     if (retakeSince == Clock::time_point{}) retakeSince = tnow;
                     if (tnow - retakeSince >= std::chrono::milliseconds(120)) gazeOwns = true, nudging = false;
                 } else {
@@ -1710,11 +1620,11 @@ int main() {
             // the hand held up (hands on a desk curl like a loose fist; looking down at them
             // puts them straight ahead in the head's frame, where ft-hands can't tell).
             const Vec3 at = Position(head) + Rotate(head, Vec3{g.begin_point[0], g.begin_point[1], g.begin_point[2]});
-            if (!grip && tnow - lastTyping < std::chrono::duration<double>(typingHold)) {
+            if (!grip && tnow - lastTyping < std::chrono::duration<double>(cfg.typingHold)) {
                 if (debug) std::printf("hand pinch ignored: typing\n");
                 return;
             }
-            if (grip && Position(head).y - at.y > handBelow) {
+            if (grip && Position(head).y - at.y > cfg.handBelow) {
                 if (debug) std::printf("hand grip ignored: %.2f m below the eyes\n", Position(head).y - at.y);
                 return;
             }
@@ -1764,7 +1674,7 @@ int main() {
                 // The keys holding it: a gaze_left then gaze_right drag, either; otherwise its own.
                 const bool held = hold.keyDrag ? keyLeftDown || keyRightDown : hold.right ? keyRightDown : keyLeftDown;
                 if (hold.src == Src::Head && !held) {
-                    if (!hold.pressed && aimHeld && tnow - aimSince < std::chrono::duration<double>(keyTap)) {
+                    if (!hold.pressed && aimHeld && tnow - aimSince < std::chrono::duration<double>(cfg.keyTap)) {
                         // A quick tap: a click where the dot was at the press, and the gaze was right.
                         yaw = hold.pressYaw, pitch = hold.pressPitch;
                         nudgeMoved = 0;
@@ -1820,11 +1730,11 @@ int main() {
                 tiltPitch = std::clamp(tiltPitch + hp - keyTiltPitch, -80.0, 80.0);
                 keyTiltYaw = hy, keyTiltPitch = hp;
             } else if (headAngles(hy, hp)) {
-                steer(hy, hp, hold.pressed ? 0.3 : headDeadzone, 1.0);
+                steer(hy, hp, hold.pressed ? 0.3 : cfg.headDeadzone, 1.0);
             }
         }
         fh_gestures_t hg;
-        const bool handOk = handsOn && handFile.Read(hg);
+        const bool handOk = cfg.handsOn && handFile.Read(hg);
         if (handOk && (hg.seq != handSeq || handFile.opens != handOpens)) {
             handSeq = hg.seq;
             handPublished = hg.publish_ns;
@@ -1862,7 +1772,7 @@ int main() {
                 const fh_pinch_t &g = hold.grip ? hg.grip[hold.side] : hg.pinch[hold.side];
                 double hy, hp;
                 if ((g.flags & FH_PINCH_TRACKED) && handAngles(g.point, hg.capture_ns, hold.origin, hy, hp))
-                    steer(hy, hp, hold.grip ? 0.5 : pinchDeadzone, hold.grip ? gripGain : pinchGain);
+                    steer(hy, hp, hold.grip ? 0.5 : cfg.pinchDeadzone, hold.grip ? cfg.gripGain : cfg.pinchGain);
             }
         }
         // ft-hands stopped (or hung) with a gesture held: it's over, as lost.
@@ -1882,20 +1792,20 @@ int main() {
                 followReset = following = false;
             }
             const double dt = std::min(0.1, std::chrono::duration<double>(tnow - followAt).count());
-            const double leash = leashDeg * M_PI / 180;
+            const double leash = cfg.leashDeg * M_PI / 180;
             const double lag = std::acos(std::clamp(Dot(followRef, head), -1.0, 1.0));
             double keep = lag;  // how far the reference stays behind the head after this frame
             if (leash <= 0) {
                 keep = 0;  // head-locked
             } else if (following) {
-                keep = lag * (leashReturn > 0 ? std::exp(-dt / leashReturn) : 0.0);
+                keep = lag * (cfg.leashReturn > 0 ? std::exp(-dt / cfg.leashReturn) : 0.0);
                 // A fast turn drags it at the leash's end; past it already (after the delay), it
                 // can't fall further behind, and it closes in from there without a jump.
                 keep = std::min(keep, std::max(leash, followLag));
                 if (keep < 0.05 * M_PI / 180) keep = 0, following = false;  // landed on the facing
             } else if (lag > leash) {
                 if (leashOutSince == decltype(leashOutSince){}) leashOutSince = tnow;
-                if (std::chrono::duration<double>(tnow - leashOutSince).count() >= leashDelay)
+                if (std::chrono::duration<double>(tnow - leashOutSince).count() >= cfg.leashDelay)
                     following = true, leashOutSince = {};
             } else {
                 leashOutSince = {};  // back inside before the delay: a glance
@@ -1905,7 +1815,7 @@ int main() {
             if (!leftHeld && tnow >= dropHoldUntil) {
                 // The cursor keeps its offset from the reference (frames without roll).
                 Vec3 d = FromBasis(AimBasis(ref), ToBasis(AimBasis(followRef), Direction(yaw, pitch)));
-                d = PullWithin(Normalize(d), ref, followReach * M_PI / 180);
+                d = PullWithin(Normalize(d), ref, cfg.followReach * M_PI / 180);
                 yaw = std::atan2(-d.x, -d.z) * 180 / M_PI;
                 pitch = std::clamp(std::asin(std::clamp(d.y, -1.0, 1.0)) * 180 / M_PI, -85.0, 85.0);
                 // The ray origin closes in on the eye as the reference does on the facing.
@@ -1921,7 +1831,7 @@ int main() {
             lastSlow = now;
             handles.clear();
             for (const auto &key : overlays.Keys()) {
-                if (Ignored(ignore, key)) continue;
+                if (Ignored(cfg.ignore, key)) continue;
                 vr::VROverlayHandle_t h;
                 if (overlay->FindOverlay(key.c_str(), &h) != vr::VROverlayError_None) continue;
                 handles[key] = h;
@@ -2002,7 +1912,7 @@ int main() {
                         if (std::fabs(denom) < 1e-4) continue;
                         const double along = Dot(center - from, normal) / denom;
                         const Vec3 at = from + d * along;
-                        if (along > 0.05 && along < h.along && std::sqrt(Dot(at - center, at - center)) <= sceneRadius)
+                        if (along > 0.05 && along < h.along && std::sqrt(Dot(at - center, at - center)) <= cfg.sceneRadius)
                             h.along = along, h.key = key, h.scene = true, h.point = at, h.normal = normal;
                         continue;
                     }
@@ -2035,7 +1945,7 @@ int main() {
                 if (std::fabs(denom) > 1e-4) {
                     const double along = Dot(edgePoint - anchor, edgeNormal) / denom;
                     const Vec3 at = anchor + dir * along;
-                    if (along > 0.05 && std::sqrt(Dot(at - edgeLast, at - edgeLast)) <= edgeReach) {
+                    if (along > 0.05 && std::sqrt(Dot(at - edgeLast, at - edgeLast)) <= cfg.edgeReach) {
                         best = along;
                         bestKey = edgeKey;
                         onEdge = true;
@@ -2073,7 +1983,7 @@ int main() {
             }
             // While dragging: keep the press-time distance and show the non-interactive marker.
             // On a scene-graph plane or a panel's edge: the laser-catching dot goes 5 cm behind it.
-            double distance = dragging ? dragDistance : (best < 1e8 ? best : freeDistance);
+            double distance = dragging ? dragDistance : (best < 1e8 ? best : cfg.freeDistance);
             Vec3 point = anchor + dir * distance;
             bool occluded = false;
             if (!dragging) {
@@ -2125,17 +2035,17 @@ int main() {
                 // the page, with SteamVR's hit dot hidden on it.
                 const Vec3 near = eye + sight * SETTINGS_DOT, far = eye + sight * SETTINGS_CATCHER;
                 double alpha = 1;
-                if (gazeOn && !gazeDotAlways) {
+                if (gazeOn && !cfg.gazeDotAlways) {
                     auto secs = [&](Clock::time_point t) { return std::chrono::duration<double>(tnow - t).count(); };
-                    alpha = std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
+                    alpha = std::clamp(1 - std::min(secs(lastMove) - cfg.gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
                 }
                 if (tnow < calPanelUntil) alpha = 0;
                 overlay->SetOverlayAlpha(marker, float(alpha));
-                overlay->SetOverlayWidthInMeters(marker, float(2 * SETTINGS_DOT * std::tan(cursorDeg * M_PI / 360)));
+                overlay->SetOverlayWidthInMeters(marker, float(2 * SETTINGS_DOT * std::tan(cfg.cursorDeg * M_PI / 360)));
                 auto mm = Billboard(near, eye);
                 overlay->SetOverlayTransformAbsolute(marker, vr::TrackingUniverseStanding, &mm);
                 overlay->SetOverlayAlpha(cursor, 0);
-                overlay->SetOverlayWidthInMeters(cursor, float(2 * SETTINGS_CATCHER * std::tan(cursorDeg * M_PI / 360)));
+                overlay->SetOverlayWidthInMeters(cursor, float(2 * SETTINGS_CATCHER * std::tan(cfg.cursorDeg * M_PI / 360)));
                 auto mc = Billboard(far, eye);
                 overlay->SetOverlayTransformAbsolute(cursor, vr::TrackingUniverseStanding, &mc);
                 overlay->ShowOverlay(marker);
@@ -2152,7 +2062,7 @@ int main() {
                 double scale = 1, alpha = 1;
                 if (gazeOn) {
                     auto secs = [&](Clock::time_point t) { return std::chrono::duration<double>(tnow - t).count(); };
-                    alpha = gazeDotAlways ? 1.0 : std::clamp(1 - std::min(secs(lastMove) - gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
+                    alpha = cfg.gazeDotAlways ? 1.0 : std::clamp(1 - std::min(secs(lastMove) - cfg.gazeShow, secs(lastHeld)) / 0.25, 0.0, 1.0);
                     const double pulse = secs(pulseAt);
                     if (pulse < 0.6) {
                         scale = 1 + 1.5 * std::max(0.0, 1 - pulse / 0.3);
@@ -2161,7 +2071,7 @@ int main() {
                 }
                 if (tnow < calPanelUntil) alpha = 0;  // the calibration panel is up (see the top)
                 overlay->SetOverlayAlpha(show, float(alpha));
-                overlay->SetOverlayWidthInMeters(show, float(2 * dist * std::tan(scale * cursorDeg * M_PI / 360)));
+                overlay->SetOverlayWidthInMeters(show, float(2 * dist * std::tan(scale * cfg.cursorDeg * M_PI / 360)));
                 auto m = Billboard(at, eye);
                 overlay->SetOverlayTransformAbsolute(show, vr::TrackingUniverseStanding, &m);
                 overlay->ShowOverlay(show);
@@ -2175,7 +2085,7 @@ int main() {
             const Vec3 aim = Rotate(R, RotateInverse(S, aimStanding));  // raw <- head <- standing
             // Origin partway along the line of sight to the cursor (smaller hit dot).
             const double toPoint = std::sqrt(Dot(point - eye, point - eye));
-            double originDist = std::max(0.0, std::min(toPoint * originFraction, toPoint - originMargin));
+            double originDist = std::max(0.0, std::min(toPoint * cfg.originFraction, toPoint - cfg.originMargin));
             if (onVrSettings) originDist = std::min(originDist, SETTINGS_ORIGIN);  // SteamVR finds the page
             const Vec3 originStanding = eye + Normalize(point - eye) * originDist;
             const Vec3 eyeRaw = Position(R) + Rotate(R, RotateInverse(S, originStanding - eye));
@@ -2220,7 +2130,7 @@ int main() {
         // A held-back press (see the top): held still long enough, it's a real press (a drag);
         // released, it's a click where the pointer is now (this frame's pose has gone out).
         if (!active) aimHeld = aimRight = clickPress = aimHand = confirmLesson = false;  // released meanwhile: nothing to click
-        if (aimHeld && !aimHand && nudgeMoved < 0.2 && tnow - aimSince >= std::chrono::duration<double>(gazeHold)) {
+        if (aimHeld && !aimHand && nudgeMoved < 0.2 && tnow - aimSince >= std::chrono::duration<double>(cfg.gazeHold)) {
             aimHeld = false;
             gazeBack = true;
             pressRight = aimRight;  // the right button's: a real right press (see the top)
@@ -2230,7 +2140,7 @@ int main() {
         // A keyboard click held still for POINTER_GAZE_HOLD: a real press, then the head drags
         // (from where it is now).
         if (aimHeld && aimHand && hold.promote && !hold.engaged &&
-            tnow - aimSince >= std::chrono::duration<double>(gazeHold)) {
+            tnow - aimSince >= std::chrono::duration<double>(cfg.gazeHold)) {
             aimHeld = aimHand = false;
             hold.pressed = hold.grip = true;
             if (hmd.bPoseIsValid) {
