@@ -2,7 +2,7 @@
 
 The flake builds Frametop with nixpkgs instead of the Fedora `dev` container. The container exists only because SteamOS's libraries are too old to build against, and nixpkgs replaces it. A Home Manager module then sets up what `install.sh` sets up. This is for a Steam Frame (SteamOS, aarch64-linux, not NixOS) with Nix and standalone Home Manager.
 
-It covers the multi-screen desktop, the input relay, the 3D mouse, the power service, and the two settings apps. It doesn't cover gaze mode, hand tracking, remote desktop (`REMOTE=1` still enters the container), or the Bluetooth fixes. Use the repo's installers for those.
+It covers the multi-screen desktop, the input relay, the 3D mouse, the power service, and the two settings apps. Gaze mode, hand tracking, and remote desktop aren't supported with Nix: they build or run in the `dev` container, so their installers need the container setup. Keep `REMOTE=0`, since remote desktop still enters the container. The Bluetooth fixes don't need the container: install them from a checkout with `setup/bluetooth/install.sh` (it asks for `sudo`).
 
 ## Packages
 
