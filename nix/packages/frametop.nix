@@ -66,6 +66,9 @@ stdenvNoCC.mkDerivation {
   dontBuild = true;
   # wrapQtAppsHook would wrap everything executable in the tree; only the two apps get it.
   dontWrapQtApps = true;
+  # ft-screens' copy is already fixed up; patchelf's --shrink-rpath would drop
+  # /run/opengl-driver/lib, which isn't there at build time.
+  dontPatchELF = true;
 
   installPhase = ''
     runHook preInstall
@@ -129,6 +132,14 @@ stdenvNoCC.mkDerivation {
         --set-default QT_QPA_PLATFORM 'wayland;xcb'
       ln -s ../${share}/''${app%%:*} $out/bin/$(basename $launcher)
     done
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    cmp ${ft-screens}/bin/ft-screens $out/${share}/screens/build/ft-screens \
+      || { echo "the tree's ft-screens differs from the package's" >&2; exit 1; }
+    runHook postInstallCheck
   '';
 
   passthru = {
