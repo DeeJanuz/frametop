@@ -479,9 +479,22 @@ int main(int argc, char **argv) {
     double lastEmit = 0;
     int actionErrors = 0;
     vr::EVRInputError lastActionError = vr::VRInputError_None;
+    // During a VR game, leave the eye tracker alone. Read 90 times a second, it restarted
+    // every 10 s or so in a game, as if the headset came off for half a second, and each
+    // restart took input focus from the game: Beat Saber paused. Games are told apart the
+    // way ft-screens does it, by SteamVR's scene application.
+    bool inGame = false;
+    double nextGameCheck = 0;
 
     while (true) {
         const double now = NowRaw();
+        if (now >= nextGameCheck) {
+            nextGameCheck = now + 0.5;
+            const bool game = vr::VRApplications()->GetCurrentSceneProcessId() != 0;
+            if (game != inGame)
+                std::fprintf(stderr, "ft-gaze: %s\n", game ? "a VR game is running: eye tracker left alone" : "the VR game ended");
+            inGame = game;
+        }
         vr::TrackedDevicePose_t hp;
         sys->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, 0, &hp, 1);
         if (hp.bPoseIsValid) history.Add(now, hp.mDeviceToAbsoluteTracking);
@@ -489,8 +502,8 @@ int main(int argc, char **argv) {
         // One line per new eye sample, or at 90 Hz without the mmap.
         EyeSample s;
         bool fresh = false;
-        if (haveMmap && ReadSample(eyes, s) && s.n != lastN) fresh = true, lastN = s.n;
-        if (!haveMmap && now - lastEmit >= 1.0 / 90) fresh = true, s.t = now;
+        if (!inGame && haveMmap && ReadSample(eyes, s) && s.n != lastN) fresh = true, lastN = s.n;
+        if (!inGame && !haveMmap && now - lastEmit >= 1.0 / 90) fresh = true, s.t = now;
 
         if (fresh && hp.bPoseIsValid) {
             lastEmit = now;
