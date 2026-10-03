@@ -17,7 +17,8 @@ struct ft_dmabuf {
     int fd[4];
 };
 
-enum ft_event_type { FT_MOTION, FT_BUTTON, FT_SCROLL, FT_LEAVE, FT_QUIT, FT_KEY, FT_KEYBOARD_CLOSED };
+// FT_FRONT: a spin (the lazy susan) brought panel `screen` to straight ahead: typing goes there.
+enum ft_event_type { FT_MOTION, FT_BUTTON, FT_SCROLL, FT_LEAVE, FT_QUIT, FT_KEY, FT_KEYBOARD_CLOSED, FT_FRONT };
 
 struct ft_event {
     enum ft_event_type type;

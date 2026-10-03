@@ -18,6 +18,8 @@ command-line side). Replies go to the sender:
   ("float pointer" is the float key: the window under the pointer, else the active one,
   floated or docked; the input relay sends it for float_toggle, and "dock all" for dock_all)
   dock N | close N | resize N W H | scale N STEPS                      (ft-screens, N = its screen)
+  front N   (ft-screens: a spin brought panel N to the front: make its window, or the top one
+            on a screen, KWin's active window)
 
 Spare outputs are WL-<screens> .. WL-<screens + slots - 1>. A floating window's output is its
 frame plus a margin on each side (FLOAT_MARGIN pixels), so menus have room; the panel shows
@@ -1042,6 +1044,13 @@ class Daemon:
         if cmd == "dock" and rest == ["all"]:
             for f in list(self.floats.values()):
                 self.dock(f)
+            return "ok"
+        if cmd == "front" and len(rest) == 1 and rest[0].isdigit():
+            f = self.by_panel(int(rest[0]))
+            if f:
+                self.command(cmd="activate", id=f.id)
+            else:  # a screen: its output is WL-<N - 1>
+                self.command(cmd="activate-output", output=f"WL-{int(rest[0]) - 1}")
             return "ok"
         if cmd in ("dock", "close", "resize", "scale") and rest and rest[0].isdigit():
             f = self.by_panel(int(rest[0]))

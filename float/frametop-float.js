@@ -378,6 +378,17 @@ function run(c) {
         case "activate":
             if (w) workspace.activeWindow = w;
             break;
+        case "activate-output": {  // the top window on that output (a spin brought it to the front)
+            const order = workspace.stackingOrder;
+            for (let i = order.length - 1; i >= 0; --i) {
+                const o = order[i];
+                if (o.deleted || o.minimized || o.hidden || !o.managed || !o.output) continue;
+                if (o.output.name !== c.output || !o.normalWindow || o.popupWindow) continue;
+                workspace.activeWindow = o;
+                break;
+            }
+            break;
+        }
         case "minimize":
             if (w) w.minimized = c.on;
             break;

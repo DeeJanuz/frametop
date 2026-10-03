@@ -294,6 +294,20 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
     if (e->screen < 0 || e->screen >= MAX_SCREENS || !s->screens[e->screen]) return;
     struct screen *sc = s->screens[e->screen];
     struct wlr_surface *surface = sc->toplevel->base->surface;
+    if (e->type == FT_FRONT) {
+        // A spin brought this panel to the front: typing goes to it, as after a click there,
+        // and ft-floatd makes its window (or the top one on a screen) KWin's active window.
+        wlr_seat_keyboard_notify_enter(s->seat, surface, NULL, 0, NULL);
+        s->keys_clicked = true;
+        char msg[32];
+        snprintf(msg, sizeof msg, "front %d", e->screen + 1);
+        struct sockaddr_un addr = {.sun_family = AF_UNIX};
+        const char name[] = "frametop_float";
+        memcpy(addr.sun_path + 1, name, sizeof name - 1);
+        sendto(s->relay_fd, msg, strlen(msg), MSG_DONTWAIT, (struct sockaddr *)&addr,
+               offsetof(struct sockaddr_un, sun_path) + 1 + sizeof name - 1);
+        return;
+    }
     const uint32_t t = now_ms();
     const double x = e->x / s->scale[e->screen], y = e->y / s->scale[e->screen];  // KWin's units
     switch (e->type) {

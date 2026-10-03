@@ -894,6 +894,17 @@ void SendFloat(const std::string &msg) {
         std::printf("to ft-floatd: %s\n", msg.c_str());
 }
 
+// To the pointer helper (@ft_pointer_helper), from an unbound socket.
+void SendPointer(const std::string &msg) {
+    static const int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const char name[] = "ft_pointer_helper";
+    std::memcpy(addr.sun_path + 1, name, sizeof name - 1);
+    sendto(fd, msg.data(), msg.size(), MSG_DONTWAIT, reinterpret_cast<sockaddr *>(&addr),
+           socklen_t(offsetof(sockaddr_un, sun_path) + 1 + sizeof name - 1));
+}
+
 // Where a device's ray meets the screen's plane, in the screen's x (right) and y (up),
 // metres from its centre.
 bool RayOnPlane(const Mat &p, const Mat &d, double *x, double *y) {
@@ -1352,6 +1363,137 @@ void UpdateCatcher() {
 Screen *Find(int one_based) {
     auto it = g_screens.find(one_based - 1);
     return it == g_screens.end() ? nullptr : &it->second;
+}
+
+// ---------------------------------------------------------------- the lazy susan
+// "spin next|prev|<degrees>": the panels in the room (screens and floating windows, not
+// pinned ones) turn together about a vertical axis through your head, so the next panel to
+// your right (next) or left (prev) glides to straight ahead, or the ring turns by that many
+// degrees (positive turns it left, like next). Their arrangement stays as it is: the room
+// turns instead of you. A spin that arrives during one adds to it, from where the panels are
+// headed, so quick taps carry on smoothly. Grabbing a panel, or a command that places it,
+// takes it out of the spin where it is. The 3D mouse's pointer goes to straight ahead.
+constexpr double kSpinSeconds = 0.3;  // how long a spin takes
+constexpr double kSpinAhead = 8;      // degrees: a panel this near straight ahead is the current one
+constexpr double kSpinFocus = 30;     // degrees: when a spin settles, the panel this near ahead gets typing
+
+struct Spin {
+    bool on = false;
+    double cx = 0, cz = 0;    // the axis
+    double from = 0, to = 0;  // radians, turned from the poses in base (positive: to the left)
+    Clock::time_point start;
+    std::map<int, Mat> base;  // index -> its pose before the spin
+    int front = -1;           // settled: this panel came to the front (ft_vr_poll reports it)
+} g_spin;
+
+// p turned a radians about the vertical axis through (cx, cz); positive turns it to the left.
+Mat Turned(const Mat &p, double a, double cx, double cz) {
+    const double c = std::cos(a), s = std::sin(a);
+    Mat r = Identity();
+    r.m[0][0] = float(c), r.m[0][2] = float(s);
+    r.m[2][0] = float(-s), r.m[2][2] = float(c);
+    r.m[0][3] = float(cx - c * cx - s * cz);
+    r.m[2][3] = float(cz + s * cx - c * cz);
+    return Mul(r, p);
+}
+
+bool Spinnable(const Screen &s) { return s.pinned == kNone && (!s.floating || s.floatOn) && s.drag == Drag::None; }
+
+double SpinNow() {
+    if (!g_spin.on) return g_spin.to;
+    const double t = std::min(1.0, std::chrono::duration<double>(Clock::now() - g_spin.start).count() / kSpinSeconds);
+    return g_spin.from + (g_spin.to - g_spin.from) * t * t * (3 - 2 * t);
+}
+
+void UpdateSpin() {
+    if (!g_spin.on) return;
+    const double a = SpinNow();
+    const bool done = Clock::now() - g_spin.start >= std::chrono::duration<double>(kSpinSeconds);
+    for (auto it = g_spin.base.begin(); it != g_spin.base.end();) {
+        auto s = g_screens.find(it->first);
+        if (s == g_screens.end() || !Spinnable(s->second)) {
+            it = g_spin.base.erase(it);  // grabbed, pinned, or gone: it stays where it is now
+            continue;
+        }
+        SetAbsolute(s->second, Turned(it->second, a, g_spin.cx, g_spin.cz));
+        ++it;
+    }
+    if (done) {
+        // The panel now nearest straight ahead (of where you face) gets typing and the active window.
+        Mat head;
+        double nearest = kSpinFocus;
+        if (DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) {
+            for (const auto &[i, p] : g_spin.base) {
+                const auto it = g_screens.find(i);
+                Mat q;
+                if (it == g_screens.end() || !it->second.visible || !ScreenPose(it->second, &q)) continue;
+                double f[3] = {-head.m[0][2], 0, -head.m[2][2]};
+                double d[3] = {q.m[0][3] - head.m[0][3], 0, q.m[2][3] - head.m[2][3]};
+                const double fl = std::sqrt(Dot3(f, f)), dl = std::sqrt(Dot3(d, d));
+                if (fl < 1e-6 || dl < 1e-6) continue;
+                const double a = std::acos(std::clamp(Dot3(f, d) / (fl * dl), -1.0, 1.0)) * 180 / M_PI;
+                if (a < nearest) nearest = a, g_spin.front = i;
+            }
+        }
+        g_spin.on = false;
+        g_spin.base.clear();
+        ArrangeDesktopSoon();  // KWin's outputs follow where the screens are now
+    }
+}
+
+void SpinCommand(const char *arg, char *reply, int size) {
+    Mat head;
+    if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head))
+        return (void)std::snprintf(reply, size, "error no head pose (headset off?)");
+    if (g_spin.on) {
+        g_spin.from = SpinNow();  // carry on from where the panels are now
+    } else {
+        g_spin.base.clear();
+        for (auto &[i, s] : g_screens) {
+            Mat p;
+            if (Spinnable(s) && ScreenPose(s, &p)) g_spin.base[i] = p;
+        }
+        g_spin.cx = head.m[0][3], g_spin.cz = head.m[2][3];
+        g_spin.from = g_spin.to = 0;
+    }
+    if (g_spin.base.empty()) return (void)std::snprintf(reply, size, "error nothing to spin");
+    double turn;  // degrees, positive to the left
+    const bool next = !std::strcmp(arg, "next");
+    if (next || !std::strcmp(arg, "prev")) {
+        // Each visible panel's bearing from where you face, to the right positive, as it will
+        // be when the spin so far ends; the nearest one past straight ahead comes to the front.
+        double fx = -head.m[0][2], fz = -head.m[2][2];
+        const double n = std::sqrt(fx * fx + fz * fz) + 1e-9;
+        fx /= n, fz /= n;
+        const double rx = -fz, rz = fx;
+        double best = 0;
+        bool found = false;
+        for (const auto &[i, p] : g_spin.base) {
+            const auto s = g_screens.find(i);
+            if (s == g_screens.end() || !s->second.visible) continue;
+            const Mat q = Turned(p, g_spin.to, g_spin.cx, g_spin.cz);
+            const double dx = q.m[0][3] - head.m[0][3], dz = q.m[2][3] - head.m[2][3];
+            double a = std::atan2(dx * rx + dz * rz, dx * fx + dz * fz) * 180 / M_PI;
+            if (!next) a = -a;
+            if (a <= kSpinAhead) a += 360;
+            if (!found || a < best) best = a, found = true;
+        }
+        if (!found || best >= 360 - kSpinAhead) {
+            if (!g_spin.on) g_spin.base.clear();
+            return (void)std::snprintf(reply, size, "ok 0 (no other panel)");
+        }
+        if (best > 180) best -= 360;  // the short way round
+        turn = next ? best : -best;
+    } else {
+        char *end;
+        turn = std::strtod(arg, &end);
+        if (end == arg || *end) return (void)std::snprintf(reply, size, "error spin next|prev|<degrees>");
+    }
+    g_spin.to += turn * M_PI / 180;
+    g_spin.start = Clock::now();
+    g_spin.on = true;
+    SendPointer("recenter");  // the 3D mouse's pointer stays in front of you, on what comes there
+    std::snprintf(reply, size, "ok %.1f", turn);
 }
 
 uint32_t LinuxButton(uint32_t vrButton) {
@@ -1887,6 +2029,14 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
         handle(&e, data);
     }
     ++g_tick;
+    UpdateSpin();
+    if (g_spin.front >= 0) {
+        ft_event e{};
+        e.type = FT_FRONT;
+        e.screen = g_spin.front;
+        g_spin.front = -1;
+        handle(&e, data);
+    }
     UpdateGame();
     UpdateArrange();
     UpdateVisibility();
@@ -1959,6 +2109,8 @@ void ft_vr_keyboard_hide(void) {
 //                             ~100 ms (it landed on something else), KWin gets it anyway
 //   state         -> "ok <mode> <manual 0|1> <wrist deg> <gesture hand> <gesture deg>
 //                     <controllers> <game running 0|1> <ingames>"
+//   spin next|prev|<degrees>  turn every panel in the room about your head (see the lazy
+//                             susan) -> "ok <degrees turned>"
 //   cutouts on|off|state      hand cutouts (see handcut.h) -> "ok <on|off> <ready|idle|unavailable>
 //                             <last composite ms> ms, predict <on|off> lead <ms> ms"
 //   cutouts predict on|off    move the hands ahead along their velocity (on by default)
@@ -1996,6 +2148,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         Screen *s = Find(n);
         if (!s) return (void)std::snprintf(reply, size, "error no screen %d", n);
         EndDrag(*s);
+        g_spin.base.erase(n - 1);
         SetAbsolute(*s, PanelPose(x, y, z, yaw, pitch, roll));
         std::snprintf(reply, size, "ok");
     } else if (std::sscanf(cmd, "width %d %lf", &n, &w) == 2) {
@@ -2151,6 +2304,7 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         Mat m{};
         for (int k = 0; k < 12; ++k) m.m[k / 4][k % 4] = r[k];
         EndDrag(*s);
+        g_spin.base.erase(n - 1);
         SetAbsolute(*s, m);
         std::snprintf(reply, size, "ok");
     } else if (int k0; std::sscanf(cmd, "sub %d %d %d %d %d %d", &n, &k0, &x0, &y0, &w0, &h0) == 6 ||
@@ -2178,6 +2332,8 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         if ((g_press.buttons & ButtonBit(BTN_LEFT)) && g_press.device != kNone && !IsHandController(g_press.device))
             g_press.upAt = g_tick + 9;
         std::snprintf(reply, size, "ok");
+    } else if (std::sscanf(cmd, "spin %15s", word) == 1) {
+        SpinCommand(word, reply, size);
     } else if (std::strncmp(cmd, "state", 5) == 0) {
         std::snprintf(reply, size, "ok %s %d %.0f %s %.0f %s %d %s", ModeName(), g_manual ? 1 : 0, g_wristAngle,
                       g_gestureHand.c_str(), g_gestureAngle, LasersName(), g_gameRunning ? 1 : 0,

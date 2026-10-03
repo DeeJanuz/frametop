@@ -71,6 +71,8 @@ ACTION_LABELS = {
     "sens_down": "Slower pointer", "layout_reset": "Reset desktop screen layout",
     "screens_toggle": "Hide/show desktop screens", "keyboard_toggle": "Open/close keyboard",
     "float_toggle": "Float window in VR / put it back", "dock_all": "Put all floating windows back",
+    "spin_next": "Spin the panels: next one on the right to the front",
+    "spin_prev": "Spin the panels: next one on the left to the front",
     "key": "Pass through as key",
     "none": "Do nothing",
 }
@@ -142,8 +144,9 @@ GAZE_MOUSE = {"precision": "Gaze precision: hold to steer with the mouse, releas
 MODIFIER_CODES = {29: 29, 97: 29, 42: 42, 54: 42, 56: 56, 100: 56, 125: 125, 126: 125}
 MODIFIER_NAMES = {29: "Ctrl", 42: "Shift", 56: "Alt", 125: "Meta"}
 # What a rules file without "key_bindings" gets (the relay's DEFAULT_KEY_BINDINGS): Meta+J and
-# Meta+K click at the gaze, Meta+Shift+F floats a window.
-DEFAULT_KEY_BINDINGS = {"125+36": "gaze_left", "125+37": "gaze_right", "42+125+33": "float_toggle"}
+# Meta+K click at the gaze, Meta+Shift+F floats a window, Meta+Alt+Tab and Meta+Alt+Shift+Tab spin the panels.
+DEFAULT_KEY_BINDINGS = {"125+36": "gaze_left", "125+37": "gaze_right", "42+125+33": "float_toggle",
+                        "56+125+15": "spin_next", "42+56+125+15": "spin_prev"}
 
 
 def key_bindings(rules):
