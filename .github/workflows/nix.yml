@@ -1,0 +1,81 @@
+# Builds the Nix packages on aarch64-linux, the Frame's platform, natively on GitHub's
+# arm runner: every package (the driver's install check runs here, so its glibc, NEEDED,
+# RUNPATH, and exports checks are on the real architecture), a Home Manager configuration
+# with programs.frametop, and a start of each settings app with no display.
+# See nix/README.md.
+name: Nix (aarch64)
+
+on:
+  pull_request:
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      # Determinate Nix (flakes on by default).
+      - uses: DeterminateSystems/determinate-nix-action@v3
+
+      # Caches the store paths builds produce in GitHub Actions' cache, so a run rebuilds
+      # only what changed (nixpkgs' own paths still come from cache.nixos.org).
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+
+      # Both systems evaluate; only this one's checks can build here (an arm runner can't
+      # build x86_64 derivations).
+      - name: Evaluate the flake for both systems
+        run: nix flake check --all-systems --no-build
+
+      - name: Check the flake (builds this system's checks)
+        run: nix flake check -L
+
+      - name: Build every package
+        run: |
+          nix build -L \
+            .#ft-screens .#ft-pointer .#ft-powerd .#ft-pointer-driver \
+            .#frametop-scripts .#frametop-apps
+
+      - name: Build a Home Manager configuration with programs.frametop
+        run: nix build --impure -L -f nix/ci/home.nix -o home
+
+      - name: Inspect the builds
+        run: |
+          so=$(nix build --no-link --print-out-paths .#ft-pointer-driver)/share/frametop/ft_pointer/bin/linuxarm64/driver_ft_pointer.so
+          file "$so"
+          objdump -p "$so" | grep -E 'NEEDED|RPATH|RUNPATH' || true
+          screens=$(nix build --no-link --print-out-paths .#ft-screens)/bin/ft-screens
+          readelf -d "$screens" | grep RUNPATH
+          ls home/home-files/.config/systemd/user home/home-files/.local/share/applications
+
+      - name: Start the settings apps with no display
+        run: |
+          apps=$(nix build --no-link --print-out-paths .#frametop-apps)
+          export HOME=$RUNNER_TEMP/home XDG_RUNTIME_DIR=$RUNNER_TEMP/runtime
+          mkdir -p "$HOME" "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          for app in ft-display-settings ft-input-settings; do
+            # Each exits 1 at once if its QML (Kirigami, the org.kde.desktop style) doesn't
+            # load; still running after a few seconds means it did.
+            set +e
+            QT_QPA_PLATFORM=offscreen timeout 15 "$apps/bin/$app" > "$RUNNER_TEMP/$app.log" 2>&1
+            code=$?
+            set -e
+            cat "$RUNNER_TEMP/$app.log"
+            [ "$code" = 124 ] || { echo "$app exited with $code" >&2; exit 1; }
+            echo "$app: loaded"
+          done
+
+      - name: ft-layout and the script Python
+        run: |
+          apps=$(nix build --no-link --print-out-paths .#frametop-apps)
+          "$apps/bin/ft-layout" --help > /dev/null
+          "$apps/libexec/frametop/ft-python" -c 'import dbus, dbus.mainloop.glib; from gi.repository import Gio, GLib'

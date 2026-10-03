@@ -1,0 +1,4 @@
+#!/bin/bash
+# Reset Screen Layout's own program. Steam lists menu entries by program, so entries that
+# shared ft-layout (with different arguments) launched as one.
+exec "$(dirname "$(readlink -f "$0")")/ft-layout" apply "$@"

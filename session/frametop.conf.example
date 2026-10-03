@@ -9,6 +9,7 @@ PHYS_WIDTH=1.6     # gamescope: panel width in metres, docked
 REMOTE=0           # 1 = serve the desktop's primary screen over VNC on the tailnet (port 5900; Frametop Remote Access, see README)
 FLOAT_SLOTS=8      # screens backend: how many windows can float in VR at once (spare outputs; 0 turns it off; restart the desktop after a change)
 FLOAT_MARGIN=300   # floating windows: pixels around each window on its output, so menus have room past its edges
+SHARE_CONFIG=0     # 1 = apps in the desktop use your normal ~/.config and ~/.local/state (all but Plasma's own files); restart the desktop after a change
 POINTER=0          # 1 = the mouse drives the universal 3D pointer (ft_pointer driver) instead of a plain mouse
 POINTER_SENSITIVITY=0.03   # degrees per mouse count
 POINTER_IDLE=30    # seconds without mouse use before the controllers get their laser back

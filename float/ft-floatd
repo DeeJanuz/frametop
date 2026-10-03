@@ -1,3 +1,3 @@
 #!/bin/bash
 # ft-floatd on the Frame host, inside the Frametop desktop's session (see ft_floatd.py).
-exec python3 "$(dirname "$(readlink -f "$0")")/ft_floatd.py" "$@"
+exec "${FRAMETOP_PYTHON:-python3}" "$(dirname "$(readlink -f "$0")")/ft_floatd.py" "$@"

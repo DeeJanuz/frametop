@@ -19,6 +19,7 @@ scripts/frame.sh --host '<cmd>'          # runs on the SteamOS host
 - Build inside the `dev` container. The SteamOS host has a read-only root and no compilers. Container builds link against the container's libraries, so they run in the container (`distrobox enter dev -- ...`); the SteamVR driver is built to run on the host.
 - Container packages the build needs go in the list in `setup/dev-container.sh`, so the container can be rebuilt.
 - Build output goes in `build/` next to the sources. It's gitignored and never synced.
+- The flake (`flake.nix`, `nix/`) builds the same programs with nixpkgs, for Nix and Home Manager on the headset ([nix/README.md](nix/README.md)). A change to a `build.sh` (sources, flags, libraries) or to an installed unit or launcher entry goes in the matching file under `nix/` too. Scripts find programs and each other by relative path, and the Nix tree keeps those paths. A new absolute path or container call needs an env hook with the current behavior as its default, like `FRAMETOP_SCREENS_BIN`.
 
 ## The headset may be in use
 

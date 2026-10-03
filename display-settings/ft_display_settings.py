@@ -85,10 +85,13 @@ def host_command(*cmd):
 
     distrobox-host-exec reaches the host through the user's real session bus; inside the
     desktop our DBUS_SESSION_BUS_ADDRESS is the nested session's private one, where it
-    fails (exit 127, silently)."""
+    fails (exit 127, silently). On the host (the Nix packages) the command runs directly, but
+    systemd-run --user finds the user manager through XDG_RUNTIME_DIR, which the desktop's
+    session points at its own, so both go back to the real session's."""
+    runtime = f"/run/user/{os.getuid()}"
+    bus = f"unix:path={runtime}/bus"
     if not shutil.which("distrobox-host-exec"):
-        return list(cmd)
-    bus = f"unix:path=/run/user/{os.getuid()}/bus"
+        return ["env", f"XDG_RUNTIME_DIR={runtime}", f"DBUS_SESSION_BUS_ADDRESS={bus}"] + list(cmd)
     return ["env", f"DBUS_SESSION_BUS_ADDRESS={bus}", "distrobox-host-exec"] + list(cmd)
 
 

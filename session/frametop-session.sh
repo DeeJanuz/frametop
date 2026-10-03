@@ -34,7 +34,7 @@ for var in $(compgen -e); do
 done
 
 conf=$HOME/.config/frametop.conf
-BACKEND=screens SCREENS=2 WIDTH=1920 HEIGHT=1080 PHYS_WIDTH=1.6 REMOTE=0 FLOAT_SLOTS=8 FLOAT_MARGIN=300
+BACKEND=screens SCREENS=2 WIDTH=1920 HEIGHT=1080 PHYS_WIDTH=1.6 REMOTE=0 FLOAT_SLOTS=8 FLOAT_MARGIN=300 SHARE_CONFIG=0
 # shellcheck disable=SC1090
 [ -f "$conf" ] && . "$conf"
 backend=${FT_BACKEND:-$BACKEND}
@@ -43,6 +43,7 @@ width=${FT_WIDTH:-$WIDTH}
 height=${FT_HEIGHT:-$HEIGHT}
 phys_width=${FT_PHYS_WIDTH:-$PHYS_WIDTH}
 remote=${FT_REMOTE:-$REMOTE}
+share_config=${FT_SHARE_CONFIG:-$SHARE_CONFIG}
 # Floating windows (screens backend): KWin gets this many spare outputs after the screens,
 # and ft-floatd floats a window on each (docs/floating-windows.md). Changing it takes a
 # desktop restart.
@@ -99,12 +100,19 @@ if [ "${1:-}" != --inner ]; then
   fi
 
   # ft-screens runs in the dev container (it's built against Fedora's wlroots); KWin and
-  # Plasma stay on the host and connect to its socket.
+  # Plasma stay on the host and connect to its socket. FRAMETOP_SCREENS_BIN names a build
+  # that runs on the host instead (the Nix package's, nix/README.md).
   socket=ft-screens-0
   read -ra screen_args <<< "$("$here/../layout/ft-layout" screen-args)"
   export FT_SCREEN_COUNT=$(( ${#screen_args[@]} / 2 )) FT_FLOAT_SLOTS=$float_slots
-  "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
-  "$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens" --socket "$socket" \
+  screens_bin=${FRAMETOP_SCREENS_BIN:-}
+  if [ -n "$screens_bin" ]; then
+    screens_cmd=("$screens_bin")
+  else
+    "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
+    screens_cmd=("$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens")
+  fi
+  "${screens_cmd[@]}" --socket "$socket" \
     "${screen_args[@]}" --spares "$float_slots" > /tmp/frametop-screens.log 2>&1 < /dev/null &
   stop_screens() { pkill -x ft-screens 2>/dev/null || true; }
   trap stop_screens EXIT
@@ -177,6 +185,13 @@ export XDG_CONFIG_HOME=$HOME/.config/frametop
 export XDG_STATE_HOME=$HOME/.local/state/frametop
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
+# Apps started here inherit both. With SHARE_CONFIG=1, everything in them but Plasma's own
+# files links to the real folders: the apps keep their config, logins, and history.
+if [ "$share_config" = 1 ]; then
+  "${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.config" "$XDG_CONFIG_HOME" config || true
+  "${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.local/state" "$XDG_STATE_HOME" state || true
+fi
+
 # Remote desktop over VNC: session/remote-desktop.sh captures the desktop with
 # krdp on 127.0.0.1, and session/vnc-bridge.sh re-serves its primary screen over VNC. krdpserver runs from the container, so KWin can't
 # match it to an installed app. KWin's permission check for screencast and fake
@@ -211,7 +226,7 @@ fi
 # apps' desktop files with that action, first in XDG_DATA_DIRS, so only this desktop sees
 # them. Written now, before Plasma reads them; ft-floatd keeps them up to date.
 if [ "$float_slots" -gt 0 ]; then
-  python3 "$here/../float/ft_apps.py" >/dev/null 2>&1 || true
+  "${FRAMETOP_PYTHON:-python3}" "$here/../float/ft_apps.py" >/dev/null 2>&1 || true
   export XDG_DATA_DIRS=$HOME/.local/share/frametop/apps:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
 fi
 
@@ -226,6 +241,7 @@ if [ "$float_slots" -gt 0 ]; then
   rm -rf "$deco_dir" "$deco_dir"_try*  # (decoration/apply.sh's copies)
   mkdir -p "$(dirname "$deco_dir")"
   cp -r "$here/../decoration" "$deco_dir"
+  chmod -R u+w "$deco_dir"  # (a read-only source, like the Nix store, would block the rm above next time)
   rm -f "$deco_dir/apply.sh"
   kwriteconfig6 --file "$kwinrc" --group org.kde.kdecoration2 --key library org.kde.kwin.aurorae
   kwriteconfig6 --file "$kwinrc" --group org.kde.kdecoration2 --key theme "$deco"
@@ -238,4 +254,5 @@ fi
 # with both, apps would open twice.
 kwriteconfig6 --file "$XDG_CONFIG_HOME/ksmserverrc" --group General --key loginMode emptySession
 
-dbus-run-session startplasma-wayland
+# FRAMETOP_STARTPLASMA: the host's Plasma, when PATH might find another one first.
+dbus-run-session "${FRAMETOP_STARTPLASMA:-startplasma-wayland}"
