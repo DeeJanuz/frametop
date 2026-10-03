@@ -1,13 +1,11 @@
-# Frametop's scripts, Python tools, and settings apps, with the programs built by the other
-# packages, as one tree in share/frametop that mirrors the repo: the scripts find each other
-# by relative path ($here/../layout/ft-layout, <exe>/../../../layout/ft-layout from
-# ft-screens), so they keep doing that here, and the only changes are the defaults of the
-# repo's env hooks (FRAMETOP_SCREENS_BIN, FRAMETOP_PYTHON, FRAMETOP_STARTPLASMA): nothing is
-# exported into the session, so the host Plasma it starts gets a clean environment.
+# Frametop's scripts, Python tools, and settings apps, plus the programs from the other
+# packages, as one tree in share/frametop laid out like the repo. The scripts find each
+# other by relative path, so they work unchanged. Only the defaults of three environment
+# variables change (FRAMETOP_SCREENS_BIN, FRAMETOP_PYTHON, FRAMETOP_STARTPLASMA); nothing is
+# exported, so the host's Plasma starts with a clean environment.
 #
-# withSettingsApps adds Frametop Display Settings and Frametop Input Settings (PySide6 +
-# Kirigami). They import ft_layout and call desktops.sh by relative path, so they live in
-# the same tree. Without them (frametop-scripts) there's no Qt in the closure.
+# withSettingsApps adds Frametop Display Settings and Frametop Input Settings (PySide6 and
+# Kirigami). Without them (frametop-scripts), nothing depends on Qt.
 {
   lib,
   stdenvNoCC,
@@ -89,7 +87,7 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${scriptPython}/bin/python3 $out/libexec/frametop/ft-python \
       --prefix GI_TYPELIB_PATH : ${typelibPath}
 
-    # Defaults of the repo's env hooks.
+    # Point the scripts' defaults at this package.
     substituteInPlace $tree/session/frametop-session.sh \
       --replace-fail 'screens_bin=''${FRAMETOP_SCREENS_BIN:-}' \
                      "screens_bin=\''${FRAMETOP_SCREENS_BIN:-$tree/screens/build/ft-screens}" \
@@ -99,7 +97,7 @@ stdenvNoCC.mkDerivation {
       substituteInPlace $tree/$f \
         --replace-fail '"''${FRAMETOP_PYTHON:-python3}"' "\"\''${FRAMETOP_PYTHON:-$out/libexec/frametop/ft-python}\""
     done
-    # ft-input-relay runs with /usr/bin/python3 upstream; the unit here names the interpreter.
+    # The repo's relay unit uses /usr/bin/python3; the Home Manager unit uses this one.
     ln -s ${scriptPython}/bin/python3 $out/libexec/frametop/python3
 
     # Menu entries, filled in (Home Manager links them into ~/.local/share/applications).

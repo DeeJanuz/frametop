@@ -28,16 +28,14 @@ let
   entries = "${pkg}/share/frametop-entries";
   platform = cfg.driverPackage.passthru.steamvrPlatform;
   steamvrBin = "${cfg.host.steamvr}/bin/${platform}";
-  # Where upstream's pointer/driver/install.sh puts it too, so SteamVR's registration is
-  # the same either way.
+  # The same path pointer/driver/install.sh uses, so SteamVR's registration matches.
   driverDir = "${config.xdg.dataHome}/frametop/ft_pointer";
   openvrPaths = "${config.xdg.configHome}/openvr/openvrpaths.vrpath";
 
-  # SteamVR opens input devices only at startup, so the relay must not come up for the
-  # first time under a running SteamVR (it would grab the mouse away from it). install.sh
-  # enables it without starting it; Home Manager starts new units wanted by active targets,
-  # so this skips such a start. A restart keeps the devices in the fd store, so with
-  # devices stored (a crash, a changed unit) it goes ahead.
+  # SteamVR opens input devices only at startup, so the relay must not start for the first
+  # time while SteamVR runs (it would take the mouse away from it). Home Manager starts new
+  # services right away, so this skips that start. A restart (after a crash or an update) is
+  # fine: systemd keeps the relay's virtual devices, so SteamVR keeps seeing them.
   relayCondition = pkgs.writeShellScript "frametop-input-relay-condition" ''
     systemctl --user is-active --quiet steamvr.service || exit 0
     n=$(systemctl --user show -p NFileDescriptorStore --value frametop-input-relay.service)

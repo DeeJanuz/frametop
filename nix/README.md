@@ -1,6 +1,6 @@
 # Frametop with Nix and Home Manager
 
-The flake builds Frametop with nixpkgs instead of the Fedora `dev` container. The container exists only because SteamOS's libraries are too old to build against, and nixpkgs replaces it. A Home Manager module then sets up what `install.sh` sets up. This is for a Steam Frame (SteamOS, aarch64-linux, not NixOS) with Nix and standalone Home Manager.
+The flake builds Frametop with nixpkgs instead of the Fedora `dev` container. A Home Manager module then sets up what `install.sh` sets up. This is for a Steam Frame (SteamOS, aarch64-linux, not NixOS) with Nix and standalone Home Manager.
 
 It covers the multi-screen desktop, the input relay, the 3D mouse, the power service, and the two settings apps. Gaze mode, hand tracking, and remote desktop aren't supported with Nix: they build or run in the `dev` container, so their installers need the container setup. Keep `REMOTE=0`, since remote desktop still enters the container. The Bluetooth fixes don't need the container: install them from a checkout with `setup/bluetooth/install.sh` (it asks for `sudo`).
 
@@ -19,7 +19,7 @@ TODO: package gaze mode, hand tracking, and remote desktop. Gaze's frame grabber
 
 `share/frametop` mirrors the repo. The scripts find each other by relative path (`$here/../layout/ft-layout`), and ft-screens finds `ft-layout` from its own path, so each program sits where the repo's build would put it (`screens/build/ft-screens`). The settings apps live in the same tree because they import `ft_layout` and call `desktops.sh` by relative path.
 
-The repo's scripts have three env hooks: `FRAMETOP_SCREENS_BIN` (run ft-screens on the host, not in the container), `FRAMETOP_PYTHON`, and `FRAMETOP_STARTPLASMA`. The package sets their defaults to store paths. It exports nothing, so the host Plasma that the session starts gets a clean environment, with no `LD_LIBRARY_PATH` and no Qt paths.
+The repo's scripts read three environment variables: `FRAMETOP_SCREENS_BIN` (run ft-screens on the host, not in the container), `FRAMETOP_PYTHON`, and `FRAMETOP_STARTPLASMA`. The package sets their defaults to store paths. It exports nothing, so the host Plasma that the session starts gets a clean environment, with no `LD_LIBRARY_PATH` and no Qt paths.
 
 ft-screens (EGL, GLES, GBM) has `/run/opengl-driver/lib` first in its RUNPATH. The settings apps reach the same drivers through nixpkgs' libglvnd, which looks there too.
 
@@ -71,13 +71,11 @@ The driver is the exception, because it loads into the host's `vrserver`. `zig c
 
 `programs.frametop` sets up:
 
-- **`frametop-input-relay`**: the same unit as `input/frametop-input-relay.service` (`Type=notify`, `Before=steamvr.service`, the fd store), run with the package's Python. Home Manager starts new units that active targets want. Started for the first time under a running SteamVR, the relay would take the mouse away from it, so an `ExecCondition` skips that start. The relay comes up before SteamVR the next time SteamVR starts. Restarts still go ahead, because the fd store keeps the same devices.
-- **`frametop-pointer`** and **`frametop-power`**: they start and stop with SteamVR, as upstream. `ExecStart` points straight at the store, with no container.
-- **The ft_pointer driver**: it's linked at `~/.local/share/frametop/ft_pointer`, the path `pointer/driver/install.sh` uses. Activation registers it once with the host's `vrpathreg`. The path stays the same across generations, so a rebuild doesn't touch SteamVR's config.
+- **`frametop-input-relay`**: the same unit as `input/frametop-input-relay.service` run with the package's Python. If SteamVR is running when it's first installed, the relay waits for SteamVR's next start: starting under a running SteamVR would take the mouse away from it.
+- **`frametop-pointer`** and **`frametop-power`**: they start and stop with SteamVR, as with `install.sh`.
+- **The ft_pointer driver**: it's linked at `~/.local/share/frametop/ft_pointer`, the path `pointer/driver/install.sh` uses. Activation registers it once with the host's `vrpathreg`. The path stays the same across updates, so SteamVR's config isn't touched again.
 - **Menu entries**: the launcher's Desktop entry (the `deckard-nested-desktop.desktop` override that `desktops.sh install` writes), Frametop Display Settings, Frametop Input Settings, Reset Screen Layout, Hide/Show Screens, and their shortcuts. Activation rewrites each profile's entry (`ft-layout launchers`), since those entries point into the store.
 - **`~/.config/frametop.conf`**: it isn't managed, because the settings apps write to it. A missing one is created from the example, with `POINTER=1` if the 3D mouse is on. Activation sets `SHARE_CONFIG` from `shareConfig` (on by default), and leaves the rest alone.
-
-The session copies the title bar decoration into `~/.local/share/kwin/decorations` itself each time it starts, as it does upstream, so Home Manager doesn't manage that copy. Home Manager would only fight the session's `rm -rf`/`cp`.
 
 Host programs are options under `programs.frametop.host`: `steamvr` (`/opt/steamvr`), `startPlasma`, `vrpathreg`, and `kwriteconfig`. Don't add any `kdePackages` to `home.packages`. `~/.nix-profile/bin` comes first in PATH, so the session would start those programs instead of the host's.
 
@@ -91,7 +89,7 @@ ft-screens and the settings apps use Mesa from nixpkgs, through `/run/opengl-dri
 sudo /nix/store/...-non-nixos-gpu-setup/bin/non-nixos-gpu-setup
 ```
 
-It installs a systemd unit that links `/run/opengl-driver` to the current drivers at boot. Run it again when activation says the drivers need an update. It needs host `sudo`. AGENTS.md asks for explicit approval for that on someone's headset.
+It installs a systemd unit that links `/run/opengl-driver` to the current drivers at boot. Run it again when activation says the drivers need an update. It needs `sudo`.
 
 ### Moving from install.sh
 
@@ -117,6 +115,6 @@ nix build .#frametop-apps                     # on the Frame, or an aarch64 buil
 nix build .#packages.x86_64-linux.ft-screens  # the same derivations on a PC
 ```
 
-`checks` builds `ft-pointer-driver`, so its glibc, NEEDED, RUNPATH, and exports checks run, builds `frametop-scripts`, and runs `session/test_config_links.py` (`config-links`). The settings apps' Qt closure stays out of `nix flake check`.
+`nix flake check` builds the driver (with its install checks) and `frametop-scripts`, and runs `session/test_config_links.py`. It leaves out the settings apps, to skip building Qt.
 
 CI (`.github/workflows/nix.yml`) runs on pull requests, on GitHub's arm runner, natively on aarch64-linux like the Frame, with Determinate Nix and the Magic Nix Cache, so a run rebuilds only what changed. It evaluates the flake for both systems, runs the aarch64 checks, builds every package, and builds a Home Manager configuration with `programs.frametop` on (`nix/ci/home.nix`; run it yourself with `nix build --impure -f nix/ci/home.nix`). It also starts both settings apps with no display, to check that their QML loads.

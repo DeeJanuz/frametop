@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Give the Frametop desktop the user's config and state, apart from Plasma's own files.
+The session runs it when SHARE_CONFIG=1 is set in ~/.config/frametop.conf.
 
 The session points XDG_CONFIG_HOME at ~/.config/frametop and XDG_STATE_HOME at
 ~/.local/state/frametop, so this desktop and the stock one keep their own screen layout,
 panels, and shortcuts. Every app started in the desktop inherits that, though, and would
-otherwise see an empty config (fish, kitty, git, a logged-out Vesktop). So at each start,
+otherwise see an empty config (no shell or editor settings, logged out of every app). So at each start,
 everything in the real folder that isn't Plasma's (KEEP_CONFIG, KEEP_STATE) is linked in
 (name -> ../name). A file or folder in the way, made here before, is moved to .replaced/.
 Links whose real entry is gone are removed. Entries the user linked elsewhere are left.
