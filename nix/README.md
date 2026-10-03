@@ -75,7 +75,7 @@ The driver is the exception, because it loads into the host's `vrserver`. `zig c
 - **`frametop-pointer`** and **`frametop-power`**: they start and stop with SteamVR, as with `install.sh`.
 - **The ft_pointer driver**: it's linked at `~/.local/share/frametop/ft_pointer`, the path `pointer/driver/install.sh` uses. Activation registers it once with the host's `vrpathreg`. The path stays the same across updates, so SteamVR's config isn't touched again.
 - **Menu entries**: the launcher's Desktop entry (the `deckard-nested-desktop.desktop` override that `desktops.sh install` writes), Frametop Display Settings, Frametop Input Settings, Reset Screen Layout, Hide/Show Screens, and their shortcuts. Activation rewrites each profile's entry (`ft-layout launchers`), since those entries point into the store.
-- **`~/.config/frametop.conf`**: it isn't managed, because the settings apps write to it. A missing one is created from the example, with `POINTER=1` if the 3D mouse is on. Activation sets `SHARE_CONFIG` from `shareConfig` (on by default), and leaves the rest alone.
+- **`~/.config/frametop.conf`**: it isn't managed, because the settings apps write to it. A missing one is created from the example. Activation sets `POINTER` from `pointer.enable` and `SHARE_CONFIG` from `shareConfig` (both on by default), and leaves the rest alone.
 
 Host programs are options under `programs.frametop.host`: `steamvr` (`/opt/steamvr`), `startPlasma`, `vrpathreg`, and `kwriteconfig`. Don't add any `kdePackages` to `home.packages`. `~/.nix-profile/bin` comes first in PATH, so the session would start those programs instead of the host's.
 

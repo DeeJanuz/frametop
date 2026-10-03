@@ -240,14 +240,17 @@ in
         if [ ! -e "$conf" ]; then
           run mkdir -p "$(dirname "$conf")"
           run install -m 644 ${tree}/session/frametop.conf.example "$conf"
-          ${lib.optionalString cfg.pointer.enable ''run sed -i 's/^POINTER=0/POINTER=1/' "$conf"''}
           verboseEcho "frametop: created $conf"
         fi
-        share=${if cfg.shareConfig then "1" else "0"}
-        if ! grep -q "^SHARE_CONFIG=$share" "$conf"; then
-          run sed -i "s/^SHARE_CONFIG=[0-9]*/SHARE_CONFIG=$share/" "$conf"
-          grep -q '^SHARE_CONFIG=' "$conf" || run sh -c "echo SHARE_CONFIG=$share >> '$conf'"
-        fi
+
+        # Settings that follow this module's options; no settings app writes them.
+        set_conf() {  # set_conf KEY 0|1
+          grep -qE "^$1=$2([^0-9]|$)" "$conf" && return
+          run sed -i "s/^$1=[0-9]*/$1=$2/" "$conf"
+          grep -q "^$1=" "$conf" || run sh -c "echo $1=$2 >> '$conf'"
+        }
+        set_conf POINTER ${if cfg.pointer.enable then "1" else "0"}
+        set_conf SHARE_CONFIG ${if cfg.shareConfig then "1" else "0"}
       '';
 
       # The ft_pointer driver's registration with SteamVR, once: the path doesn't change
