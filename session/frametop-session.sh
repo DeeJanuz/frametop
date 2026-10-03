@@ -34,7 +34,7 @@ for var in $(compgen -e); do
 done
 
 conf=$HOME/.config/frametop.conf
-BACKEND=screens SCREENS=2 WIDTH=1920 HEIGHT=1080 PHYS_WIDTH=1.6 REMOTE=0 FLOAT_SLOTS=8 FLOAT_MARGIN=300
+BACKEND=screens SCREENS=2 WIDTH=1920 HEIGHT=1080 PHYS_WIDTH=1.6 REMOTE=0 FLOAT_SLOTS=8 FLOAT_MARGIN=300 SHARE_CONFIG=0
 # shellcheck disable=SC1090
 [ -f "$conf" ] && . "$conf"
 backend=${FT_BACKEND:-$BACKEND}
@@ -43,6 +43,7 @@ width=${FT_WIDTH:-$WIDTH}
 height=${FT_HEIGHT:-$HEIGHT}
 phys_width=${FT_PHYS_WIDTH:-$PHYS_WIDTH}
 remote=${FT_REMOTE:-$REMOTE}
+share_config=${FT_SHARE_CONFIG:-$SHARE_CONFIG}
 # Floating windows (screens backend): KWin gets this many spare outputs after the screens,
 # and ft-floatd floats a window on each (docs/floating-windows.md). Changing it takes a
 # desktop restart.
@@ -184,10 +185,13 @@ export XDG_CONFIG_HOME=$HOME/.config/frametop
 export XDG_STATE_HOME=$HOME/.local/state/frametop
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# Apps started here inherit both, so everything in them but Plasma's own files links to
-# the real folders: the apps keep their config, logins, and history.
-"${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.config" "$XDG_CONFIG_HOME" config || true
-"${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.local/state" "$XDG_STATE_HOME" state || true
+# Apps started here inherit both. With SHARE_CONFIG=1, everything in them but Plasma's own
+# files links to the real folders: the apps keep their config, logins, and history. With 0,
+# those links are removed.
+share_mode=unshare
+[ "$share_config" = 1 ] && share_mode=share
+"${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.config" "$XDG_CONFIG_HOME" config "$share_mode" || true
+"${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.local/state" "$XDG_STATE_HOME" state "$share_mode" || true
 
 # Remote desktop over VNC: session/remote-desktop.sh captures the desktop with
 # krdp on 127.0.0.1, and session/vnc-bridge.sh re-serves its primary screen over VNC. krdpserver runs from the container, so KWin can't

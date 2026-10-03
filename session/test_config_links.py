@@ -77,7 +77,7 @@ def test_sync_on_disk(tmp_path):
     (local / "gone").symlink_to(os.path.join("..", "gone"))
     (local / cl.REPLACED / "fish").mkdir(parents=True)  # an earlier move's
 
-    moved = cl.sync(str(real), str(local), {"kwinrc"})
+    moved = cl.sync(str(real), str(local), {"kwinrc"}, cl.SHARE)
 
     assert (local / "fish" / "config.fish").read_text() == "real"
     assert os.readlink(local / "starship.toml") == os.path.join("..", "starship.toml")
@@ -86,4 +86,29 @@ def test_sync_on_disk(tmp_path):
     assert not os.path.lexists(local / OWN)
     assert (local / cl.REPLACED / "fish.1" / "config.fish").read_text() == "stub"
     assert moved == [("fish", str(local / cl.REPLACED / "fish.1"))]
-    assert cl.sync(str(real), str(local), {"kwinrc"}) == []
+    assert cl.sync(str(real), str(local), {"kwinrc"}, cl.SHARE) == []
+
+
+@given(st.dictionaries(NAMES, KINDS), st.sets(NAMES))
+def test_unshare_removes_only_ours(local, keep):
+    after = apply_plan(set(), local, cl.plan(set(), local, keep, OWN))
+    for name, kind in local.items():
+        if kind != cl.OURS or name in keep | {OWN, cl.REPLACED}:
+            assert after[name] == kind
+        else:
+            assert name not in after
+
+
+def test_unshare_on_disk(tmp_path):
+    real = tmp_path / ".config"
+    local = real / OWN
+    (real / "fish").mkdir(parents=True)
+    local.mkdir()
+    (local / "kwinrc").write_text("frametop")
+    (local / "elsewhere").symlink_to("/tmp")
+
+    cl.sync(str(real), str(local), {"kwinrc"}, cl.SHARE)
+    assert os.path.islink(local / "fish")
+
+    assert cl.sync(str(real), str(local), {"kwinrc"}, cl.UNSHARE) == []
+    assert sorted(os.listdir(local)) == ["elsewhere", "kwinrc"]

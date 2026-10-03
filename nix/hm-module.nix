@@ -95,6 +95,17 @@ in
       '';
     };
 
+    shareConfig = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Apps in the Frametop desktop use the normal ~/.config and ~/.local/state (all but
+        Plasma's own files), so they keep their config and logins. Written to
+        SHARE_CONFIG in ~/.config/frametop.conf at each activation; takes effect at the next
+        desktop start.
+      '';
+    };
+
     host = {
       steamvr = mkOption {
         type = types.str;
@@ -233,6 +244,11 @@ in
           run install -m 644 ${tree}/session/frametop.conf.example "$conf"
           ${lib.optionalString cfg.pointer.enable ''run sed -i 's/^POINTER=0/POINTER=1/' "$conf"''}
           verboseEcho "frametop: created $conf"
+        fi
+        share=${if cfg.shareConfig then "1" else "0"}
+        if ! grep -q "^SHARE_CONFIG=$share" "$conf"; then
+          run sed -i "s/^SHARE_CONFIG=[0-9]*/SHARE_CONFIG=$share/" "$conf"
+          grep -q '^SHARE_CONFIG=' "$conf" || run sh -c "echo SHARE_CONFIG=$share >> '$conf'"
         fi
       '';
 

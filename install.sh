@@ -86,6 +86,15 @@ step "7/9 multi-screen desktop (ft-screens), Frametop Input Settings, and Framet
 "$root/remote/install.sh"
 on_frame "sed -i 's/^POINTER=0/POINTER=1/' ~/.config/frametop.conf; grep -q '^POINTER=' ~/.config/frametop.conf || echo 'POINTER=1' >> ~/.config/frametop.conf"
 echo "the launcher's Desktop entry now opens the multi-screen desktop; 3D mouse on (POINTER=1 in ~/.config/frametop.conf)"
+share=n
+on_frame "grep -q '^SHARE_CONFIG=1' ~/.config/frametop.conf" && share=y
+if ask "Let apps in the Frametop desktop use your normal config (shell, editor, logins)? Plasma's own settings stay separate." $share; then
+  share=1
+else
+  share=0
+fi
+on_frame "sed -i 's/^SHARE_CONFIG=[0-9]*/SHARE_CONFIG=$share/' ~/.config/frametop.conf; grep -q '^SHARE_CONFIG=' ~/.config/frametop.conf || echo 'SHARE_CONFIG=$share' >> ~/.config/frametop.conf"
+echo "SHARE_CONFIG=$share in ~/.config/frametop.conf (takes effect at the next desktop start)"
 
 step "8/9 gaze mode (optional, experimental: the pointer goes where you look)"
 if ask "Install gaze mode? You turn it on and calibrate it in Frametop Input Settings, on the Gaze page." y; then
