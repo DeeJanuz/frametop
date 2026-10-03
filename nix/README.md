@@ -37,7 +37,7 @@ The driver is the exception, because it loads into the host's `vrserver`. `zig c
       inputs.nixpkgs.follows = "nixpkgs";
     };
     frametop = {
-      url = "github:JRMurr/frametop";
+      url = "github:DeeJanuz/frametop";
       # One nixpkgs for Frametop and the GPU drivers: libgbm and /run/opengl-driver's
       # backends must be the same Mesa. Your nixpkgs needs wlroots_0_20; drop this line to
       # use the nixpkgs pinned in Frametop's flake.lock (then point
