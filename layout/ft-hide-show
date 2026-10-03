@@ -1,0 +1,3 @@
+#!/bin/bash
+# Hide/Show Screens' own program (see ft-layout-reset).
+exec "$(dirname "$(readlink -f "$0")")/ft-layout" toggle "$@"
