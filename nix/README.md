@@ -4,6 +4,8 @@ The flake builds Frametop with nixpkgs instead of the Fedora `dev` container. Th
 
 It covers the multi-screen desktop, the input relay, the 3D mouse, the power service, and the two settings apps. Gaze mode, hand tracking, and remote desktop aren't supported with Nix: they build or run in the `dev` container, so their installers need the container setup. Keep `REMOTE=0`, since remote desktop still enters the container. The Bluetooth fixes don't need the container: install them from a checkout with `setup/bluetooth/install.sh` (it asks for `sudo`).
 
+TODO: package gaze mode, hand tracking, and remote desktop. Gaze's frame grabber is a root service, and `ft-camd` needs file capabilities, which store paths can't carry, so both would still need a `sudo` step.
+
 ## Packages
 
 | Package | What it is |
