@@ -186,12 +186,11 @@ export XDG_STATE_HOME=$HOME/.local/state/frametop
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
 # Apps started here inherit both. With SHARE_CONFIG=1, everything in them but Plasma's own
-# files links to the real folders: the apps keep their config, logins, and history. With 0,
-# those links are removed.
-share_mode=unshare
-[ "$share_config" = 1 ] && share_mode=share
-"${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.config" "$XDG_CONFIG_HOME" config "$share_mode" || true
-"${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.local/state" "$XDG_STATE_HOME" state "$share_mode" || true
+# files links to the real folders: the apps keep their config, logins, and history.
+if [ "$share_config" = 1 ]; then
+  "${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.config" "$XDG_CONFIG_HOME" config || true
+  "${FRAMETOP_PYTHON:-python3}" "$here/config_links.py" "$HOME/.local/state" "$XDG_STATE_HOME" state || true
+fi
 
 # Remote desktop over VNC: session/remote-desktop.sh captures the desktop with
 # krdp on 127.0.0.1, and session/vnc-bridge.sh re-serves its primary screen over VNC. krdpserver runs from the container, so KWin can't

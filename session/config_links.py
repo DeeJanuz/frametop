@@ -8,9 +8,8 @@ otherwise see an empty config (fish, kitty, git, a logged-out Vesktop). So at ea
 everything in the real folder that isn't Plasma's (KEEP_CONFIG, KEEP_STATE) is linked in
 (name -> ../name). A file or folder in the way, made here before, is moved to .replaced/.
 Links whose real entry is gone are removed. Entries the user linked elsewhere are left.
-unshare removes all of our links (SHARE_CONFIG=0); moved entries stay in .replaced/.
 
-Usage: config_links.py <real dir> <desktop's dir> config|state share|unshare
+Usage: config_links.py <real dir> <desktop's dir> config|state
 """
 import os
 import shutil
@@ -30,11 +29,6 @@ KEEP_STATE = {"kwinstaterc", "plasmashellstaterc"}
 KEEPS = {"config": KEEP_CONFIG, "state": KEEP_STATE}
 
 REPLACED = ".replaced"  # entries moved out of the way, never deleted
-
-# Modes.
-SHARE = "share"      # link the real folder's entries in
-UNSHARE = "unshare"  # remove our links
-MODES = (SHARE, UNSHARE)
 
 # What an entry in the desktop's folder is.
 OURS = "ours"    # a link to ../<name>, made here
@@ -86,10 +80,9 @@ def free_path(path):
     return f"{path}.{n}"
 
 
-def sync(real_dir, local_dir, keep, mode):
+def sync(real_dir, local_dir, keep):
     """Apply plan() to the folders. Returns the moves, as (name, where it went)."""
-    # Unsharing is sharing an empty folder: only our links' removal is left.
-    real = set(os.listdir(real_dir)) if mode == SHARE else set()
+    real = set(os.listdir(real_dir))
     local = {n: kind(os.path.join(local_dir, n), n) for n in os.listdir(local_dir)}
     own = os.path.basename(os.path.normpath(local_dir))
 
@@ -111,10 +104,10 @@ def sync(real_dir, local_dir, keep, mode):
 
 
 def main():
-    if len(sys.argv) != 5 or sys.argv[3] not in KEEPS or sys.argv[4] not in MODES:
+    if len(sys.argv) != 4 or sys.argv[3] not in KEEPS:
         sys.exit(__doc__.split("Usage: ")[1].strip())
-    real_dir, local_dir, which, mode = sys.argv[1:]
-    for name, dest in sync(real_dir, local_dir, KEEPS[which], mode):
+    real_dir, local_dir, which = sys.argv[1:]
+    for name, dest in sync(real_dir, local_dir, KEEPS[which]):
         print(f"config_links: {name} was the desktop's own; moved to {dest}, now ../{name}")
 
 
