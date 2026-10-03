@@ -112,7 +112,7 @@ nix build .#frametop-apps                     # on the Frame, or an aarch64 buil
 nix build .#packages.x86_64-linux.ft-screens  # the same derivations on a PC
 ```
 
-`checks` builds `ft-pointer-driver`, so its glibc, NEEDED, RUNPATH, and exports checks run, and it builds `frametop-scripts`. The settings apps' Qt closure stays out of `nix flake check`.
+`checks` builds `ft-pointer-driver`, so its glibc, NEEDED, RUNPATH, and exports checks run, builds `frametop-scripts`, and runs `session/test_config_links.py` (`config-links`). The settings apps' Qt closure stays out of `nix flake check`.
 
 CI (`.github/workflows/nix.yml`) runs on GitHub's arm runner, natively on aarch64-linux like the Frame, with Determinate Nix and the Magic Nix Cache, so a run rebuilds only what changed. It evaluates the flake for both systems, runs the aarch64 checks, builds every package, and builds a Home Manager configuration with `programs.frametop` on (`nix/ci/home.nix`; run it yourself with `nix build --impure -f nix/ci/home.nix`). It also starts both settings apps with no display, to check that their QML loads.
 

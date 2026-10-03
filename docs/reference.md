@@ -14,7 +14,7 @@ desktops.sh uninstall      # back to the stock SteamOS desktop
 desktops.sh start | stop | restart | status | log [lines]
 ```
 
-`session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Only one desktop runs at a time. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop`, separate from the stock desktop's.
+`session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Only one desktop runs at a time. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop` (and state in `~/.local/state/frametop`), separate from the stock desktop's. Apps started in it inherit that, so at each start `session/config_links.py` links everything else from `~/.config` and `~/.local/state` in, and they keep their config, logins, and history. Only Plasma's and KWin's own files stay separate (`KEEP_CONFIG`, `KEEP_STATE`); a desktop-only copy in the way is moved to `.replaced/` there.
 
 When the VR launcher starts the desktop, it inherits the Steam client's environment. The session script drops the client's runtime from it (`LD_LIBRARY_PATH`, the `STEAM_*` settings, and the Steam overlay's Vulkan layer), so apps in the desktop use the system's libraries, including its video codecs, just as they would after a normal login.
 

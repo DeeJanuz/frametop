@@ -71,6 +71,14 @@
           ft-pointer-driver
           frametop-scripts
           ;
+        config-links =
+          pkgs.runCommand "frametop-config-links-test"
+            { nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.pytest ps.hypothesis ])) ]; }
+            ''
+              cp -r ${./session} session && chmod -R u+w session && cd session
+              python3 -m pytest -q -p no:cacheprovider test_config_links.py
+              touch $out
+            '';
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
