@@ -6,7 +6,6 @@
 name: Nix (aarch64)
 
 on:
-  push:
   pull_request:
   workflow_dispatch:
 
