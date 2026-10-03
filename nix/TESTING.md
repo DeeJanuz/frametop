@@ -6,7 +6,7 @@ A checklist for the first test of the flake and the Home Manager module on a rea
 
 ## 0. What's being tested
 
-- **Branch:** `claude/trusting-cerf-f87kmu` of `JRMurr/frametop`.
+- **Branch:** `nix-support` of `JRMurr/frametop`.
 - **What it adds:**
   - packages for ft-screens, ft-pointer, ft-powerd, the ft_pointer SteamVR driver, and a store tree of the scripts and settings apps (`frametop-apps`);
   - `homeManagerModules.default` (`programs.frametop`), which installs the input relay, pointer, and power services, registers the driver, and installs the launcher override and menu entries;
@@ -40,7 +40,7 @@ cat ~/.config/frametop.conf 2>/dev/null | head -5
 In a checkout of the branch:
 
 ```sh
-git fetch origin claude/trusting-cerf-f87kmu && git checkout claude/trusting-cerf-f87kmu
+git fetch origin nix-support && git checkout nix-support
 nix build -L .#frametop-apps .#ft-pointer-driver
 ```
 
@@ -51,7 +51,7 @@ There's no binary cache for Frametop's own packages, so ft-screens and friends c
 **Your Home Manager flake:** add Frametop as an input and enable the module. [README.md](README.md#using-it-from-a-standalone-home-manager-config) has the full example. In short:
 
 ```nix
-inputs.frametop.url = "github:JRMurr/frametop?ref=claude/trusting-cerf-f87kmu";
+inputs.frametop.url = "github:JRMurr/frametop?ref=nix-support";
 # in modules:
 frametop.homeManagerModules.default
 { targets.genericLinux.enable = true; programs.frametop.enable = true; }
