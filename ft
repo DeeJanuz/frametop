@@ -56,20 +56,22 @@ reject_latest() { # reject_latest <what> <ref>
   esac
 }
 
-# The reference updates pull from: $FT_IMAGE_PUBLISHED, then the config file,
-# then the CI-published reference this wrapper was released with. CI builds
-# the image from the same commit as the wrapper, so pulling that reference
-# keeps wrapper and image one artifact (update refreshes the wrapper from the
-# image). Never a moving :latest tag.
-FT_DEFAULT_PUBLISHED=${FT_DEFAULT_PUBLISHED:-ghcr.io/0x1f6/frametop:pack-frametop-image}
+# The reference updates pull from: $FT_IMAGE_PUBLISHED, then the config file.
+# It must be configured and versioned — there is no silent :latest default,
+# and there is no default that appears when nothing is configured.
+# (Deferred: refreshing the installed wrapper from the image, so wrapper and
+# image ship as one artifact. The wiring broke CI under Docker; revisit after
+# the smoke job tells us exactly where.)
 default_published() {
   local ref
   if [ -n "${FT_IMAGE_PUBLISHED:-}" ]; then ref=$FT_IMAGE_PUBLISHED
   elif [ -r "$published_file" ]; then ref=$(<"$published_file")
   else
-    ref=$FT_DEFAULT_PUBLISHED
-    echo "ft update: no published reference configured — using the release" >&2
-    echo "  default baked into this wrapper: $ref" >&2
+    echo "ft update: no published reference configured." >&2
+    echo "  Write a versioned reference (never :latest) to:" >&2
+    echo "  $published_file" >&2
+    echo "  e.g.  ghcr.io/0x1f6/frametop:v0.2.1  —  install.sh does this." >&2
+    exit 2
   fi
   reject_latest "the update source" "$ref"
   echo "$ref"
@@ -153,24 +155,6 @@ update() {
     echo "ft update: pinned $digest"
   else
     echo "ft update: could not read a digest for $published — keeping $image." >&2
-  fi
-  # Installed mode: refresh this wrapper from the image's own copy, so the
-  # wrapper and the image stay one artifact (CI builds both from the same
-  # commit). A backup of the old wrapper goes beside the pinned reference
-  # for rollback. Repo mode does not self-modify — the checkout owns its ft.
-  if [ "$repo_mode" = 0 ] && [ -n "${digest:-}" ]; then
-    local newft="$config_dir/ft.new"
-    if "$engine" run --rm --entrypoint cat "$digest" /src/frametop/ft > "$newft" 2>/dev/null \
-         && [ -s "$newft" ] && bash -n "$newft" 2>/dev/null; then
-      if ! cmp -s "$newft" "$0" 2>/dev/null; then
-        cp "$0" "$config_dir/ft.previous" 2>/dev/null || true
-        install -m 0755 "$newft" "$0"
-        echo "ft update: wrapper refreshed from the image (previous copy: $config_dir/ft.previous)"
-      fi
-    else
-      echo "ft update: note — the image carries no usable ft copy; wrapper not refreshed." >&2
-    fi
-    rm -f "$newft"
   fi
 }
 
