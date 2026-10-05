@@ -103,9 +103,21 @@ mounts=()
 # behind FT_FRAME=1 until they are validated on the device.
 if [ "${FT_FRAME:-0}" = 1 ]; then
   mounts+=(
+    --env HOME=/home/steamos         # OpenVR's registry is looked up under this HOME
     --ipc=host                       # /dev/shm for the hands/gaze shared-memory files
     -v /run/user/"${FT_UID:-1000}":/run/user/"${FT_UID:-1000}"  # Wayland + frametop sockets
     -v /opt/steamvr:/opt/steamvr:ro  # the real SteamVR runtime (openvr_api, vrpathreg)
+    -v /tmp:/tmp                     # SteamVR's IPC control file lives in /tmp
+                                     # (verified on device: without it VR_Init fails 124)
+    # OpenVR's path registry. Rootless podman maps the container's root to
+    # the desktop user, so files written into these mounts land as steamos
+    # on the host — no root-owned files, and the registry's absolute
+    # /home/steamos/... references stay valid.
+    -v "${HOME}/.config/openvr:/root/.config/openvr:ro"
+    -v "${HOME}/.config/openvr:/home/steamos/.config/openvr"
+    -v "${HOME}/.local/share/Steam/config:/home/steamos/.local/share/Steam/config"
+    -v "${HOME}/.local/share/Steam/logs:/home/steamos/.local/share/Steam/logs"
+    -v "${HOME}/.local/share/frametop/ft_pointer:/home/steamos/.local/share/frametop/ft_pointer:ro"
   )
 fi
 
