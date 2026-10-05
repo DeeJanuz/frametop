@@ -21,6 +21,8 @@ on:
       - ".python-version"
       - "justfile"
       - ".github/workflows/image.yml"
+    paths-ignore:
+      - "**.md"
   workflow_dispatch:
     inputs:
       runner:
