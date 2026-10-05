@@ -104,7 +104,10 @@ jobs:
           export FT_IMAGE="${IMAGE}:${{ needs.build.outputs.tag }}"
           # repo mode: a program runs from the image, with the checkout mounted
           ./ft python -V
-          # installed mode, in a sandbox: update digest-pins, then runs
+          # installed mode, in a sandbox: update digest-pins, then runs.
+          # FT_IMAGE must go: it is the explicit user override and would
+          # shadow the pin this section is meant to test.
+          unset FT_IMAGE
           mkdir -p /tmp/ft-home/.config/frametop /tmp/ft-home/bin
           echo "$FT_IMAGE" > /tmp/ft-home/.config/frametop/published
           install ./ft /tmp/ft-home/bin/ft
