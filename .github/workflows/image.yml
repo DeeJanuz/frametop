@@ -113,6 +113,9 @@ jobs:
           pinned=$(cat /tmp/ft-home/.config/frametop/image)
           grep -q '@sha256:' <<<"$pinned" || { echo "no digest pinned: $pinned"; exit 1; }
           XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V
+          # the image carries this run's wrapper, so the self-refresh keeps
+          # wrapper and image identical
+          cmp /tmp/ft-home/bin/ft ./ft || { echo "wrapper in image diverged"; exit 1; }
           # :latest is refused for what gets deployed
           echo "${IMAGE}:latest" > /tmp/ft-home/.config/frametop/image
           XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V && exit 1 || true
