@@ -192,8 +192,10 @@ checksums, attached to releases) is the following slice.
 
 ## Open decisions
 
-1. **Tagging**: rolling `:latest` plus date snapshots, or semver once upstream
-   cuts releases? Affects `ft update` behavior and user rollback.
+1. **Tagging**: decided — `:latest` is refused by the wrapper (see
+   pack/README.md, "Never :latest"). Releases cut version tags; `ft update`
+   pins the digest of whatever version tag `install.sh` recorded. What
+   remains open is only the cadence: a tag per release vs. per CI build.
 2. **Registry home**: the fork's ghcr for now; the question of moving the
    package under the upstream org belongs in the upstream discussion.
 3. **Pull without auth**: depends on package visibility; install.sh can pin

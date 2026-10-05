@@ -43,10 +43,11 @@ the integration points live in one place:
 
 ```
 ft dev build        # build the image from this repo (docker or podman)
-ft update           # pull the published image (ghcr.io/0x1f6/frametop) and retag
+ft update           # pull the published (versioned) image, pin its digest
 ft dev shell        # interactive shell, repo at /src/frametop
 ft ft-screens ...   # run any program from /opt/frametop
-ft dev test         # the Python suites inside the image
+ft dev test         # the Python test suites inside the image
+ft clean            # remove frametop's leftovers only (see the store section)
 ```
 
 `FT_IMAGE` overrides the image reference (repo mode defaults to the locally
@@ -54,6 +55,59 @@ built `frametop:local`). Development commands live behind `ft dev` so an
 installed copy — which has no repo to build from — refuses them. Containers
 run through the wrapper get stable names, `frametop-<program>`. The design
 rationale is in [design.md](design.md).
+
+### Never :latest
+
+A moving tag has no place on a headset: it cannot be reproduced in a bug
+report and cannot be rolled back. The wrapper enforces this — installed mode
+refuses to run without a pinned reference, and both the update source and the
+pinned reference are rejected if they say `:latest`.
+
+How pinning works:
+
+- `install.sh` (next slice) writes a **version tag** to
+  `~/.config/frametop/published` — the only place updates come from.
+- `ft update` pulls that reference and then writes the **digest**
+  (`repo@sha256:...`) to `~/.config/frametop/image`. Every later run, and
+  every bug report, names exactly that image.
+- Rollback is editing one file: put the previous digest back into
+  `~/.config/frametop/image`. The old image is still in the local store
+  (remove it with `ft clean` when you are done with it).
+
+## The shared podman store
+
+On SteamOS, rootless podman has **one container/image store**, and Frametop
+shares it with Valve's Android layer: Lepton names its containers
+`lepton-<context>`, and they live in the same store as ours. Two rules
+follow, and both are enforced or documented rather than hoped for:
+
+1. **Frametop never touches anything it does not own.** Containers get stable
+   `frametop-<program>` names; `ft clean` deletes only containers matching
+   `frametop-*` and only images whose reference names frametop. It never runs
+   store-wide commands.
+2. **Nobody should run store-wide podman commands on a Frame.**
+   `podman rm -a`, `podman rmi -a`, and `podman system prune` would delete
+   Valve's containers and images too. Use `ft clean` for Frametop's share of
+   the store and leave the rest of it to Steam.
+
+## Network path for pulls
+
+`ft update` (and install) contact the registry over the Frame's normal
+Wi-Fi client interface (`wlan0`), not the 6 GHz streaming link to the PC
+dongle. The image is roughly 1–1.5 GB compressed — pulls ride the home
+network, so a weak Wi-Fi link is the bottleneck, not the streaming antenna.
+`FT_FRAME=1` adds `--network=host` to *runs* (for sockets), never to the
+pull.
+
+## Storage
+
+The image replaces the build toolchain, not adds to it: today's distrobox dev
+container with its dnf history is the heavyweight; the pulled image carries
+only the runtime plus the frozen build inputs (~1–1.5 GB compressed, a few GB
+unpacked, in `~/.local/share/containers`). Once install.sh switches to the
+image, the dev container is only needed for development and can be removed
+from user machines. `ft clean` reclaims space from superseded frametop
+images.
 
 ## Frame integration (designed, to be validated on the device)
 
@@ -80,7 +134,11 @@ expected to need adjusting there — that is what the gate is for.
 every push that touches it (and on `v*` tags), runs the Python suites inside
 the built image as a smoke test, and pushes to
 `ghcr.io/0x1f6/frametop`. The fork's GHCR package starts out private — flip
-it to public in the package settings after the first successful run.
+it to public in the package settings after the first successful run (GitHub
+web UI → your profile → Packages → `frametop` → Package settings →
+"Change visibility"; there is no API for this). Pulling an image needs no
+token once it is public; managing the package over `gh` needs
+`gh auth refresh -s read:packages,write:packages`.
 
 ## The longer arc
 
