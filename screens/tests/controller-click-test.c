@@ -1,3 +1,6 @@
+// Keep assert() live even if someone builds the tests with -DNDEBUG: this
+// file must always actually test.
+#undef NDEBUG
 #include <assert.h>
 #include "../controller-click.h"
 static struct ft_event event(enum ft_event_type t, bool down, double x, double y) {

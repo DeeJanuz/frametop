@@ -16,6 +16,7 @@ on:
       - "power/**"
       - "session/**"
       - "input/**"
+      - "hands/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".python-version"
@@ -75,6 +76,22 @@ jobs:
           cache-to: type=gha,mode=max
     outputs:
       tag: ${{ steps.meta.outputs.version }}
+
+  # The unit gate: Python (strict), C, and shell — inside the built image,
+  # so what passes here is what a user pulls. Separate from smoke: smoke
+  # asks "is the artifact sound", this asks "is the code right".
+  test:
+    needs: build
+    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Run the unit suites inside the built image
+        run: |
+          docker run --rm \
+            -v "$PWD":/src/frametop --workdir /src/frametop \
+            "${{ env.IMAGE }}:${{ needs.build.outputs.tag }}" \
+            just test-python test-c test-bash
 
   smoke:
     needs: build
