@@ -81,8 +81,10 @@ it to public in the package settings after the first successful run.
 ## The longer arc
 
 1. ✅ Image + wrapper + CI (this directory)
-2. Frame validation of the mount matrix, then the units switch their
-   `ExecStart=` lines to the wrapper
+2. Frame validation of the mount matrix, then `install.sh` puts the wrapper at
+   `~/.local/bin/ft` (the SteamOS root is read-only, so no /usr/local) and the
+   units switch their `ExecStart=` lines to it; the installed wrapper runs the
+   image's own copy of the sources — no repo on the device needed
 3. Host payload tarball (driver registration, units, KWin script, models) with
    checksums, attached to releases
 4. `get.sh` becomes an artifact installer (download, verify, install); the

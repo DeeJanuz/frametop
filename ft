@@ -6,31 +6,50 @@
 # goes through this wrapper, so the integration points (mounts, IPC, devices)
 # live in exactly one place.
 #
-# Two modes:
-#   PC (development)   docker or podman, this repo bind-mounted at /src/frametop
-#   Frame (runtime)    podman on SteamOS; FT_FRAME=1 adds the Frame's mounts
-#                      (user sockets, shared memory, SteamVR). The exact mount
-#                      matrix is designed in pack/README.md and lands here once
-#                      it has been validated on the device.
+# The wrapper works from two homes:
+#   Repo mode    the script sits in a checkout (pack/Containerfile beside it):
+#                development commands build from the sources, and runs mount
+#                the repo at /src/frametop
+#   Installed    the script sits in ~/.local/bin (put there by install.sh):
+#                programs run from the image's own copy, no repo needed
+#
+# Image reference, in order: $FT_IMAGE, ~/.config/frametop/image (written by
+# install.sh, so installs pin what was installed), then the published image.
 #
 # Usage:
-#   ft build            build the image from the repo (or: ft update to pull it)
-#   ft shell            interactive shell in the image, repo at /src/frametop
-#   ft <prog> [args]    run a program from /opt/frametop (bin and venv are on PATH)
-#   ft test             run the Python test suites inside the image
-#   ft update           pull the published image and retag it local
+#   ft build            [repo]    build the image from the repo
+#   ft shell            [repo]    interactive shell in the image
+#   ft test             [repo]    run the Python test suites inside the image
+#   ft <prog> [args]    [both]    run a program from /opt/frametop
+#   ft update           [both]    pull the published image and retag it local
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-image=${FT_IMAGE:-frametop:local}
+[ -f "$root/pack/Containerfile" ] && repo_mode=1 || repo_mode=0
+
+default_image() {
+  # Repo mode works against the locally built image; installed mode against
+  # the published one, or whatever install.sh pinned.
+  if [ "$repo_mode" = 1 ]; then
+    echo "frametop:local"
+  elif [ -r "${XDG_CONFIG_HOME:-$HOME/.config}/frametop/image" ]; then
+    cat "${XDG_CONFIG_HOME:-$HOME/.config}/frametop/image"
+  else
+    echo "ghcr.io/0x1f6/frametop:latest"
+  fi
+}
+image=${FT_IMAGE:-$(default_image)}
 published=${FT_IMAGE_PUBLISHED:-ghcr.io/0x1f6/frametop:latest}
 
 engine=$(command -v podman || command -v docker || true)
 [ -n "$engine" ] || { echo "ft: need podman or docker on PATH" >&2; exit 1; }
 
-# Mounts every mode needs. The Frame's additions (sockets, shm, devices) are
-# gated behind FT_FRAME=1 until they are validated on the device.
-mounts=(-v "$root":/src/frametop)
+# Repo mode mounts the checkout; installed mode uses the image's own copy.
+mounts=()
+[ "$repo_mode" = 1 ] && mounts+=(-v "$root":/src/frametop)
+
+# The Frame's additions (shared memory, sockets, the real SteamVR) are gated
+# behind FT_FRAME=1 until they are validated on the device.
 if [ "${FT_FRAME:-0}" = 1 ]; then
   mounts+=(
     --ipc=host                       # /dev/shm for the hands/gaze shared-memory files
@@ -40,22 +59,25 @@ if [ "${FT_FRAME:-0}" = 1 ]; then
 fi
 
 run_in_image() {
-  local extra=("$@")
-  exec "$engine" run --rm "${mounts[@]}" --workdir /src/frametop \
-    ${FT_FRAME:+--network=host} "$image" "${extra[@]}"
+  exec "$engine" run --rm ${mounts[@]+"${mounts[@]}"} --workdir /src/frametop \
+    ${FT_FRAME:+--network=host} "$image" "$@"
+}
+
+need_repo() {
+  [ "$repo_mode" = 1 ] || { echo "ft $1: only in a repo checkout (this copy runs installed)" >&2; exit 2; }
 }
 
 case "${1:-help}" in
-  build)
-    exec "$engine" build -f "$root/pack/Containerfile" -t "$image" "$root" ;;
-  update)
-    "$engine" pull "$published"
-    "$engine" tag "$published" "$image" ;;
-  shell)
-    exec "$engine" run --rm -it "${mounts[@]}" --workdir /src/frametop "$image" bash ;;
-  test)
-    run_in_image just test ;;
-  help|*)
-    sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    [ -z "${1:-}" ] || { echo "ft: unknown command: $1" >&2; exit 1; } ;;
+  build)   need_repo build
+           exec "$engine" build -f "$root/pack/Containerfile" -t "$image" "$root" ;;
+  shell)   exec "$engine" run --rm -it ${mounts[@]+"${mounts[@]}"} --workdir /src/frametop "$image" bash ;;
+  test)    need_repo test; run_in_image just test ;;
+  update)  "$engine" pull "$published"
+           [ "$image" != "$published" ] && "$engine" tag "$published" "$image"
+           exit 0 ;;
+  help|-h|--help)
+           sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+           [ -z "${1:-}" ] || exit 0 ;;
+  *)       [ -z "${1:-}" ] && { echo "ft: no command given" >&2; exit 2; }
+           run_in_image "$@" ;;
 esac
