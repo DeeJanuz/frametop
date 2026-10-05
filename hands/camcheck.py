@@ -412,7 +412,7 @@ def check(log=None, proc=True, ring=True, ring_path=None):
                 have = {c["node"] for c in r["mono"]}
                 want = state.tracking_nodes() if state else SIDE_NODES + UPPER_NODES
                 out["ring_missing"] = [n for n in want if n not in have]
-                status, reason = "degraded", ("ft-camd publishes only %d of %d mono cameras (missing: %s)" % (
+                status, reason = "degraded", ("ft-camd publishes only %d of %d mono cameras, missing %s" % (
                     len(r["mono"]), TRACKING, " ".join("video%d" % n for n in out["ring_missing"]) or "?"))
     out.update(status=status, reason=reason, evidence=evidence,
                summary="ok" if status == "ok" else "%s: %s" % (status, reason))

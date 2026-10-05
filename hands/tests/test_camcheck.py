@@ -293,7 +293,7 @@ class Ring(unittest.TestCase):
         r = camcheck.check(log=self.log, proc=False, ring_path=self.ring)
         self.assertEqual(r["status"], "degraded")
         self.assertEqual(r["ring_missing"], [0, 3])
-        self.assertIn("missing: video0 video3", r["reason"])
+        self.assertIn("missing video0 video3", r["reason"])
         self.assertTrue(camcheck.is_ring_short(r))
         self.assertFalse(camcheck.is_vcint_failure(r))
         self.assertEqual(r["map"]["slam_left"]["node"], 0)
