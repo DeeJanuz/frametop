@@ -22,9 +22,10 @@
 // own clock, so they're placed on the mono cameras' by when they were dequeued, less the
 // mono cameras' measured delay.
 //
-// Which side camera is which (--sides, HANDS_SWAP_SIDES): ft-camd tells slam_left's buffers from
-// slam_right's by XRService's allocation order, which some XRService starts reverse. auto (the
-// default) tells from the hands it tracks (track/sides.h): once it's sure, it exchanges the two
+// Which side camera is which (--sides, HANDS_SWAP_SIDES): the names come from XRService's log
+// (cameras_from_xrservice_log) and ft-camd matches each camera's buffers exactly (VIDIOC_QUERYBUF),
+// so they should be right; before 2026-10-05 they were often swapped. auto (the default) still
+// tells from the hands it tracks (track/sides.h): once it's sure, it exchanges the two
 // cameras if they're backwards (the tracked views move with their images), and checks once
 // more. 0 and 1 force the naming (1: exchanged; --swap-sides is --sides 1); it still checks,
 // and if the hands disagree it warns and publishes what the hands say as the truth ("swapped"),
@@ -47,6 +48,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <memory>
@@ -64,31 +66,53 @@ namespace {
 
 volatile std::sig_atomic_t g_stop = 0, g_record = 0;
 
-// Which calibrated camera each video device carries. XRService numbers its tracking cameras
-// (index 0 to 3: slam_left, slam_right, upper_left, upper_right) and logs the device each one
-// opened ("TrackingCameraInit: index: 0. video device: /dev/video9"). The devices depend on
-// the colour module: with it, the side cameras are on vfe3 and vfe4 and the upper pair on
-// vfe2; without it, XRService runs the side cameras through the ISP on vfe0 and vfe1, and the
-// upper pair on vfe3 and vfe4. So the running XRService's log decides; when it can't be read,
-// the capture pipes as they are with the module. {} if the log has no cameras.
+// Which calibrated camera each video device carries. XRService names each tracking camera's
+// sensor subdev once per instance ("Found camera 'slam_left': interface=msm_csiphy0
+// v4l_subdev=/dev/v4l-subdev30 ...") and logs the device and subdev each index opened at every
+// camera start ("TrackingCameraInit: index: 0. video device: /dev/video9. v4l subdevice:
+// /dev/v4l-subdev31"). The index is only the order it opens them in: on every start logged since
+// 2026-10-04, index 0 was slam_right. So the subdev names the device; a log without "Found
+// camera" lines falls back to the index order (slam_left, slam_right, upper_left, upper_right).
+// The devices depend on the colour module: with it, the side cameras are on vfe3 (slam_right)
+// and vfe4 (slam_left) and the upper pair on vfe2; without it, XRService runs the side cameras
+// through the ISP on vfe0 and vfe1, and the upper pair on vfe3 and vfe4. So the running
+// XRService's log decides; when it can't be read, the capture pipes as they are with the module.
+// {} if the log has no cameras.
 std::map<int, std::string> cameras_from_xrservice_log() {
     static const char *const names[] = {"slam_left", "slam_right", "upper_left", "upper_right"};
     const char *home = std::getenv("HOME");
     std::ifstream in(std::string(home ? home : "") + "/.local/share/Steam/logs/xrservice.txt");
-    const std::string key = "TrackingCameraInit: index: ";
-    std::map<int, int> node_of;   // index -> N of /dev/videoN, from the latest camera start
+    const std::string key = "TrackingCameraInit: index: ", found_key = "Found camera '";
+    std::map<int, std::pair<int, std::string>> init;   // index -> (N of /dev/videoN, subdev), latest start
+    std::map<std::string, std::string> name_of;        // subdev -> camera name
     std::string line;
     while (std::getline(in, line)) {
-        if (line.find("XRService logging to") != std::string::npos) node_of.clear();
+        if (line.find("XRService logging to") != std::string::npos) init.clear(), name_of.clear();
+        if (const auto at = line.find(found_key); at != std::string::npos) {
+            const auto name_end = line.find('\'', at + found_key.size());
+            const auto sub = line.find("v4l_subdev=", at);
+            if (name_end != std::string::npos && sub != std::string::npos) {
+                const auto sub_end = line.find_first_of(" \t\r", sub + 11);
+                name_of[line.substr(sub + 11, sub_end == std::string::npos ? std::string::npos : sub_end - sub - 11)] =
+                    line.substr(at + found_key.size(), name_end - at - found_key.size());
+            }
+            continue;
+        }
         const auto at = line.find(key);
         int index = -1, node = -1;
+        char subdev[64] = "";
         if (at != std::string::npos &&
-            std::sscanf(line.c_str() + at + key.size(), "%d. video device: /dev/video%d", &index, &node) == 2 &&
+            std::sscanf(line.c_str() + at + key.size(), "%d. video device: /dev/video%d. v4l subdevice: %63s", &index,
+                        &node, subdev) >= 2 &&
             index >= 0 && index < 4)
-            node_of[index] = node;
+            init[index] = {node, subdev};
     }
     std::map<int, std::string> out;
-    for (auto &[index, node] : node_of) out[node] = names[index];
+    for (auto &[index, ns] : init) {
+        const auto it = name_of.find(ns.second);
+        const bool known = it != name_of.end() && std::find(std::begin(names), std::end(names), it->second) != std::end(names);
+        out[ns.first] = known ? it->second : names[index];
+    }
     return out;
 }
 
@@ -97,8 +121,8 @@ const char *camera_for_pipe(int node) {
     std::snprintf(path, sizeof path, "/sys/class/video4linux/video%d/name", node);
     std::ifstream f(path);
     f.getline(name, sizeof name);
-    if (!std::strcmp(name, "msm_vfe3_video0")) return "slam_left";
-    if (!std::strcmp(name, "msm_vfe4_video0")) return "slam_right";
+    if (!std::strcmp(name, "msm_vfe3_video0")) return "slam_right";
+    if (!std::strcmp(name, "msm_vfe4_video0")) return "slam_left";
     if (!std::strcmp(name, "msm_vfe2_video0")) return "upper_left";
     if (!std::strcmp(name, "msm_vfe2_video1")) return "upper_right";
     return nullptr;

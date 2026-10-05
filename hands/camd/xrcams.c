@@ -9,8 +9,11 @@
  *   - The V4L2 nodes and sensor subdevs it holds open come from /proc/<pid>/fd.
  *   - Each node's geometry comes from VIDIOC_G_FMT on our own handle.
  *   - Each node is traced back to its sensor through MEDIA_IOC_G_TOPOLOGY.
- *   - Buffers are split into queues by allocation order: XRService opens a
- *     sensor subdev, then allocates that camera's buffers.
+ *   - Buffers are split into runs by allocation order, and each run is bound to
+ *     its camera by VIDIOC_QUERYBUF on the camera's node, which names the
+ *     descriptor XRService queued at each index. Where that fails, the sensor
+ *     subdev opened just before the run decides (XRService opens a sensor's
+ *     subdev, then allocates its buffers), which isn't always right.
  */
 
 #define _GNU_SOURCE
@@ -457,6 +460,38 @@ static bool scan_xr_fds(pid_t pid, char *err, size_t errn)
 
 /* ------------------------------------------------------ camera discovery */
 
+/*
+ * Which of XRService's buffers each V4L2 index of a camera holds. vb2 lets any handle query a
+ * queue's buffers, and for a DMABUF buffer it returns the descriptor its owner last queued it
+ * with: that descriptor's number in XRService's fd table, the same numbers scan_xr_fds reads
+ * from /proc. XRService queues each index with the same buffer every time.
+ */
+static void query_buffers(int fd, xr_camera_t *c, bool mplane)
+{
+    c->nqbuf = 0;
+
+    for (int i = 0; i < XR_MAX_RUNBUFS; i++) {
+
+        struct v4l2_buffer b;
+        struct v4l2_plane  planes[VIDEO_MAX_PLANES];
+
+        memset(&b, 0, sizeof(b));
+        memset(planes, 0, sizeof(planes));
+        b.index = (unsigned)i;
+        b.type  = mplane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+        if (mplane) {
+            b.m.planes = planes;
+            b.length   = VIDEO_MAX_PLANES;
+        }
+
+        if (ioctl(fd, VIDIOC_QUERYBUF, &b) < 0 || b.memory != V4L2_MEMORY_DMABUF)
+            break;      /* EINVAL past the last index */
+
+        c->qbuf_xfd[c->nqbuf++] = mplane ? planes[0].m.fd : b.m.fd;
+    }
+}
+
 static void probe_cameras(xr_state_t *st)
 {
     int seen[64];
@@ -520,6 +555,8 @@ static void probe_cameras(xr_state_t *st)
             c->bytesperline = fmt.fmt.pix.bytesperline;
             c->planesize[0] = fmt.fmt.pix.sizeimage;
         }
+
+        query_buffers(fd, c, fmt.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
 
         struct stat sb;
 
@@ -630,6 +667,46 @@ const char *xr_fmt_name(xr_fmt_t f)
 
 /* ------------------------------------------------------- buffer grouping */
 
+/* The camera whose VIDIOC_QUERYBUF names this XRService descriptor, or NULL. */
+static xr_camera_t *qbuf_owner(xr_state_t *st, int xfd)
+{
+    for (int c = 0; c < st->ncameras; c++)
+        for (int k = 0; k < st->cameras[c].nqbuf; k++)
+            if (st->cameras[c].qbuf_xfd[k] == xfd)
+                return &st->cameras[c];
+
+    return NULL;
+}
+
+/*
+ * A run can hold two cameras' queues when nothing between them in the fd table ends it (the
+ * upper pair, both 640x480). Where VIDIOC_QUERYBUF says so, cut it where the owner changes.
+ */
+static void split_groups(xr_state_t *st)
+{
+    for (int i = 0; i < st->ngroups && st->ngroups < XR_MAX_GROUPS; i++) {
+
+        xr_group_t  *g     = &st->groups[i];
+        xr_camera_t *first = qbuf_owner(st, g->buf[0].xfd);
+        int          cut   = -1;
+
+        for (int b = 1; first && b < g->nbufs && cut < 0; b++) {
+            xr_camera_t *o = qbuf_owner(st, g->buf[b].xfd);
+            if (o && o != first)
+                cut = b;
+        }
+
+        if (cut < 0)
+            continue;
+
+        xr_group_t *t = &st->groups[st->ngroups++];
+        *t = *g;
+        t->nbufs = g->nbufs - cut;
+        memmove(t->buf, g->buf + cut, (size_t)t->nbufs * sizeof(t->buf[0]));
+        g->nbufs = cut;
+    }
+}
+
 /*
  * XRService allocates one udmabuf per plane, plane 0 then plane 1, a whole
  * queue at a time right after opening the sensor's subdev. Plane 1 matches
@@ -703,6 +780,8 @@ static void build_groups(xr_state_t *st)
         i++;    /* consume the plane 1 descriptor */
     }
 
+    split_groups(st);
+
     int keep = 0;
 
     for (int i = 0; i < st->ngroups; i++)
@@ -712,7 +791,21 @@ static void build_groups(xr_state_t *st)
     st->ngroups = keep;
 
     /*
-     * Bind each run to a camera. The sensor marker alone can be wrong: XRService
+     * Bind each run to a camera: exactly where a camera's VIDIOC_QUERYBUF names the run's first
+     * buffer (query_buffers). The two side cameras have the same format, so for them nothing
+     * else is sure.
+     */
+    for (int i = 0; i < st->ngroups; i++)
+        for (int c = 0; c < st->ncameras && !st->groups[i].cam; c++)
+            for (int k = 0; k < st->cameras[c].nqbuf; k++)
+                if (st->cameras[c].qbuf_xfd[k] == st->groups[i].buf[0].xfd) {
+                    st->groups[i].cam   = &st->cameras[c];
+                    st->groups[i].exact = true;
+                    break;
+                }
+
+    /*
+     * The rest by the sensor marker and sizes. The sensor marker alone can be wrong: XRService
      * sometimes opens another sensor's subdev (e.g. the idle color camera)
      * between an upper camera's subdev and its buffers, and two upper cameras
      * can resolve to the same sensor name. So a marker match must also fit the
@@ -792,9 +885,9 @@ void xr_print(const xr_state_t *st, FILE *f)
 
         const xr_group_t *g = &st->groups[i];
 
-        fprintf(f, "  queue %d: %d buffers plane0=%zu plane1=%zu fds %d..%d sensor '%s' -> %s\n",
+        fprintf(f, "  queue %d: %d buffers plane0=%zu plane1=%zu fds %d..%d sensor '%s' -> %s%s\n",
                 i, g->nbufs, g->planesize[0], g->planesize[1],
                 g->buf[0].xfd, g->buf[g->nbufs - 1].xfd1, g->sensor,
-                g->cam ? g->cam->path : "(unbound)");
+                g->cam ? g->cam->path : "(unbound)", g->exact ? " (VIDIOC_QUERYBUF)" : "");
     }
 }
