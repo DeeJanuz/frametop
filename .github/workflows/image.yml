@@ -22,6 +22,12 @@ on:
       - "justfile"
       - ".github/workflows/image.yml"
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "where to run (cloud arm64, or the local ft-arm64 runner via scripts/gh-runner.sh)"
+        type: choice
+        default: cloud
+        options: [cloud, local]
 
 permissions:
   contents: read
@@ -29,10 +35,11 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  RUNS_ON: ${{ inputs.runner == 'local' && 'self-hosted,ft-arm64' || 'ubuntu-24.04-arm' }}
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ env.RUNS_ON }}
     steps:
       # actions/checkout@v5.0.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -65,7 +72,7 @@ jobs:
 
   smoke:
     needs: build
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ env.RUNS_ON }}
     steps:
       # actions/checkout@v5.0.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
