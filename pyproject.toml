@@ -1,0 +1,26 @@
+[project]
+name = "frametop"
+version = "0.1.0"
+description = "Desktops in VR on the Steam Frame"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Frametop's Python dependencies, locked in uv.lock. The Frame's runtime apps
+# (input settings uses Kirigami) still come from the container's dnf packages;
+# these groups cover everything uv can pin: dev tooling and the hand tracker's
+# NumPy/OpenCV stack (Fedora's python3-opencv pulls in over a gigabyte).
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.14",
+    "pyflakes>=3.4",
+    "mypy>=1.19",
+]
+tracker = [
+    "numpy>=2.2",
+    "opencv-python-headless>=4.11",
+    "huggingface_hub>=0.34",
+]
+
+[tool.uv]
+package = false

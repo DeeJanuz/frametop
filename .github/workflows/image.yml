@@ -1,0 +1,77 @@
+# Build and publish the Frametop image (pack/Containerfile). Native arm64
+# runner: the Frame is aarch64, and cross-building would double the build time.
+# Actions are pinned to commit SHAs (the version each SHA corresponds to is in
+# the comment); dependabot-style bumps change the SHA deliberately.
+name: image
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths:
+      - "pack/**"
+      - "screens/**"
+      - "pointer/**"
+      - "gaze/**"
+      - "power/**"
+      - "session/**"
+      - "input/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - "justfile"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      # actions/checkout@v5.0.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      # docker/setup-buildx-action@v3.0.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      # docker/login-action@v3.0.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # docker/metadata-action@v5.0.0
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      # docker/build-push-action@v6.0.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    steps:
+      # actions/checkout@v5.0.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      # The suites run with just, inside the built image (see justfile).
+      - name: Run the Python suites inside the built image
+        run: |
+          docker run --rm \
+            -v "$PWD":/src/frametop --workdir /src/frametop \
+            "${IMAGE}:main" just test

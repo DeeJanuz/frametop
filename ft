@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# ft — build and run Frametop out of its OCI image (pack/Containerfile).
+#
+# The image is the product: one container that holds the frozen toolchain, the
+# native binaries, and the locked Python environment. Everything Frametop runs
+# goes through this wrapper, so the integration points (mounts, IPC, devices)
+# live in exactly one place.
+#
+# Two modes:
+#   PC (development)   docker or podman, this repo bind-mounted at /src/frametop
+#   Frame (runtime)    podman on SteamOS; FT_FRAME=1 adds the Frame's mounts
+#                      (user sockets, shared memory, SteamVR). The exact mount
+#                      matrix is designed in pack/README.md and lands here once
+#                      it has been validated on the device.
+#
+# Usage:
+#   ft build            build the image from the repo (or: ft update to pull it)
+#   ft shell            interactive shell in the image, repo at /src/frametop
+#   ft <prog> [args]    run a program from /opt/frametop (bin and venv are on PATH)
+#   ft test             run the Python test suites inside the image
+#   ft update           pull the published image and retag it local
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+image=${FT_IMAGE:-frametop:local}
+published=${FT_IMAGE_PUBLISHED:-ghcr.io/0x1f6/frametop:latest}
+
+engine=$(command -v podman || command -v docker || true)
+[ -n "$engine" ] || { echo "ft: need podman or docker on PATH" >&2; exit 1; }
+
+# Mounts every mode needs. The Frame's additions (sockets, shm, devices) are
+# gated behind FT_FRAME=1 until they are validated on the device.
+mounts=(-v "$root":/src/frametop)
+if [ "${FT_FRAME:-0}" = 1 ]; then
+  mounts+=(
+    --ipc=host                       # /dev/shm for the hands/gaze shared-memory files
+    -v /run/user/"${FT_UID:-1000}":/run/user/"${FT_UID:-1000}"  # Wayland + frametop sockets
+    -v /opt/steamvr:/opt/steamvr:ro  # the real SteamVR runtime (openvr_api, vrpathreg)
+  )
+fi
+
+run_in_image() {
+  local extra=("$@")
+  exec "$engine" run --rm "${mounts[@]}" --workdir /src/frametop \
+    ${FT_FRAME:+--network=host} "$image" "${extra[@]}"
+}
+
+case "${1:-help}" in
+  build)
+    exec "$engine" build -f "$root/pack/Containerfile" -t "$image" "$root" ;;
+  update)
+    "$engine" pull "$published"
+    "$engine" tag "$published" "$image" ;;
+  shell)
+    exec "$engine" run --rm -it "${mounts[@]}" --workdir /src/frametop "$image" bash ;;
+  test)
+    run_in_image just test ;;
+  help|*)
+    sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    [ -z "${1:-}" ] || { echo "ft: unknown command: $1" >&2; exit 1; } ;;
+esac

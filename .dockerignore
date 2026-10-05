@@ -1,0 +1,13 @@
+# Keep the build context small: everything that is gitignored or regenerated.
+.git/
+.venv/
+build/
+target/
+captures/
+__pycache__/
+*.pyc
+*.raw
+*.pgm
+.env*
+frametop-report-*.txt
+.frame-job.d/
