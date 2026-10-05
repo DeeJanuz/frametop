@@ -56,13 +56,19 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STAMP = re.compile(r"^\w{3} \w{3} \d{2} \d{4} (\d{2}:\d{2}:\d{2})\.\d+ (\w+): ?(.*)$")
 # Lines worth reading; anything else is skipped before the regexes (the log grows by MBs a day).
 KEYS = ("FPGA", "VCINT", "Created", "TrackingCameraInit", "Closing tracking camera", "Streaming",
-        "systemd suspend", "systemd resume", "XRService logging to", "Exiting XRService")
+        "systemd suspend", "systemd resume", "XRService logging to", "Exiting XRService", "ISP ")
+# XRService's numbering of its tracking cameras (the TrackingCameraInit index): ft-hands names
+# them this way too (track/main.cpp, cameras_from_xrservice_log).
+NAMES = ("slam_left", "slam_right", "upper_left", "upper_right")
 RE_PASSTHRU = re.compile(r"Passthrough connected but FPGA is (\S+) - loading VCINT")
 RE_INTERLEAVE = re.compile(r"Upper cameras FPGA interleaving support: (\d)")
 RE_TASKS = re.compile(r"Created (\d+) tasks \((\d+) tracking, (\d+) passthrough\)")
 RE_INIT = re.compile(r"TrackingCameraInit: index: (\d+)\. video device: /dev/video(\d+)")
 RE_STREAM = re.compile(r"Streaming resumed \(FPGA: (\S+), VC interleaving: (\w+)\)")
 RE_STATE = re.compile(r"FPGA state check: (\S+)")
+# Without the colour module XRService runs the side cameras through the ISP, as NV12 on other
+# capture pipes (vfe0 and vfe1), and the upper pair on vfe3 and vfe4.
+RE_ISP = re.compile(r"ISP (enabled|disabled) for tracking cameras")
 
 
 class LogState:
@@ -85,7 +91,7 @@ class LogState:
     def _new_episode(self, t):
         self.closed = False
         self.episode = {"start": t, "fpga_before": "", "vcint": "", "interleave": None, "tasks": None,
-                        "inits": {}, "stream": "", "failure": "", "evidence": []}
+                        "inits": {}, "stream": "", "isp": None, "failure": "", "evidence": []}
         if self.closed_at:
             self.episode["evidence"].append(self.closed_at)
 
@@ -146,6 +152,12 @@ class LogState:
             ep["interleave"] = int(m.group(1))
             ep["evidence"].append(short)
             return
+        m = RE_ISP.search(text)
+        if m:
+            ep = self._ep(t)
+            ep["isp"] = m.group(1) == "enabled"
+            ep["evidence"].append(short)
+            return
         m = RE_TASKS.search(text)
         if m:
             ep = self._ep(t)
@@ -183,6 +195,12 @@ class LogState:
     def upper_nodes(self):
         got = tuple(self.nodes[i] for i in (2, 3) if i in self.nodes)
         return got if len(got) == 2 else UPPER_NODES
+
+    def camera_map(self):
+        """{calibration name: /dev/videoN's N} from the latest camera start's TrackingCameraInit
+        lines (the whole log's when that start has none yet)."""
+        inits = (self.episode or {}).get("inits") or self.nodes
+        return {NAMES[i]: node for i, node in sorted(inits.items()) if 0 <= i < len(NAMES)}
 
     def tracking_nodes(self):
         got = tuple(self.nodes[i] for i in range(TRACKING) if i in self.nodes)
@@ -353,7 +371,9 @@ def check(log=None, proc=True, ring=True, ring_path=None):
         status, reason = "unknown", "no XRService log in %s" % LOG_DIR
     out = {"log": path, "xrservice": None, "ring": None,
            "episode": state.snapshot()["episode"] if state else {},
-           "failure": state.snapshot()["failure"] if state else ""}
+           "failure": state.snapshot()["failure"] if state else "",
+           "map": {name: {"node": n, "pipe": pipe_name(n)} for name, n in state.camera_map().items()} if state else {},
+           "ring_missing": []}
 
     if proc:
         if pid is None:
@@ -389,11 +409,28 @@ def check(log=None, proc=True, ring=True, ring_path=None):
             evidence.append("ft-camd (pid %d, %s): %d mono cameras: %s" % (
                 r["writer_pid"], "running" if r["alive"] else "stale ring", len(r["mono"]), names))
             if r["alive"] and len(r["mono"]) < TRACKING and status == "ok":
-                status, reason = "degraded", ("ft-camd publishes only %d of %d mono cameras (it started while "
-                                              "they were missing: restart it)" % (len(r["mono"]), TRACKING))
+                have = {c["node"] for c in r["mono"]}
+                want = state.tracking_nodes() if state else SIDE_NODES + UPPER_NODES
+                out["ring_missing"] = [n for n in want if n not in have]
+                status, reason = "degraded", ("ft-camd publishes only %d of %d mono cameras (missing: %s)" % (
+                    len(r["mono"]), TRACKING, " ".join("video%d" % n for n in out["ring_missing"]) or "?"))
     out.update(status=status, reason=reason, evidence=evidence,
                summary="ok" if status == "ok" else "%s: %s" % (status, reason))
     return out
+
+
+def pipe_name(node):
+    """The capture pipe behind /dev/videoN (msm_vfe3_video0 and so on), or ""."""
+    try:
+        with open("/sys/class/video4linux/video%d/name" % node) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def is_ring_short(result):
+    """XRService runs all the tracking cameras, but ft-camd doesn't publish them all."""
+    return bool(result) and result.get("status") == "degraded" and bool(result.get("ring_missing"))
 
 
 def is_vcint_failure(result):

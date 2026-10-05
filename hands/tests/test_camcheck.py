@@ -66,6 +66,22 @@ RESUME_OK = [L("12:30:00", "[SystemdInhibitor] Received systemd resume notificat
              for i, n in enumerate((9, 13, 6, 7))] + \
             [L("12:30:02", "[DeckardCaptureSource] Streaming resumed (FPGA: VCINT, VC interleaving: enabled)")]
 EXIT = [L("13:00:00", "XRService - main thread exiting"), L("13:00:00", "Exiting XRService")]
+# The colour module unplugged while SteamVR runs (2026-10-05 12:42): XRService reopens the
+# cameras with the side pair through the ISP on vfe0 and vfe1 (NV12); VCINT stays loaded, so the
+# upper pair stays on vfe2.
+UNPLUG = [L("12:42:25", "Received passthrough camera connection event (connected=0)"),
+          L("12:42:25", "[DeckardCaptureSource] Closing tracking camera interfaces camerasToUse: 1111"),
+          L("12:42:26", "FPGA state check: VCINT (register value: 0x00021211)"),
+          L("12:42:26", "Upper cameras FPGA interleaving support: 1 (Driver features available = 1 | VCINT loaded = 1)"),
+          L("12:42:26", "[buildMediaCtlSetupTasks] ISP enabled for tracking cameras (main VFE available)"),
+          L("12:42:26", "[buildMediaCtlSetupTasks] Created 4 tasks (4 tracking, 0 passthrough)")] + \
+         [L("12:42:26", "TrackingCameraInit: index: %d. video device: /dev/video%d. v4l subdevice: x" % (i, n))
+          for i, n in enumerate((0, 3, 6, 7))]
+# Started without the module (FrameEyeCameraFeed's layout): the upper pair on vfe3 and vfe4.
+NO_MODULE = [L("10:00:02", "[buildMediaCtlSetupTasks] ISP enabled for tracking cameras (main VFE available)"),
+             L("10:00:02", "[buildMediaCtlSetupTasks] Created 4 tasks (4 tracking, 0 passthrough)")] + \
+            [L("10:00:03", "TrackingCameraInit: index: %d. video device: /dev/video%d. v4l subdevice: x" % (i, n))
+             for i, n in enumerate((0, 3, 9, 13))]
 
 
 def state(lines):
@@ -127,6 +143,23 @@ class SyntheticLogs(unittest.TestCase):
         status, reason, _ = state(lines).verdict()
         self.assertEqual(status, "degraded")
         self.assertEqual(reason, "only 2 of 4 tracking cameras running")
+
+    def test_camera_map_with_module(self):
+        st = state(START + GOOD_OPEN)
+        self.assertEqual(st.camera_map(), {"slam_left": 9, "slam_right": 13, "upper_left": 6, "upper_right": 7})
+
+    def test_module_unplugged(self):
+        st = state(START + GOOD_OPEN + UNPLUG)
+        self.assertEqual(st.verdict()[0], "ok")
+        self.assertIs(st.episode["isp"], True)
+        self.assertEqual(st.camera_map(), {"slam_left": 0, "slam_right": 3, "upper_left": 6, "upper_right": 7})
+        self.assertEqual(st.tracking_nodes(), (0, 3, 6, 7))
+
+    def test_started_without_module(self):
+        st = state(START + NO_MODULE)
+        self.assertEqual(st.verdict()[0], "ok")
+        self.assertEqual(st.camera_map(), {"slam_left": 0, "slam_right": 3, "upper_left": 9, "upper_right": 13})
+        self.assertEqual(st.upper_nodes(), (9, 13))
 
     def test_exited_and_empty(self):
         self.assertEqual(state(START + GOOD_OPEN + EXIT).verdict()[0], "unknown")
@@ -223,9 +256,9 @@ class RealLog(unittest.TestCase):
         self.assertEqual(out.getvalue().split("\n")[0], "ok")
 
 
-def make_ring(path, mono_names, alive=True):
+def make_ring(path, mono_names, alive=True, nodes=None):
     """A ring header as ft-camd writes it (camd/fhring.h), no frames."""
-    cams = [(b"og01a1b", n.encode(), 9 + i) for i, n in enumerate(mono_names)]
+    cams = [(b"og01a1b", n.encode(), nodes[i] if nodes else 9 + i) for i, n in enumerate(mono_names)]
     hb = time.clock_gettime_ns(time.CLOCK_MONOTONIC) if alive else 1
     data = bytearray(camcheck.RING_HDR.pack(b"FHRING01", 1, 0, len(cams), 0, 0, 4242, 0))
     struct.pack_into("<Q", data, 40, hb)
@@ -251,6 +284,19 @@ class Ring(unittest.TestCase):
         r = camcheck.check(log=self.log, proc=False, ring_path=self.ring)
         self.assertEqual(r["status"], "degraded")
         self.assertIn("ft-camd publishes only 2 of 4", r["reason"])
+
+    def test_ring_missing_the_side_cameras(self):
+        # an ft-camd from before NV12 support, without the colour module: only the upper pair
+        with open(self.log, "w") as f:
+            f.write("\n".join(START + NO_MODULE) + "\n")
+        make_ring(self.ring, ["og0ve10_5-003e_video9", "og0ve10_5-0060_video13"], nodes=[9, 13])
+        r = camcheck.check(log=self.log, proc=False, ring_path=self.ring)
+        self.assertEqual(r["status"], "degraded")
+        self.assertEqual(r["ring_missing"], [0, 3])
+        self.assertIn("missing: video0 video3", r["reason"])
+        self.assertTrue(camcheck.is_ring_short(r))
+        self.assertFalse(camcheck.is_vcint_failure(r))
+        self.assertEqual(r["map"]["slam_left"]["node"], 0)
 
     def test_four_cameras_in_ring(self):
         make_ring(self.ring, ["a_video9", "b_video13", "c_video6", "d_video7", "a_video9_dk"])

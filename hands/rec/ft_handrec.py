@@ -457,11 +457,12 @@ class Backend(QObject):
         """Start stays off: the check found the cameras degraded (unless --ignore-cameras)."""
         return not self._ignore_cameras and self._camera.get("status") == "degraded"
 
-    def _check_now(self):
+    def _check_now(self, repair=False):
+        """repair (off this thread only: it may restart ft-camd, up to 15 s): see session.camera_check."""
         mod = self._runner()
         if not mod or self._session_options.get("dry_run"):
             return {"status": "unknown", "summary": "not checked (dry run)", "reason": "dry run", "evidence": []}
-        return mod.camera_check()
+        return mod.camera_check(repair=repair)
 
     @Slot()
     def checkCameras(self):
@@ -470,7 +471,7 @@ class Backend(QObject):
             return
         self._camera_busy = True
         self.cameraChanged.emit()
-        self._thread(lambda: self._cameraArrived.emit(self._check_now()))
+        self._thread(lambda: self._cameraArrived.emit(self._check_now(repair=True)))
 
     def _on_camera(self, result):
         self._camera = result
@@ -499,7 +500,7 @@ class Backend(QObject):
                 end = time.monotonic() + RECHECK_FOR_S
                 time.sleep(RECHECK_S * 2)
                 while time.monotonic() < end:
-                    result = self._check_now()
+                    result = self._check_now(repair=True)
                     # Done once a new XRService (a new log) has opened its cameras, ok or not.
                     if result.get("status") in ("ok", "degraded") and result.get("log") != before:
                         break

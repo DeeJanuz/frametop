@@ -1153,11 +1153,33 @@ def _steamvr_version():
     return ""
 
 
-def camera_check():
-    """camcheck.check() (the XRService log, its open cameras where readable, ft-camd's ring);
-    never raises: a failure is "unknown"."""
+_camd_restarted = set()   # ft-camd pids camera_check(repair=True) has restarted: once each
+
+
+def _unit_pid(unit):
+    r = subprocess.run(host_command("systemctl", "--user", "show", "-p", "MainPID", "--value", unit),
+                       capture_output=True, text=True, timeout=30)
     try:
-        return camcheck.check()
+        return int(r.stdout.strip() or 0)
+    except ValueError:
+        return 0
+
+
+def camera_check(repair=False):
+    """camcheck.check() (the XRService log, its open cameras where readable, ft-camd's ring);
+    never raises: a failure is "unknown". repair (the window, never during a session): when
+    XRService runs every tracking camera but the recorder's own ft-camd doesn't publish them all
+    (it started while some were missing), restart it, once per ft-camd, and check again."""
+    try:
+        r = camcheck.check()
+        pid = (r.get("ring") or {}).get("writer_pid")
+        if repair and camcheck.is_ring_short(r) and pid not in _camd_restarted and _unit_pid(CAMD_UNIT) == pid:
+            _camd_restarted.add(pid)
+            stop_unit(CAMD_UNIT)
+            start_camd()
+            r = camcheck.check()
+            r["evidence"].append("restarted ft-camd (pid %d) because it published only some of the cameras" % pid)
+        return r
     except Exception as e:
         return {"status": "unknown", "summary": "unknown: the camera check failed (%s)" % e,
                 "reason": str(e), "evidence": []}
@@ -1169,6 +1191,10 @@ def camera_text(result):
         return ""
     if camcheck.is_vcint_failure(result):
         return camcheck.USER_TEXT
+    if camcheck.is_ring_short(result):
+        return ("The headset's tracking cameras are all running, but the recorder can't read some of them (%s). "
+                "Close the Hand Recorder, run ~/frametop/hands/rec/install.sh again, and open it again. If that "
+                "doesn't help, ask in the Frametop Discord." % result.get("reason", ""))
     return ("Not all of the headset's tracking cameras are running (%s). Restart SteamVR, or restart the "
             "headset if that doesn't fix it." % result.get("reason", ""))
 
@@ -1451,6 +1477,10 @@ class Session:
         cam = self._status.get("camera")
         if cam:
             self._session_json["camera"] = {"status": cam.get("status"), "reason": cam.get("reason", "")}
+            # which device each calibrated camera was (XRService's numbering) and whether XRService
+            # ran the side cameras through the ISP (no colour module): to check the names later
+            self._session_json["device"]["camera_map"] = cam.get("map") or {}
+            self._session_json["device"]["isp"] = (cam.get("episode") or {}).get("isp")
         if self.dry_run:
             self._session_json["dry_run"] = True
         if self.speed != 1:

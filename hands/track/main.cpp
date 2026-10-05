@@ -63,7 +63,34 @@ namespace {
 
 volatile std::sig_atomic_t g_stop = 0, g_record = 0;
 
-// which calibrated camera each capture pipe carries (XRService's fixed routing)
+// Which calibrated camera each video device carries. XRService numbers its tracking cameras
+// (index 0 to 3: slam_left, slam_right, upper_left, upper_right) and logs the device each one
+// opened ("TrackingCameraInit: index: 0. video device: /dev/video9"). The devices depend on
+// the colour module: with it, the side cameras are on vfe3 and vfe4 and the upper pair on
+// vfe2; without it, XRService runs the side cameras through the ISP on vfe0 and vfe1, and the
+// upper pair on vfe3 and vfe4. So the running XRService's log decides; when it can't be read,
+// the capture pipes as they are with the module. {} if the log has no cameras.
+std::map<int, std::string> cameras_from_xrservice_log() {
+    static const char *const names[] = {"slam_left", "slam_right", "upper_left", "upper_right"};
+    const char *home = std::getenv("HOME");
+    std::ifstream in(std::string(home ? home : "") + "/.local/share/Steam/logs/xrservice.txt");
+    const std::string key = "TrackingCameraInit: index: ";
+    std::map<int, int> node_of;   // index -> N of /dev/videoN, from the latest camera start
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.find("XRService logging to") != std::string::npos) node_of.clear();
+        const auto at = line.find(key);
+        int index = -1, node = -1;
+        if (at != std::string::npos &&
+            std::sscanf(line.c_str() + at + key.size(), "%d. video device: /dev/video%d", &index, &node) == 2 &&
+            index >= 0 && index < 4)
+            node_of[index] = node;
+    }
+    std::map<int, std::string> out;
+    for (auto &[index, node] : node_of) out[node] = names[index];
+    return out;
+}
+
 const char *camera_for_pipe(int node) {
     char path[64], name[64] = "";
     std::snprintf(path, sizeof path, "/sys/class/video4linux/video%d/name", node);
@@ -302,6 +329,7 @@ int main(int argc, char **argv) {
     double decided_after_s = -1;
     if (sides_mode != "auto") truth = names_swapped, decided_by = sides_from, sides_state = "forced";
     std::string rec_dir;
+    std::string cams_json;   // which device each calibrated camera is (set below), for the sides files
     std::vector<std::pair<size_t, bool>> rec_names;   // from which recorded set on, names_swapped was what
     // DIR/sides.json beside a recording's sets.bin: how its side cameras are named. A set's
     // names are right when its names_swapped equals swapped (null: not known when recorded).
@@ -312,7 +340,8 @@ int main(int argc, char **argv) {
         write_file(rec_dir + "/sides.json",
                    "{\"swapped\": " + json_bool(truth) + ", \"decided_by\": " + json_str(truth ? decided_by : "") +
                        ", \"names_swapped\": [" + runs + "]" +
-                       (decision_evidence.empty() ? "" : ", \"evidence\": " + decision_evidence) + "}\n");
+                       (decision_evidence.empty() ? "" : ", \"evidence\": " + decision_evidence) +
+                       (cams_json.empty() ? "" : ", \"cameras\": " + cams_json) + "}\n");
     };
     auto start_recording = [&](const std::string &dir, std::string &e) {
         rec = std::make_unique<Recorder>();
@@ -340,19 +369,42 @@ int main(int argc, char **argv) {
     // (--with-color). Recorded names hold 15 characters, so "upper_right_dark" wouldn't fit.
     std::map<std::string, int> dark;
     std::map<std::string, Camera> used;
+    // ft-camd's cameras by XRService's numbering, else by capture pipe (see camera_for_pipe);
+    // ft-ringplay's (no device) by the name it gives
+    const std::map<int, std::string> by_log = cameras_from_xrservice_log();
+    const char *named_by = by_log.empty() ? "capture pipe" : "XRService's log";
     for (int i = 0; i < ring.cameras(); ++i) {
-        if (ring.camera(i).flags & FH_CAM_COLOR) {
-            const std::string name = "color_video" + std::to_string(ring.camera(i).node);
+        const fh_ring_cam_t &rc = ring.camera(i);
+        if (rc.flags & FH_CAM_COLOR) {
+            const std::string name = "color_video" + std::to_string(rc.node);
             dark[name] = i, color[name] = i;
             continue;
         }
-        // ft-camd's cameras by capture pipe; ft-ringplay's (no device) by the name it gives
-        const char *name = camera_for_pipe(ring.camera(i).node);
-        if (!name && ring.camera(i).node < 0) name = ring.camera(i).name;
-        if (!name || !calib.count(name)) continue;
-        if (ring.camera(i).flags & FH_CAM_DARK) dark[std::string(name) + "_dk"] = i;
-        else index[name] = i, used[name] = calib[name];
+        const auto it = by_log.find(rc.node);
+        const char *name = rc.node < 0                ? rc.name
+                           : !by_log.empty()          ? (it == by_log.end() ? nullptr : it->second.c_str())
+                                                      : camera_for_pipe(rc.node);
+        if (!name || !calib.count(name)) {
+            if (!(rc.flags & FH_CAM_DARK)) std::fprintf(stderr, "video%d (%s): not one of the calibrated cameras, left out\n", rc.node, rc.name);
+            continue;
+        }
+        if (int(rc.width) != calib[name].width || int(rc.height) != calib[name].height) {
+            std::fprintf(stderr, "video%d (%s) is %ux%u, but %s is calibrated at %dx%d: left out\n", rc.node, rc.name,
+                         rc.width, rc.height, name, calib[name].width, calib[name].height);
+            continue;
+        }
+        if (rc.flags & FH_CAM_DARK) {
+            dark[std::string(name) + "_dk"] = i;
+        } else if (index.count(name)) {
+            std::fprintf(stderr, "video%d (%s) would be %s too (video%d is): left out\n", rc.node, rc.name, name,
+                         ring.camera(index[name]).node);
+        } else {
+            index[name] = i, used[name] = calib[name];
+            cams_json += std::string(cams_json.empty() ? "" : ", ") + json_str(name) + ": {\"node\": " +
+                         std::to_string(rc.node) + ", \"ring\": " + json_str(rc.name) + "}";
+        }
     }
+    cams_json = "{\"named_by\": " + json_str(named_by) + ", \"cameras\": {" + cams_json + "}}";
     // ft-camd tells the side cameras' buffers apart by XRService's allocation order, which
     // some XRService restarts reverse (see the top).
     const bool have_sides = index.count("slam_left") && index.count("slam_right");
@@ -397,7 +449,7 @@ int main(int argc, char **argv) {
     }
     const bool switching = automatic && !color.empty();
     Cams mode = switching || color.empty() ? Cams::Mono : fixed;
-    std::printf("cameras:");
+    std::printf("cameras (by %s):", named_by);
     for (auto &[name, i] : index) std::printf(" %s=video%d", name.c_str(), ring.camera(i).node);
     for (auto &[name, i] : color) std::printf(" %s", name.c_str());
     std::printf("  tracking with %s%s  models: %s%s, %d threads on CPUs", cams_name(mode),
@@ -446,6 +498,7 @@ int main(int argc, char **argv) {
                        ", \"decided_after_s\": " + std::to_string(decided_after_s) +
                        ", \"evidence\": " + (decision_evidence.empty() ? "null" : decision_evidence) +
                        ", \"checking\": " + (checking ? side_check.json() : "null") +
+                       ", \"cameras\": " + (cams_json.empty() ? "null" : cams_json) +
                        ", \"updated_ns\": " + std::to_string(mono_ns()) + "}\n");
     };
     write_sides();

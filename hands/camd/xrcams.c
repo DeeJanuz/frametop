@@ -544,20 +544,24 @@ static void probe_cameras(xr_state_t *st)
 /*
  * qcom-camss can report bytesperline as the visible width while the VFE
  * writes a larger aligned pitch. sizeimage is right, so derive the pitch.
+ * For NV12, plane 0 normally holds the chroma rows after the luma (the side
+ * cameras through the ISP: 1056 wide, 1152 bytes a row); if it's too small for
+ * that, it holds the luma alone.
  */
 unsigned xr_camera_stride(const xr_camera_t *c)
 {
     if (!c->height || !c->planesize[0])
         return c->bytesperline ? c->bytesperline : c->width;
 
-    double bpp = 1.0;
-
-    if (c->pixfmt == V4L2_PIX_FMT_NV12 || c->pixfmt == V4L2_PIX_FMT_NV21)
-        bpp = 1.5;
-
-    unsigned s = (unsigned)((double)c->planesize[0] / ((double)c->height * bpp));
+    bool yuv = c->pixfmt == V4L2_PIX_FMT_NV12 || c->pixfmt == V4L2_PIX_FMT_NV21;
+    unsigned s = (unsigned)((double)c->planesize[0] / ((double)c->height * (yuv ? 1.5 : 1.0)));
 
     if (s >= c->width && s <= c->width * 4)
+        return s;
+
+    s = (unsigned)(c->planesize[0] / c->height);
+
+    if (yuv && s >= c->width && s <= c->width * 4)
         return s;
 
     return c->bytesperline ? c->bytesperline : c->width;
@@ -591,7 +595,20 @@ void xr_camera_layout(const xr_camera_t *c, xr_layout_t *l)
     l->pitch = xr_camera_stride(c);
     l->width = c->width < l->pitch ? c->width : l->pitch;
 
-    if (c->pixfmt == V4L2_PIX_FMT_NV12 || c->pixfmt == V4L2_PIX_FMT_NV21) {
+    /*
+     * Without the colour module, XRService runs the side cameras through the
+     * ISP ("ISP enabled for tracking cameras (main VFE available)" in its log),
+     * and they come out NV12. They're mono sensors, so the luma is the image.
+     */
+    bool yuv = c->pixfmt == V4L2_PIX_FMT_NV12 || c->pixfmt == V4L2_PIX_FMT_NV21;
+
+    if (yuv && c->role && !strcmp(c->role, "tracking")) {
+        l->fmt  = XR_FMT_GREY8;
+        l->rows = c->height;
+        return;
+    }
+
+    if (yuv) {
         l->fmt  = XR_FMT_NV12;
         l->rows = c->height + c->height / 2;
     } else {

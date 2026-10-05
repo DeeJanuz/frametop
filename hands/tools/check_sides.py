@@ -34,8 +34,28 @@ from tools.show_set import index, read_set  # noqa: E402
 from tools import calib  # noqa: E402
 
 
-PIPES = {'msm_vfe3_video0': 'slam_left', 'msm_vfe4_video0': 'slam_right',    # as ft-hands maps them
+PIPES = {'msm_vfe3_video0': 'slam_left', 'msm_vfe4_video0': 'slam_right',    # with the colour module
          'msm_vfe2_video0': 'upper_left', 'msm_vfe2_video1': 'upper_right'}
+
+
+def ring_names():
+    """{/dev/videoN's N: calibration name} as ft-hands names them: by XRService's log
+    (camcheck.py), else by capture pipe (PIPES)."""
+    import camcheck
+    try:
+        by_log = {node: name for name, node in camcheck.read_log(camcheck.newest_log()).camera_map().items()}
+    except (OSError, ValueError):
+        by_log = {}
+    if by_log:
+        return by_log
+    out = {}
+    for path in os.listdir('/sys/class/video4linux'):
+        if path.startswith('video'):
+            with open('/sys/class/video4linux/%s/name' % path) as f:
+                name = PIPES.get(f.read().strip())
+            if name:
+                out[int(path[5:])] = name
+    return out
 PAIRS = {'side': ('slam_left', 'slam_right'), 'upper': ('upper_left', 'upper_right')}
 
 
@@ -100,8 +120,9 @@ def live_pairs(count, names=PAIRS['side']):
     if not ring.alive():
         sys.exit('ft-camd isn\'t running (no heartbeat)')
     cams = {}
+    names_of = ring_names()
     for c in ring.cams:
-        name = PIPES.get(open('/sys/class/video4linux/video%d/name' % c.node).read().strip())
+        name = names_of.get(c.node)
         if name and not c.name.endswith('-dark'):
             cams[name] = c
     for k in range(count):
