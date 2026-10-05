@@ -17,11 +17,12 @@
 # install.sh, so installs pin what was installed), then the published image.
 #
 # Usage:
-#   ft build            [repo]    build the image from the repo
-#   ft shell            [repo]    interactive shell in the image
-#   ft test             [repo]    run the Python test suites inside the image
 #   ft <prog> [args]    [both]    run a program from /opt/frametop
 #   ft update           [both]    pull the published image and retag it local
+# Development commands live behind "ft dev" (they need a repo checkout):
+#   ft dev build        [repo]    build the image from the repo
+#   ft dev shell        [repo]    interactive shell in the image
+#   ft dev test         [repo]    run the Python test suites inside the image
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -59,8 +60,14 @@ if [ "${FT_FRAME:-0}" = 1 ]; then
 fi
 
 run_in_image() {
-  exec "$engine" run --rm ${mounts[@]+"${mounts[@]}"} --workdir /src/frametop \
-    ${FT_FRAME:+--network=host} "$image" "$@"
+  # A stable name (frametop-<program>) so systemd, podman ps and podman logs
+  # read like the system reads; a leftover from a crashed run gets replaced.
+  local prog=${1%% *}
+  local name
+  name=frametop-$(printf '%s' "$prog" | tr -c 'a-zA-Z0-9._-' '-')
+  "$engine" rm -f "$name" >/dev/null 2>&1 || true
+  exec "$engine" run --rm --name "$name" ${mounts[@]+"${mounts[@]}"} \
+    --workdir /src/frametop ${FT_FRAME:+--network=host} "$image" "$@"
 }
 
 need_repo() {
@@ -68,10 +75,17 @@ need_repo() {
 }
 
 case "${1:-help}" in
-  build)   need_repo build
-           exec "$engine" build -f "$root/pack/Containerfile" -t "$image" "$root" ;;
-  shell)   exec "$engine" run --rm -it ${mounts[@]+"${mounts[@]}"} --workdir /src/frametop "$image" bash ;;
-  test)    need_repo test; run_in_image just test ;;
+  dev)
+    shift
+    case "${1:-help}" in
+      build)  need_repo build
+              exec "$engine" build -f "$root/pack/Containerfile" -t "$image" "$root" ;;
+      shell)  need_repo shell
+              exec "$engine" run --rm -it ${mounts[@]+"${mounts[@]}"} --workdir /src/frametop "$image" bash ;;
+      test)   need_repo test; run_in_image just test ;;
+      help|-h|--help|"") sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+      *) echo "ft dev: unknown command: $1 (build, shell, test)" >&2; exit 2 ;;
+    esac ;;
   update)  "$engine" pull "$published"
            [ "$image" != "$published" ] && "$engine" tag "$published" "$image"
            exit 0 ;;

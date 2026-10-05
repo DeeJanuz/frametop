@@ -42,14 +42,18 @@ Everything that runs Frametop goes through the wrapper at the repo root, so
 the integration points live in one place:
 
 ```
-ft build            # build the image from this repo (docker or podman)
+ft dev build        # build the image from this repo (docker or podman)
 ft update           # pull the published image (ghcr.io/0x1f6/frametop) and retag
-ft shell            # interactive shell, repo at /src/frametop
+ft dev shell        # interactive shell, repo at /src/frametop
 ft ft-screens ...   # run any program from /opt/frametop
-ft test             # the Python suites inside the image
+ft dev test         # the Python suites inside the image
 ```
 
-`FT_IMAGE` overrides the image reference (default `frametop:local`).
+`FT_IMAGE` overrides the image reference (repo mode defaults to the locally
+built `frametop:local`). Development commands live behind `ft dev` so an
+installed copy — which has no repo to build from — refuses them. Containers
+run through the wrapper get stable names, `frametop-<program>`. The design
+rationale is in [design.md](design.md).
 
 ## Frame integration (designed, to be validated on the device)
 
