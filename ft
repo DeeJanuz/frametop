@@ -15,8 +15,9 @@
 #
 # Image reference, in order: $FT_IMAGE, then ~/.config/frametop/image — which
 # install.sh writes and `ft update` keeps digest-pinned. A moving :latest tag
-# is refused in installed mode: what runs on a headset must be reproducible
-# and rollback-able, so only version tags or digests qualify.
+# is refused for what gets deployed (the pinned image and the update source):
+# what runs on a headset must be reproducible and rollback-able. Local
+# development is free to use any tag, :latest included.
 #
 # Usage:
 #   ft <prog> [args]    [both]    run a program from /opt/frametop

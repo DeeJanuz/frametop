@@ -56,12 +56,14 @@ installed copy — which has no repo to build from — refuses them. Containers
 run through the wrapper get stable names, `frametop-<program>`. The design
 rationale is in [design.md](design.md).
 
-### Never :latest
+### No :latest on a headset
 
 A moving tag has no place on a headset: it cannot be reproduced in a bug
-report and cannot be rolled back. The wrapper enforces this — installed mode
-refuses to run without a pinned reference, and both the update source and the
-pinned reference are rejected if they say `:latest`.
+report and cannot be rolled back. The wrapper enforces this for what gets
+**deployed** — installed mode refuses to run without a pinned reference, and
+both the update source and the pinned reference are rejected if they say
+`:latest`. Local development can use any tag it likes (`FT_IMAGE` is never
+second-guessed in repo mode).
 
 How pinning works:
 
