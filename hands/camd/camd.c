@@ -379,9 +379,15 @@ static bool resolve_block(cam_t *c)
     return true;
 }
 
+/*
+ * Through the ISP (no colour module), the near-black exposures come out all zeros,
+ * the same every time, so their dequeues change no buffer and get no votes. Such
+ * an index is left unmapped (slot -1): on_frame counts its frames as dark without
+ * reading them. Most of a camera's indices silent means it isn't streaming yet.
+ */
 static bool resolve_each(cam_t *c)
 {
-    int depth = c->maxindex + 1;
+    int depth = c->maxindex + 1, silent = 0;
     bool taken[MAX_SLOTS] = { false };
 
     for (int i = 0; i < depth; i++) {
@@ -396,6 +402,12 @@ static bool resolve_each(cam_t *c)
             }
         }
 
+        if (c->nobs[i] >= 3 && v1 <= 0.2 * c->nobs[i]) {
+            c->slot_of[i] = -1;
+            silent++;
+            continue;
+        }
+
         if (c->nobs[i] < 3 || best < 0 || taken[best] || v1 < 0.8 * c->nobs[i] || v2 > 0.3 * c->nobs[i])
             return false;
 
@@ -403,9 +415,14 @@ static bool resolve_each(cam_t *c)
         c->slot_of[i] = best;
     }
 
+    if (silent * 2 > depth)
+        return false;
+
     printf("%s: queue depth %d, buffers mapped one by one:", c->slug, depth);
     for (int i = 0; i < depth; i++)
-        printf(" %d", c->slot_of[i]);
+        c->slot_of[i] < 0 ? printf(" -") : printf(" %d", c->slot_of[i]);
+    if (silent)
+        printf(" (- : %d indices whose frames are all zeros, skipped as dark)", silent);
     printf("\n");
     return true;
 }
@@ -676,6 +693,12 @@ static void on_frame(cam_t *c, int64_t index, uint32_t seq, uint64_t ts, uint64_
     }
 
     int slot = c->slot_of[index];
+
+    if (slot < 0) {     /* an index whose frames are all zeros (resolve_each): a dark one */
+        c->dark++;
+        c->rc->dropped++;
+        return;
+    }
 
     /* color runs at 60 fps: skip frames early enough that the asked rate holds, before any sync */
     if (c->color && color_fps > 0 && evtime - c->last_pub_ns < (uint64_t)(1e9 / color_fps) - 3000000) {
