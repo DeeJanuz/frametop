@@ -35,11 +35,10 @@ permissions:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
-  RUNS_ON: ${{ inputs.runner == 'local' && 'self-hosted,ft-arm64' || 'ubuntu-24.04-arm' }}
 
 jobs:
   build:
-    runs-on: ${{ env.RUNS_ON }}
+    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     steps:
       # actions/checkout@v5.0.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -72,7 +71,7 @@ jobs:
 
   smoke:
     needs: build
-    runs-on: ${{ env.RUNS_ON }}
+    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     steps:
       # actions/checkout@v5.0.0
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
