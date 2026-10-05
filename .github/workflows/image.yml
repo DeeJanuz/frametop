@@ -20,6 +20,7 @@ on:
       - "uv.lock"
       - ".python-version"
       - "justfile"
+      - "ft"
       - ".github/workflows/image.yml"
       - "!**.md"
       - "!**/DESIGN.md"
@@ -94,3 +95,24 @@ jobs:
           docker run --rm \
             -v "$PWD":/src/frametop --workdir /src/frametop \
             "${IMAGE}:${{ needs.build.outputs.tag }}" just test
+      # The wrapper is the counterpart of the image: every run on a device
+      # goes through it, so a wrapper change can break a working image just
+      # like an image change can. The smoke job therefore exercises the
+      # wrapper itself, against the image this run built.
+      - name: Exercise the ft wrapper against the built image
+        run: |
+          export FT_IMAGE="${IMAGE}:${{ needs.build.outputs.tag }}"
+          # repo mode: a program runs from the image, with the checkout mounted
+          ./ft python -V
+          # installed mode, in a sandbox: update digest-pins, then runs
+          mkdir -p /tmp/ft-home/.config/frametop /tmp/ft-home/bin
+          echo "$FT_IMAGE" > /tmp/ft-home/.config/frametop/published
+          install ./ft /tmp/ft-home/bin/ft
+          FT_IMAGE_PUBLISHED="$FT_IMAGE" XDG_CONFIG_HOME=/tmp/ft-home/.config \
+            /tmp/ft-home/bin/ft update
+          pinned=$(cat /tmp/ft-home/.config/frametop/image)
+          grep -q '@sha256:' <<<"$pinned" || { echo "no digest pinned: $pinned"; exit 1; }
+          XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V
+          # :latest is refused for what gets deployed
+          echo "${IMAGE}:latest" > /tmp/ft-home/.config/frametop/image
+          XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V && exit 1 || true
