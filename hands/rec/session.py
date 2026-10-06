@@ -292,7 +292,7 @@ def similar_lighting(base_dir, lighting):
     return None
 
 
-DAYLIGHT_IR = 6.0   # ambient IR (the mono cameras' mean dark_mean) from which it's daylight
+DAYLIGHT_IR = 6.0   # ambient IR (the mono cameras' mean dark_mean) from which it's daylight; see classify_lighting
 
 
 def ambient_ir(ring):
@@ -306,7 +306,12 @@ def ambient_ir(ring):
 def classify_lighting(ring):
     """"daylight" or "indoor" from the room's infrared light, "" if it can't tell. Sunlight
     carries a lot of infrared; lamps and LEDs hardly any, so a dim room and a bright one read
-    about the same (2026-10: 1.8 by one lamp, 2.2 in a lamp-lit room) and aren't told apart."""
+    about the same (2026-10: 1.8 by one lamp, 2.2 in a lamp-lit room) and aren't told apart.
+    Nor does a sunlit room reliably: the first daylight round (dataset PR #5, big sunlit windows)
+    read 2.38, since the windows are a small part of each picture and the mean barely moves. So
+    "indoor" means "no strong daylight on the cameras", and the window asks people to pick
+    daylight themselves. What did show it there: hands only ~1.15x as bright as their surroundings
+    (1.5-1.7x in lamp-lit rooms), which needs hands in view, so it's measured on the dataset side."""
     ir = ambient_ir(ring)
     if ir is None:
         return ""

@@ -362,7 +362,8 @@ Kirigami.ApplicationWindow {
                     wrapMode: Text.Wrap
                     opacity: 0.7
                     text: "Each round in a different light helps the most: dim, a normal room, daylight. The cameras "
-                          + "tell daylight from indoor light themselves; to say dim or a normal room, pick it here."
+                          + "can't tell daylight on their own (a sunlit room has measured as indoor light), so if "
+                          + "sunlight comes into the room, pick Daylight here; dim or a normal room the same way."
                 }
                 Kirigami.InlineMessage {
                     Layout.maximumWidth: Kirigami.Units.gridUnit * 26
