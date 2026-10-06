@@ -76,15 +76,19 @@ MIN_FREE = 1.5e9         # stop the session before the disk fills
 COUNTDOWN_S = 3          # step mode: the 3-2-1 before each step, recorded
 FIRST_SET_S = 3.0        # step mode: how long the hold may wait for its recording's first set
 RESUME_HINT = "Paused. Resume: P in the Hand recorder window"
+RESUME_HINT_BUTTON = "Paused. Resume: press the headset button, or P in the Hand recorder window"
 READY_TEXT = "Ready? Press Space or click Next"
 # With the headset's button: it leads when no mouse is connected (the window's Next can't be clicked).
 READY_BUTTON = "Ready? Press the button on the right side of the headset"
 READY_BUTTON_MOUSE = "Ready? Press Space, click Next, or press the headset button"
 KEYS_STEP = "Hand recorder window:  Space next  \u00b7  P pause  \u00b7  R redo  \u00b7  S skip section  \u00b7  Esc stop"
 KEYS_AUTO = "Hand recorder window:  P pause  \u00b7  R redo  \u00b7  S skip section  \u00b7  Esc stop"
-KEYS_STEP_BUTTON = ("Headset button: next, pause  \u00b7  Window: Space next  \u00b7  P pause  \u00b7  R redo  "
-                    "\u00b7  S skip  \u00b7  Esc stop")
-KEYS_AUTO_BUTTON = "Headset button: pause  \u00b7  Window: P pause  \u00b7  R redo  \u00b7  S skip section  \u00b7  Esc stop"
+# The headset button: a press, two (redo) and a hold (stop): ButtonGestures. The window's keys follow
+# by letter: the window lists what they do.
+KEYS_STEP_BUTTON = ("Headset button: press for next or pause  \u00b7  press twice to redo  \u00b7  hold to stop  "
+                    "\u00b7  Window keys: Space  P  R  S  Esc")
+KEYS_AUTO_BUTTON = ("Headset button: press to pause  \u00b7  press twice to redo  \u00b7  hold to stop  "
+                    "\u00b7  Window keys: P  R  S  Esc")
 # The early no-hands stop (DESIGN.md, "Camera check"): the first step of this section has both
 # hands up. If the live tracker publishes through its hold and never sees a hand, the session
 # stops that step and asks: try again, or stop. Only when the tracker published in at least
@@ -97,6 +101,8 @@ NO_HANDS_TITLE = "I can't see your hands"
 NO_HANDS_TEXT = "The hand tracker didn't see either of your hands during that whole step."
 NO_HANDS_RETRY = ("Try again: hold both hands up in front of you, about 40 cm away. To stop instead: "
                   "Esc or Stop in the Hand recorder window.")
+NO_HANDS_RETRY_BUTTON = ("Try again: hold both hands up in front of you, about 40 cm away, and press the headset "
+                         "button. To stop instead: hold the button, or Esc or Stop in the Hand recorder window.")
 
 
 def mono_ns():
@@ -684,7 +690,9 @@ EV_KEY, EV_REL = 0x01, 0x02
 REL_X, REL_Y = 0x00, 0x01
 KEY_SELECT = 353
 BUTTON_DEVICE = "gpio-keys"
-BUTTON_DEBOUNCE_S = 0.3   # presses closer than this count once
+BUTTON_DOUBLE_S = 0.45    # a second press this soon after the first one's release: a double press
+BUTTON_HOLD_S = 1.5       # held down this long: a hold
+BUTTON_BOUNCE_S = 0.03    # a release and press closer than this are one press (gpio-keys debounces too)
 
 
 def parse_input_devices(text):
@@ -764,29 +772,84 @@ def mouse_connected(path=INPUT_DEVICES):
     return any(real_mouse(d) for d in read_input_devices(path))
 
 
-def button_presses(data):
-    """KEY_SELECT key-downs in a run of input_event structs (value 1; releases and autorepeat
-    are left out). Returns (how many, the bytes left over after the last whole event)."""
-    n, usable = 0, len(data) - len(data) % INPUT_EVENT.size
+def button_events(data):
+    """KEY_SELECT downs and ups in a run of input_event structs: [(True for a down or False for
+    an up, the event's time in seconds), ...] (autorepeat, value 2, is left out). Returns (them,
+    the bytes left over after the last whole event)."""
+    out, usable = [], len(data) - len(data) % INPUT_EVENT.size
     for off in range(0, usable, INPUT_EVENT.size):
-        _, _, etype, code, value = INPUT_EVENT.unpack_from(data, off)
-        if etype == EV_KEY and code == KEY_SELECT and value == 1:
-            n += 1
-    return n, data[usable:]
+        sec, usec, etype, code, value = INPUT_EVENT.unpack_from(data, off)
+        if etype == EV_KEY and code == KEY_SELECT and value in (0, 1):
+            out.append((value == 1, sec + usec / 1e6))
+    return out, data[usable:]
+
+
+class ButtonGestures:
+    """The headset button's downs and ups, with their times, as gestures:
+      "press": one short press, reported once the double-press time has passed without a second;
+      "double": two presses, the second down within double_s of the first one's release, reported
+        at the second down;
+      "hold": held down for hold_s, reported while still down.
+    A release and a press closer than bounce_s are one press. Each call returns the gestures that
+    are due, in order; tick() is called now and then to report the ones that are due by time."""
+
+    def __init__(self, double_s=BUTTON_DOUBLE_S, hold_s=BUTTON_HOLD_S, bounce_s=BUTTON_BOUNCE_S):
+        self.double_s, self.hold_s, self.bounce_s = double_s, hold_s, bounce_s
+        self.down_at = None    # when the button went down, while it's down
+        self.done = False      # the press that's down was already reported (a double, a hold)
+        self.released = None   # when a short press was let go, until it's reported or doubled
+        self._up = None        # the last release, for the bounce: (time, down_at, done, released before it)
+
+    def down(self, t):
+        if self.down_at is not None:   # a missed release
+            return []
+        if self._up and t - self._up[0] < self.bounce_s:   # a bounce: still the same press
+            _, self.down_at, self.done, self.released = self._up
+            self._up = None
+            return []
+        out = self.tick(t)
+        self.down_at, self.done = t, False
+        if self.released is not None:   # within the double-press time (else tick reported it)
+            self.released, self.done = None, True
+            out.append("double")
+        return out
+
+    def up(self, t):
+        if self.down_at is None:
+            return []
+        out = self.tick(t)
+        self._up = (t, self.down_at, self.done, self.released)
+        if not self.done:
+            self.released = t
+        self.down_at, self.done = None, False
+        return out
+
+    def tick(self, t):
+        if self.down_at is not None and not self.done and t - self.down_at >= self.hold_s:
+            self.done = True
+            return ["hold"]
+        if self.released is not None and t - self.released > self.double_s:
+            self.released = None
+            return ["press"]
+        return []
+
+    def waiting(self):
+        """Something is due by time alone: a hold, or a press that may still become a double."""
+        return (self.down_at is not None and not self.done) or self.released is not None
 
 
 class ButtonReader:
-    """Reads the headset button on a thread and calls on_press() per press, debounced. path:
-    an event device or, for testing, a FIFO carrying input_event structs. It's opened read-only
-    and shared; if it can't be opened (no device, no permission, /dev/input not reachable in a
-    container) it says so in the log and tries again now and then."""
+    """Reads the headset button on a thread and calls on_gesture("press" | "double" | "hold")
+    (ButtonGestures). path: an event device or, for testing, a FIFO carrying input_event
+    structs. It's opened read-only and shared; if it can't be opened (no device, no permission,
+    /dev/input not reachable in a container) it says so in the log and tries again now and then."""
 
-    def __init__(self, path, on_press, log=None, debounce_s=BUTTON_DEBOUNCE_S):
-        self.path, self.on_press, self.log = path, on_press, log or (lambda s: None)
-        self.debounce_s = debounce_s
+    def __init__(self, path, on_gesture, log=None, double_s=BUTTON_DOUBLE_S, hold_s=BUTTON_HOLD_S,
+                 bounce_s=BUTTON_BOUNCE_S):
+        self.path, self.on_gesture, self.log = path, on_gesture, log or (lambda s: None)
+        self.gestures = ButtonGestures(double_s, hold_s, bounce_s)
         self.ok = False      # opened at least once
         self._stop = threading.Event()
-        self._last = -1e9
         self._thread = threading.Thread(target=self._run, name="handrec-button", daemon=True)
 
     def start(self):
@@ -797,11 +860,9 @@ class ButtonReader:
         self._stop.set()
         self._thread.join(2)
 
-    def _press(self, n):
-        now = time.monotonic()
-        if n and now - self._last >= self.debounce_s:
-            self._last = now
-            self.on_press()
+    def _report(self, gestures):
+        for g in gestures:
+            self.on_gesture(g)
 
     def _run(self):
         failed = False
@@ -820,8 +881,9 @@ class ButtonReader:
             rest = b""
             try:
                 while not self._stop.is_set():
-                    r, _, _ = select.select([fd], [], [], 0.2)
+                    r, _, _ = select.select([fd], [], [], 0.02 if self.gestures.waiting() else 0.2)
                     if not r:
+                        self._report(self.gestures.tick(time.monotonic()))
                         continue
                     try:
                         data = os.read(fd, INPUT_EVENT.size * 64)
@@ -830,8 +892,13 @@ class ButtonReader:
                     if not data:   # a FIFO's writer left: open it again
                         self._stop.wait(0.2)
                         break
-                    n, rest = button_presses(rest + data)
-                    self._press(n)
+                    events, rest = button_events(rest + data)
+                    # The kernel's times (the realtime clock) keep the gaps between events that
+                    # came in one read; the last one is taken as now.
+                    now = time.monotonic()
+                    for is_down, t in events:
+                        at = now - min(max(events[-1][1] - t, 0.0), 2.0)
+                        self._report(self.gestures.down(at) if is_down else self.gestures.up(at))
             except OSError as e:   # the device went away
                 self.log("headset button: %s: %s" % (self.path, e.strerror))
                 self._stop.wait(2)
@@ -1299,8 +1366,25 @@ class Session:
             self._want[key] = value
         self._wake.set()
 
+    def button_gesture(self, gesture):
+        """The headset's button (ButtonGestures). A press: Next while a step waits, pause during
+        a countdown or hold (and auto mode's timed screens), resume while paused. A double press:
+        redo, as R. A hold: stop, as Esc."""
+        if gesture == "press":
+            self.button_press()
+        elif gesture == "double":
+            if self._status["state"] in ("done", "stopped", "error") or not self._status.get("can_redo"):
+                return
+            self.redo()
+            self._log("headset button (redo)")
+        elif gesture == "hold":
+            if self._status["state"] in ("done", "stopped", "error"):
+                return
+            self._log("headset button (stop)")
+            self.stop(wait=0)
+
     def button_press(self):
-        """The headset's button: Next while a step waits, pause during a countdown or hold
+        """The headset button's press: Next while a step waits, pause during a countdown or hold
         (and auto mode's timed screens), resume while paused."""
         with self._lock:
             paused = self._want["pause"]
@@ -1509,7 +1593,8 @@ class Session:
         if not path:
             self._log("headset button: no %s device with KEY_SELECT in %s" % (BUTTON_DEVICE, INPUT_DEVICES))
             return
-        self._button = ButtonReader(path, self.button_press, log=self._log, debounce_s=BUTTON_DEBOUNCE_S).start()
+        self._button = ButtonReader(path, self.button_gesture, log=self._log, double_s=BUTTON_DOUBLE_S,
+                                    hold_s=BUTTON_HOLD_S, bounce_s=BUTTON_BOUNCE_S).start()
         end = time.monotonic() + 0.5   # opened in a moment, or it isn't reachable
         while not self._button.ok and time.monotonic() < end:
             time.sleep(0.01)
@@ -1745,9 +1830,10 @@ class Session:
         if self._recording:
             self._stop_recording()
             self._event("pause")
+        hint = RESUME_HINT_BUTTON if self._button_ok() else RESUME_HINT
         self._panel.cmd("paused on")
-        self._panel.set("note", "note " + RESUME_HINT)
-        self._emit(state="paused", note=RESUME_HINT)
+        self._panel.set("note", "note " + hint)
+        self._emit(state="paused", note=hint)
         self._log("paused")
 
     def _unpause(self, record=True):
@@ -1933,10 +2019,13 @@ class Session:
             for e in items)))
         self._status.update(strip=items, cue=cue)
 
+    def _button_ok(self):
+        return bool(self._button and self._button.ok)
+
     def _hints(self, action=True):
         """The Next hint (with action) and the key line for what's there now: the headset button
         leads when no mouse is connected. Looked at again for each step, so a mouse plugged in counts."""
-        button = bool(self._button and self._button.ok)
+        button = self._button_ok()
         mouse = mouse_connected(self.input_devices)
         text = (READY_BUTTON_MOUSE if mouse else READY_BUTTON) if button else READY_TEXT
         keys = (KEYS_AUTO_BUTTON if self.auto else KEYS_STEP_BUTTON) if button else (KEYS_AUTO if self.auto else KEYS_STEP)
@@ -2242,7 +2331,7 @@ class Session:
         for line in (cam or {}).get("evidence", []):
             self._log("      " + line)
         text = "%s|%s|%s" % (NO_HANDS_TEXT, cam_text or "The camera check found nothing wrong (%s)." % summary,
-                             NO_HANDS_RETRY)
+                             NO_HANDS_RETRY_BUTTON if self._button_ok() else NO_HANDS_RETRY)
         self._stop_note = "Stopped: no hands were seen in the first step. Camera check: %s." % summary
         if cam_text:
             self._stop_note += " " + cam_text
@@ -2495,7 +2584,8 @@ def main():
                     help="test: press Next by itself after S seconds of waiting (real time)")
     ap.add_argument("--poses", help="the pose pictures' folder, with poses.json (default hands/rec/poses)")
     ap.add_argument("--no-headset-button", action="store_true",
-                    help="don't read the headset's button (gpio-keys KEY_SELECT: Next, pause, resume)")
+                    help="don't read the headset's button (gpio-keys KEY_SELECT: a press is Next, pause or resume; "
+                         "two are redo; a hold is stop)")
     ap.add_argument("--button-device", metavar="PATH",
                     help="test: read the button from this event device or FIFO of input_event structs (also in a dry run)")
     ap.add_argument("--quick", action="store_true",
