@@ -135,17 +135,22 @@ jobs:
           echo "${IMAGE}:latest" > /tmp/ft-home/.config/frametop/image
           XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V && exit 1 || true
 
-      # All checks green: now the push. Everything below treats the local
-      # image as the source; the registry copy is the same bytes.
+      # All checks green: now the push — but only for main and version tags.
+      # Feature branches are validated, not published: the registry holds
+      # only the states a user would actually run.
       - name: push to ghcr
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: |
           while read -r tag; do docker push "$tag"; done \
             <<< "${{ steps.meta.outputs.tags }}"
 
-      # The installable wrapper, with checksums. Extracted from the image
-      # this run built and compared byte-for-byte with the checkout's copy:
-      # the artifact, the image, and the commit are one thing.
+      # The installable wrapper, with checksums — like the push, only for
+      # main and version tags: the artifact belongs to a published state.
+      # Extracted from the image this run built and compared byte-for-byte
+      # with the checkout's copy: the artifact, the image, and the commit
+      # are one thing.
       - name: artifact (ft + checksums)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: |
           mkdir -p out
           docker run --rm --entrypoint cat \
