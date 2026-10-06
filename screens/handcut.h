@@ -58,6 +58,17 @@ public:
     bool predicting() const { return predict_; }
     double leadMs() const { return leadNs_ / 1e6; }
 
+    // Each hand's 21 landmarks in the room, for ft-handtest --probe: as the cameras saw them
+    // (predict false), or moved ahead along the hand's velocity to now + leadMs, as the
+    // capsules are. Empty while no fresh hands are known (as capsules()).
+    struct HandPoints {
+        uint32_t id;
+        bool right;
+        float p[21][3];
+    };
+    void Points(int64_t nowNs, bool predict, double leadMs, std::vector<HandPoints> &out) const;
+    int64_t captureNs() const { return captureNs_; }
+
 private:
     bool Read();
     Mat HeadAt(int64_t ns) const;
@@ -67,6 +78,7 @@ private:
     std::vector<Capsule> base_;   // the capsules at capture time, in the room
     std::vector<int> owner_;      // each capsule's hand (index into ids_), or -1
     std::vector<uint32_t> ids_;   // the hands in the file
+    std::vector<HandPoints> basePts_;   // their landmarks at capture time, in the room
     std::map<uint32_t, Motion> motion_;
     std::vector<Capsule> world_;  // base_, moved ahead
     bool predict_ = true;
@@ -100,6 +112,12 @@ struct Output {
     std::vector<Capsule2D> spots[2];
 };
 
+// A dot for ft-handtest --probe: centre and radius in pixels of the eye's half, colour.
+struct Mark {
+    float x, y, r;
+    float rgb[3];
+};
+
 // Composite's counts since the last TakeStats.
 struct CutStats {
     int draws = 0, partial = 0;   // buffers drawn, of them only around the cutouts
@@ -129,6 +147,9 @@ public:
     // one never shows.
     const Output *Composite(int panel, const void *key, uint64_t serial, const ft_dmabuf &src,
                             const std::vector<Capsule2D> eyes[2]);
+    // ft-handtest --probe: a transparent w x h buffer per eye (side by side) with only the
+    // dots in it, drawn every call, fenced as Composite's. Returns the newest finished one.
+    const Output *Marks(int panel, int w, int h, const std::vector<Mark> eyes[2]);
     // A client buffer is going away.
     void Forget(const void *key);
     // A panel is gone: drop its outputs.
@@ -146,7 +167,7 @@ private:
     bool ready_ = false;
     int drm_ = -1;
     void *gbm_ = nullptr, *dpy_ = nullptr, *ctx_ = nullptr;
-    unsigned copyProg_ = 0, cutProg_ = 0, vbo_ = 0;
+    unsigned copyProg_ = 0, cutProg_ = 0, markProg_ = 0, vbo_ = 0;
     std::vector<uint64_t> modifiers_;
     std::function<void(const Output *)> released_;
     struct Imported { void *image; unsigned tex; };

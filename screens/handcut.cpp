@@ -88,7 +88,7 @@ bool Hands::Read() {
     const Mat head = HeadAt(captureNs_);
 
     // each hand's palm in the room, and its velocity from the last time it was seen
-    ids_.clear();
+    ids_.clear(), basePts_.clear();
     std::vector<int> owners;   // the hand each capsule belongs to, in file order
     for (uint32_t k = 0; k < nhands; ++k) {
         const fh_hand_t &h = copy.hands[k];
@@ -97,6 +97,13 @@ bool Hands::Read() {
         const int idx = int(ids_.size());
         ids_.push_back(id);
         owners.insert(owners.end(), std::min<uint32_t>(h.ncapsules, kMaxCapsules), idx);
+        HandPoints hp{id, (h.flags & FH_HAND_RIGHT) != 0, {}};
+        bool finite = true;
+        for (int j = 0; j < 21; ++j) {
+            for (float v : pts[j]) finite = finite && std::isfinite(v) && std::fabs(v) < 10;
+            Apply(head, pts[j], hp.p[j]);
+        }
+        if (finite) basePts_.push_back(hp);
         double palm[3] = {0, 0, 0};
         bool ok = true;
         for (int j : {0, 5, 9, 13, 17}) {
@@ -162,7 +169,7 @@ bool Hands::Update(const Mat &head, int64_t nowNs) {
     history_.push_back({nowNs, head});
     while (!history_.empty() && nowNs - history_.front().ns > kHistoryNs) history_.erase(history_.begin());
     Read();
-    if (nowNs - publishNs_ > kStaleNs) base_.clear(), owner_.clear();
+    if (nowNs - publishNs_ > kStaleNs) base_.clear(), owner_.clear(), basePts_.clear();
     // move each hand ahead to when this frame will be on the displays; a slow hand's
     // velocity is mostly tracking noise, so it fades out below kStillSpeed
     const double ahead = std::clamp((nowNs + leadNs_ - captureNs_) / 1e9, 0.0, kMaxAhead);
@@ -180,6 +187,21 @@ bool Hands::Update(const Mat &head, int64_t nowNs) {
         }
     }
     return !world_.empty();
+}
+
+void Hands::Points(int64_t nowNs, bool predict, double leadMs, std::vector<HandPoints> &out) const {
+    out = basePts_;
+    if (!predict) return;
+    const double ahead = std::clamp((nowNs + leadMs * 1e6 - captureNs_) / 1e9, 0.0, kMaxAhead);
+    for (HandPoints &hp : out) {
+        const auto m = motion_.find(hp.id);
+        if (m == motion_.end()) continue;
+        const double *v = m->second.v;
+        const double speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        const double gain = std::clamp((speed - kStillSpeed) / kStillSpeed, 0.0, 1.0);   // as Update
+        for (auto &p : hp.p)
+            for (int i = 0; i < 3; ++i) p[i] += float(v[i] * gain * ahead);
+    }
 }
 
 void EyePositions(const Mat &head, double out[2][3]) {
@@ -317,6 +339,20 @@ void main() {
     gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(rad - feather, rad + feather, d));
 })";
 
+// A probe dot: the colour inside, a dark ring around it so it reads on any background.
+const char *kMark = R"(
+precision highp float;
+uniform vec2 c;
+uniform float r;
+uniform vec3 color;
+varying vec2 px;
+void main() {
+    float d = length(px - c);
+    float a = 1.0 - smoothstep(r - 0.75, r + 0.75, d);
+    if (a <= 0.0) discard;
+    gl_FragColor = vec4(d > r - 2.0 ? vec3(0.0) : color, a);
+})";
+
 unsigned Shader(GLenum type, const char *src) {
     const GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, nullptr);
@@ -422,7 +458,8 @@ bool Renderer::Init(const std::vector<uint64_t> &modifiers, std::function<void(c
     ctx_ = ctx;
     copyProg_ = Program(kCopy);
     cutProg_ = Program(kCut);
-    if (!copyProg_ || !cutProg_) return false;
+    markProg_ = Program(kMark);
+    if (!copyProg_ || !cutProg_ || !markProg_) return false;
     const float quad[] = {0, 0, 1, 0, 0, 1, 1, 1};
     glGenBuffers(1, &vbo_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -658,6 +695,54 @@ const Output *Renderer::Composite(int panel, const void *key, uint64_t serial, c
     }
     lastMs_ = (SteadyNs() - t0) / 1e6;
     stats_.cpuMs += lastMs_, stats_.worstMs = std::max(stats_.worstMs, lastMs_);
+    return ring.shown >= 0 ? &ring.out[ring.shown] : nullptr;
+}
+
+const Output *Renderer::Marks(int panel, int w, int h, const std::vector<Mark> eyes[2]) {
+    if (!ready_) return nullptr;
+    Ring &ring = rings_[panel];
+    if (ring.w != w || ring.h != h) {
+        for (Output &old : ring.out) FreeOutput(old);
+        ring.w = w, ring.h = h, ring.shown = ring.before = ring.drawing = -1;
+    }
+    auto promote = [&ring] {
+        ring.before = ring.shown, ring.shown = ring.drawing, ring.drawing = -1;
+    };
+    if (ring.drawing >= 0 && Passed(ring.out[ring.drawing], 0)) promote();
+    if (ring.drawing < 0) {
+        int i = 0;
+        while (i == ring.shown || i == ring.before) ++i;
+        Output &o = ring.out[i];
+        if (!o.bo && !MakeOutput(o, 2 * w, h)) return nullptr;
+        glBindFramebuffer(GL_FRAMEBUFFER, o.fbo);
+        glViewport(0, 0, 2 * w, h);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glDisable(GL_BLEND);
+        glUseProgram(markProg_);
+        glUniform2f(glGetUniformLocation(markProg_, "size"), float(w), float(h));
+        const GLint uRect = glGetUniformLocation(markProg_, "rect"), uC = glGetUniformLocation(markProg_, "c"),
+                    uR = glGetUniformLocation(markProg_, "r"), uColor = glGetUniformLocation(markProg_, "color");
+        for (int e = 0; e < 2; ++e) {
+            glViewport(e * w, 0, w, h);
+            for (const Mark &m : eyes[e]) {
+                glUniform4f(uRect, m.x - m.r - 1, m.y - m.r - 1, m.x + m.r + 1, m.y + m.r + 1);
+                glUniform2f(uC, m.x, m.y);
+                glUniform1f(uR, m.r);
+                glUniform3f(uColor, m.rgb[0], m.rgb[1], m.rgb[2]);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            }
+        }
+        o.fence = pCreateSync(EGLDisplay(dpy_), EGL_SYNC_FENCE_KHR, nullptr);
+        glFlush();
+        if (!o.fence) glFinish();
+        o.key = nullptr, o.drawn = false;   // holds no client frame
+        ring.drawing = i;
+    }
+    if (ring.shown < 0 && ring.drawing >= 0 && Passed(ring.out[ring.drawing], 50'000'000)) promote();
     return ring.shown >= 0 ? &ring.out[ring.shown] : nullptr;
 }
 
