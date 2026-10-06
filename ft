@@ -103,7 +103,9 @@ default_image() {
 image=${FT_IMAGE:-}
 published=${FT_IMAGE_PUBLISHED:-}
 
-engine=$(command -v podman || command -v docker || true)
+# FT_ENGINE picks one when both are installed (CI builds with docker, and
+# its runner has podman too).
+engine=${FT_ENGINE:-$(command -v podman || command -v docker || true)}
 [ -n "$engine" ] || { echo "ft: need podman or docker on PATH" >&2; exit 1; }
 
 # Repo mode mounts the checkout; installed mode uses the image's own copy.

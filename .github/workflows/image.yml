@@ -108,16 +108,24 @@ jobs:
 
       - name: smoke (the ft wrapper)
         run: |
+          # The image is in docker's store; the runner's podman would pull
+          # from GHCR instead.
+          export FT_ENGINE=docker
           export FT_IMAGE="${IMAGE}:${{ steps.meta.outputs.version }}"
           # repo mode: a program runs from the image, with the checkout mounted
           ./ft python -V
-          # installed mode, in a sandbox: update digest-pins, then runs.
+          # installed mode, in a sandbox: update pulls, digest-pins, then
+          # runs. It pulls this run's image from a registry inside the job:
+          # branches push nothing to GHCR, and a GHCR pull would test
+          # whatever was published last instead of this build.
+          docker run -d --name ci-registry -p 5000:5000 \
+            registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          published_ref=localhost:5000/frametop:ci
+          docker tag "$FT_IMAGE" "$published_ref"
+          docker push -q "$published_ref"
+          docker rmi "$published_ref"
           # FT_IMAGE must go: it is the explicit user override and would
-          # shadow the pin this section is meant to test. The published
-          # reference is captured BEFORE the unset (an empty $FT_IMAGE
-          # here was podman pull "" — "repository name must have at
-          # least one component").
-          published_ref="$FT_IMAGE"
+          # shadow the pin this section is meant to test.
           unset FT_IMAGE
           mkdir -p /tmp/ft-home/.config/frametop /tmp/ft-home/bin
           echo "$published_ref" > /tmp/ft-home/.config/frametop/published
