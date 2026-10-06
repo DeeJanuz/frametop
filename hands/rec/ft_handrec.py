@@ -45,6 +45,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QIco
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
 from PySide6.QtQuickControls2 import QQuickStyle
+import shiboken6
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1219,7 +1220,11 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     tick = QTimer(interval=500, timeout=lambda: None)
     tick.start()
-    sys.exit(app.exec())
+    code = app.exec()
+    # The window goes before the backend: otherwise its bindings run again against a deleted
+    # backend as Python tears down ("Cannot read property ... of null", one per binding).
+    shiboken6.delete(engine)
+    sys.exit(code)
 
 
 if __name__ == "__main__":
