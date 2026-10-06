@@ -389,7 +389,16 @@ class Checks:
     def problem(self):
         """Why gaze mode, on, can't follow your eyes yet, or None. Our tracker not having said
         yet is None: Input Settings has its own line for our tracker."""
-        if not self.gaze_on or self.calibrated() is not False:
+        if not self.gaze_on:
+            return None
+        own = self.svc.kind == "own"
+        if self.svc.mmap_unknown and (not own or self.calibrated() is False):
+            # ft-gaze can't read SteamVR's tracker (EyeFile::Detect in ft-gaze.cpp): not its gaze,
+            # and not the eyes it sees, which our tracker's calibration waits for.
+            return ("SteamVR's eye data has a layout Frametop doesn't know (after a SteamOS update?), so "
+                    + ("the calibration can't open" if own else "SteamVR's eye tracker can't be used")
+                    + ". A newer Frametop may know it")
+        if self.calibrated() is not False:
             return None
         if self.check and self.check["kind"] == "full":
             return "Not calibrated yet: the calibration is open in the headset"

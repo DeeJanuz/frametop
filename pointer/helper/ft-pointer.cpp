@@ -1563,8 +1563,19 @@ int main() {
             // (Moves were taken first, above.)
             const bool mouseInput = std::strncmp(buf, "btn", 3) == 0 || std::strncmp(buf, "scroll", 6) == 0;
             if (mouseInput) lastMouse = Clock::now();
-            // Any mouse input wakes the pointer (after a controller took over, or a helper restart).
-            if (!active && mouseInput) wake(Clock::now());
+            // Mouse input wakes the pointer (after a controller took over, or a helper restart),
+            // but a release doesn't (a button up, a scroll back to 0 0): the relay sends those with
+            // the pointer off when Frametop pauses for a game (input-relay.py stand_down), and
+            // waking would connect the virtual controller during the game. The release is still
+            // handled below (it ends its press, or goes to the driver), so no button stays down.
+            {
+                char name[16];
+                int v = 1;
+                double sx = 1, sy = 1;
+                const bool release = (std::sscanf(buf, "btn %15s %d", name, &v) == 2 && v == 0) ||
+                                     (std::sscanf(buf, "scroll %lf %lf", &sx, &sy) == 2 && sx == 0 && sy == 0);
+                if (!active && mouseInput && !release) wake(Clock::now());
+            }
             char key[128];
             double px, py, pz, pyaw, ppitch, proll = 0, pgrab = -1;
             if (std::sscanf(buf, "grabprobe %127s", key) == 1) {
@@ -2394,7 +2405,11 @@ int main() {
 
         // A held-back press (see the top): held still long enough, it's a real press (a drag);
         // released, it's a click where the pointer is now (this frame's pose has gone out).
-        if (!active) aimHeld = aimRight = clickPress = aimHand = confirmLesson = false;  // released meanwhile: nothing to click
+        // Released meanwhile: nothing to click, and the click it was due (pressRight: a right one) is
+        // forgotten too, or the next press after the pointer wakes would go out as a right click.
+        // A "hide" read a loop after the release is too late: the click has gone out by then
+        // (input-relay.py stand_down).
+        if (!active) aimHeld = aimRight = clickPress = pressRight = aimHand = confirmLesson = false;
         if (aimHeld && !aimHand && nudgeMoved < 0.2 && tnow - aimSince >= std::chrono::duration<double>(gazeHold)) {
             aimHeld = false;
             gazeBack = true;

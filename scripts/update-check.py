@@ -18,7 +18,6 @@ stops, or restarts anything.
 """
 import base64
 import json
-import math
 import mmap
 import os
 import platform
@@ -34,6 +33,8 @@ UID = os.getuid()
 KNOWN_GOOD = os.path.join(HOME, ".local/state/frametop/known-good.json")
 STEAMVR_BIN = "/opt/steamvr/bin/linuxarm64"
 LAUNCHER = os.path.join(HOME, ".local/share/applications/deckard-nested-desktop.desktop")
+STOCK_LAUNCHER = "/usr/share/applications/deckard-nested-desktop.desktop"
+NATIVE_LAUNCHER = os.path.join(HOME, ".local/share/applications/native-deckard-nested-desktop.desktop")
 VRPATHS = os.path.join(HOME, ".config/openvr/openvrpaths.vrpath")
 # The Frametop desktop has its own XDG_CONFIG_HOME (session/frametop-session.sh). An install from a
 # terminal there, before pointer/driver/install.sh set SteamVR's, left vrpathreg's registry here.
@@ -56,6 +57,7 @@ PACKAGES = {
                     "the registry stops and comes back after a desktop restart",
     "gamescope": "the headset's volume buttons with nothing focused; typing goes where you last clicked",
     "bluez": "a Bluetooth mouse reconnecting after it sleeps",
+    "steamdeck-kde-presets": "Launch a program -> Native Desktop opens SteamOS's own desktop",
 }
 KERNEL_HINT = "display power (ft-powerd) and hand tracking"
 
@@ -69,9 +71,11 @@ UNITS = {
     "frametop-hands": None,
 }
 
-# eye-server.mmap offsets, the same as gaze/ft-gaze.cpp's (packed, little-endian).
-EYE_COUNTER, EYE_TIME, EYE_OPEN, EYE_NEED = 0x38, 0x157, 0x1CB, 0x1D3
-EYE_VECTORS = (0x15F, 0x16B, 0x19B, 0x1A7)  # set 1 left, right; set 2 left, right
+# eye-server.mmap offsets, the same as gaze/ft-gaze.cpp's (packed, little-endian), and the
+# layouts its EyeFile::Detect knows: everything from the timestamp on moved by a shift.
+EYE_COUNTER, EYE_TIME, EYE_NEED = 0x38, 0x157, 0x1F3 + 5
+EYE_SET1 = (0x15F, 0x16B)  # set 1 left, right
+EYE_LAYOUTS = {0: "stable", 5: "the 0.4.x beta's (+5)"}
 
 # Runs in a child process, so a SteamVR that hangs can't hang the check.
 OPENVR_PROBE = r"""
@@ -179,8 +183,8 @@ def check_host():
         (f"{STEAMVR_BIN}/vrpathreg", "warn", "the pointer driver can't be installed or removed"),
         ("/usr/share/deckard/mesavars.sh", "warn", "the desktop starts without SteamOS's Mesa settings"),
         ("/etc/profile.d/flatpak.sh", "warn", "Flatpak apps may open Discover instead of starting"),
-        ("/usr/share/applications/deckard-nested-desktop.desktop", "warn",
-         "SteamOS's Desktop launcher entry is gone or renamed, so Frametop's copy may not replace it"),
+        (STOCK_LAUNCHER, "warn", "SteamOS's Desktop launcher entry is gone or renamed, so Frametop's "
+         "copy may not replace it, and there's no Native Desktop"),
     ]
     missing = [n for n in needed if not os.path.exists(n[0])]
     for path, state, effect in missing:
@@ -247,12 +251,29 @@ def check_host():
         report("ok", "launcher", f"Desktop starts {session}")
     else:
         report("FAIL", "launcher", f"Desktop starts {session}, which doesn't exist")
+    if os.path.exists(NATIVE_LAUNCHER):
+        try:
+            same = launcher_keys(NATIVE_LAUNCHER) == launcher_keys(STOCK_LAUNCHER)
+        except OSError:
+            same = False
+        if same:
+            report("ok", "Native Desktop", "the launcher's copy matches SteamOS's Desktop entry")
+        else:
+            report("warn", "Native Desktop", "the launcher's copy no longer matches SteamOS's Desktop entry; "
+                   "./desktops.sh install refreshes it")
 
     if systemctl("is-enabled", "frametop-power") == "enabled":
         if os.access(BACKLIGHT, os.W_OK):
             report("ok", "backlight", "ft-powerd can turn the displays off")
         else:
             report("FAIL", "backlight", f"{BACKLIGHT} isn't writable, so ft-powerd can't turn the displays off")
+
+
+def launcher_keys(path):
+    """A launcher entry's keys, less the ones desktops.sh changes in its Native Desktop copy."""
+    with open(path) as f:
+        pairs = [line.rstrip("\n").split("=", 1) for line in f if "=" in line and not line.startswith("#")]
+    return {k: v for k, v in pairs if k != "X-Steam-Special" and k.split("[")[0] != "Name"}
 
 
 def launcher_session():
@@ -461,21 +482,31 @@ def check_eye_tracker():
     if len(m) < EYE_NEED:
         report("FAIL", "eye tracker", f"{EYE_MMAP} is {len(m)} bytes, smaller than gaze/ft-gaze.cpp reads")
         return
+
+    def fits(shift, before, now):
+        """ft-gaze's test (EyeFile::Detect): the timestamp near the clock and moving on, and
+        both set-1 directions unit vectors."""
+        t = struct.unpack_from("<d", m, EYE_TIME + shift)[0]
+        return now - 2 < t <= now + 2 and t > before[shift] and all(
+            0.81 < sum(x * x for x in struct.unpack_from("<3f", m, o + shift)) < 1.21 for o in EYE_SET1)
+
     first = struct.unpack_from("<I", m, EYE_COUNTER)[0]
-    time.sleep(0.3)
-    if struct.unpack_from("<I", m, EYE_COUNTER)[0] == first:
-        report("skip", "eye tracker", "idle, so its layout wasn't checked")
-        return
-    age = time.clock_gettime(time.CLOCK_MONOTONIC_RAW) - struct.unpack_from("<d", m, EYE_TIME)[0]
-    units = sum(abs(math.sqrt(sum(x * x for x in struct.unpack_from("<3f", m, o))) - 1) < 0.02
-                for o in EYE_VECTORS)
-    # A lost eye can zero its vector, so two of the four are enough. The timestamp is the
-    # strong check: a fresh CLOCK_MONOTONIC_RAW double doesn't land on that offset by chance.
-    if abs(age) < 1 and units >= 2:
-        report("ok", "eye tracker", "eye-server.mmap still has the layout gaze/ft-gaze.cpp reads")
-    else:
-        report("FAIL" if gaze else "warn", "eye tracker", f"eye-server.mmap layout changed (sample age "
-               f"{age:.3g} s, {units} of 4 gaze vectors unit length); update the offsets in gaze/ft-gaze.cpp")
+    for attempt in range(5):  # 1.5 s: a blink or a moment with an eye lost doesn't fail it
+        before = {shift: struct.unpack_from("<d", m, EYE_TIME + shift)[0] for shift in EYE_LAYOUTS}
+        time.sleep(0.3)
+        if attempt == 0 and struct.unpack_from("<I", m, EYE_COUNTER)[0] == first:
+            report("skip", "eye tracker", "idle, so its layout wasn't checked")
+            return
+        now = time.clock_gettime(time.CLOCK_MONOTONIC_RAW)
+        for shift, name in EYE_LAYOUTS.items():
+            if fits(shift, before, now):
+                report("ok", "eye tracker", f"eye-server.mmap has a layout gaze/ft-gaze.cpp knows: {name}")
+                return
+    age = now - struct.unpack_from("<d", m, EYE_TIME)[0]
+    report("FAIL" if gaze else "warn", "eye tracker", f"eye-server.mmap has none of the layouts gaze/ft-gaze.cpp "
+           f"knows (sample age {age:.3g} s at the stable offset), so SteamVR's eye tracking can't be used: add the "
+           "new one to EyeFile::Detect. Right after the headset goes on its tracker warms up for about 20 s: "
+           "check again after that")
 
 
 def main():

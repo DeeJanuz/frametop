@@ -31,7 +31,8 @@ hands/run.sh restart            # after changing a setting
 hands/run.sh status
 hands/run.sh log [lines]
 hands/run.sh caps               # after rebuilding ft-camd (a rebuild clears its capabilities)
-hands/run.sh uninstall
+hands/run.sh uncaps             # take them back, unless the Hand Recorder or the services use them
+hands/run.sh uninstall          # the services, then uncaps
 ```
 
 Settings in `~/.config/frametop.conf` (`FT_<name>` in the environment overrides them), read when ft-camd and ft-hands start:

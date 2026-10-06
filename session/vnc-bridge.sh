@@ -37,6 +37,7 @@ fi
 
 # The VNC password is limited to 8 characters by the protocol. The traffic is
 # still encrypted by the tailnet (WireGuard).
+mkdir -m 0700 -p "$creds"  # remote-desktop.sh normally creates it; we may get here first
 if [ ! -s "$creds/vnc-password" ]; then
   (umask 077; head -c 12 /dev/urandom | base64 | tr -d '/+=' | cut -c1-8 > "$creds/vnc-password")
 fi

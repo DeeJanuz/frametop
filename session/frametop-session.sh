@@ -83,7 +83,8 @@ if [ "${1:-}" != --inner ]; then
   # Arrange the screens once they're up: in the profile this desktop starts with (FT_PROFILE,
   # from a profile's launcher entry, or the default profile), which also opens its apps, or
   # else in the saved layout (skipped when auto-arrange is off). docs/profiles.md.
-  setsid "$here/../layout/ft-layout" start --wait 90 > /tmp/frametop-layout.log 2>&1 < /dev/null &
+  # The log starts fresh here; ft-screens appends its later ft-layout runs to it.
+  setsid "$here/../layout/ft-layout" start --wait 90 > "$XDG_RUNTIME_DIR/frametop-layout.log" 2>&1 < /dev/null &
 
   if [ "$backend" = gamescope ]; then
     export ENABLE_GAMESCOPE_WSI=1 GAMESCOPE_MANGOAPP_SOCKET_DISABLE=1

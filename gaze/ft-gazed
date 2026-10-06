@@ -267,6 +267,7 @@ class Service:
         self.checks = Checks(self, self.sel)
         self.proc = None
         self.proc_sources = None  # what ft-gaze was last told to print
+        self.mmap_unknown = False  # ft-gaze said SteamVR's eye-server.mmap has a layout it doesn't know
         self.buf = b""
         self.restart_at = 0.0
         self.running = True
@@ -511,6 +512,7 @@ class Service:
         self.sel.register(self.proc.stdout, selectors.EVENT_READ, "stdout")
         self.sel.register(self.proc.stderr, selectors.EVENT_READ, "stderr")
         self.buf = b""
+        self.mmap_unknown = False
         log("ft-gaze started")
 
     def stop_helper(self):
@@ -531,6 +533,7 @@ class Service:
             except ProcessLookupError:
                 pass
         self.proc = None
+        self.mmap_unknown = False
 
     def eyes_wanted(self):
         return (self.tracker == "own" and not self.override and self.awake) or time.monotonic() < self.eyes_until
@@ -613,6 +616,11 @@ class Service:
         for line in data.decode("utf-8", "replace").splitlines():
             if line.strip():
                 log(line)
+            # For the Gaze page (gazecheck's problem): ft-gaze can't read SteamVR's tracker.
+            if "layout is not recognized" in line:
+                self.mmap_unknown = True
+            elif "eye-server.mmap layout:" in line:
+                self.mmap_unknown = False
 
     def judge_eyes(self, m1, down):
         """Which eyes (left, right) are closed, from SteamVR's openness (set 1); updates

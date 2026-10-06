@@ -1146,23 +1146,29 @@ void EndDrag(Screen &s) {
     ApplyAlpha(s);
 }
 
-// Run `ft-layout <cmd>` in the background, logging to /tmp/frametop-layout.log.
+// Run `ft-layout <cmd>` in the background, logging to the host's runtime directory
+// (XDG_RUNTIME_DIR, not the nested desktop's; else /tmp with O_NOFOLLOW: a symlink there
+// must not be followed). The desktop start truncates the same log.
 void RunLayout(const char *cmd) {
     char exe[PATH_MAX];
     if (!realpath("/proc/self/exe", exe)) return;
+    const char *runtime = std::getenv("XDG_RUNTIME_DIR");
+    std::string logname = std::string(runtime && *runtime ? runtime : "/tmp") + "/frametop-layout.log";
     std::string layout(exe);  // <repo>/screens/build/ft-screens -> <repo>/layout/ft-layout
     for (int up = 0; up < 3 && layout.rfind('/') != std::string::npos; ++up) layout.resize(layout.rfind('/'));
     layout += "/layout/ft-layout";
     posix_spawn_file_actions_t io;
     posix_spawn_file_actions_init(&io);
     posix_spawn_file_actions_addopen(&io, 0, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_addopen(&io, 1, "/tmp/frametop-layout.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    posix_spawn_file_actions_addopen(&io, 1, logname.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0644);
     posix_spawn_file_actions_adddup2(&io, 1, 2);
     std::string arg(cmd);
     char *argv[] = {layout.data(), arg.data(), nullptr};
     pid_t pid;  // reaped by the compositor's SIGCHLD handler
-    if (posix_spawn(&pid, layout.c_str(), &io, nullptr, argv, environ) != 0)
-        std::printf("can't run %s\n", layout.c_str());
+    // A log that can't be opened (a symlink or a directory in its place) fails the spawn too.
+    const int rc = posix_spawn(&pid, layout.c_str(), &io, nullptr, argv, environ);
+    if (rc != 0)
+        std::printf("can't run %s (log %s): %s\n", layout.c_str(), logname.c_str(), std::strerror(rc));
     posix_spawn_file_actions_destroy(&io);
 }
 
@@ -1953,6 +1959,11 @@ int ft_vr_modifiers(uint32_t format, uint64_t *out, int max) {
 
 bool ft_vr_screens_shown(void) { return g_vr && ModeVisible(); }
 bool ft_vr_paused(void) { return g_paused; }
+
+bool ft_vr_screen_visible(int index) {
+    const auto it = g_screens.find(index);
+    return !g_vr || (it != g_screens.end() && it->second.visible);
+}
 
 enum ft_attention ft_vr_screen_attention(int index) {
     const auto it = g_screens.find(index);

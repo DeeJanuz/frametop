@@ -63,6 +63,7 @@
 
 #include "vr.h"
 #include "controller-click.h"
+#include "relay-buttons.h"
 
 #define MAX_SCREENS 24  // screens and spare outputs
 // A screen counts as playing a video while its last VIDEO_COMMITS commits each redrew at
@@ -130,6 +131,7 @@ struct server {
     uint32_t watch_until;
     uint32_t typed_ms;  // the last key sent to the desktop: its screen counts as focused
     struct screen *pointer_focus;
+    struct ft_relay_buttons relay_buttons;  // the input relay's mouse buttons held on the seat
     struct ft_controller_click controller_click;
     pid_t child;
     // Where typing goes: the screens after a click on one, Steam after a click on another
@@ -173,6 +175,9 @@ static void track_buffer(struct server *s, struct wlr_buffer *buffer) {
 }
 
 // ---------------------------------------------------------------- screens
+
+static bool relay_can_press(struct server *s);
+static void release_relay_buttons(struct server *s, const char *why);
 
 // A video (or anything moving over a large area) on a screen you don't look at keeps the
 // full frame rate (see frame_interval): its commits keep redrawing much of it, and keep
@@ -247,7 +252,10 @@ static void screen_destroy(struct wl_listener *l, void *data) {
     wlr_log(WLR_INFO, "screen %d closed", sc->index + 1);
     if (sc->held) wlr_buffer_unlock(sc->held);
     ft_vr_screen_destroy(sc->index);
-    if (sc->server->pointer_focus == sc) sc->server->pointer_focus = NULL;
+    if (sc->server->pointer_focus == sc) {
+        release_relay_buttons(sc->server, "its screen closed");
+        sc->server->pointer_focus = NULL;
+    }
     if (sc->decoration) wl_list_remove(&sc->decoration_destroy.link);
     sc->server->screens[sc->index] = NULL;
     wl_list_remove(&sc->commit.link);
@@ -410,6 +418,7 @@ static void handle_vr_event(const struct ft_event *e, void *data) {
             break;
         case FT_LEAVE:
             if (s->pointer_focus == sc) {
+                release_relay_buttons(s, "the pointer left the screens");
                 wlr_seat_pointer_notify_clear_focus(s->seat);
                 s->pointer_focus = NULL;
             }
@@ -499,6 +508,8 @@ static int tick(int fd, uint32_t mask, void *data) {
     const ssize_t got = read(fd, &expirations, sizeof expirations);  // clears it; how many doesn't matter
     (void)got;
     ft_vr_poll(handle_vr_event, s);
+    if (s->relay_buttons.held && !relay_can_press(s))
+        release_relay_buttons(s, ft_vr_paused() ? "paused" : "its screen hid");
     if (++s->ticks % 9 == 0) keys_update(s);
     if (s->kb_close_at && s->ticks >= s->kb_close_at) {
         s->kb_close_at = 0;
@@ -553,13 +564,49 @@ static void send_key(struct server *s, uint32_t code, int pressed) {
     wlr_seat_keyboard_notify_key(s->seat, ev.time_msec, code, ev.state);
 }
 
+// The input relay's mouse buttons (relay-buttons.h) can be pressed: the pointer is on a
+// screen that shows, and nothing's paused.
+static bool relay_can_press(struct server *s) {
+    return s->pointer_focus && !ft_vr_paused() && ft_vr_screen_visible(s->pointer_focus->index);
+}
+
+// A mouse button from the input relay (pointer mode passes a mouse's side button through as
+// a key, for Back): to the screen the pointer is on, like a laser's click, wherever typing goes.
+static void relay_button(struct server *s, uint32_t code, bool pressed, char *reply, int size) {
+    if (!ft_relay_button(&s->relay_buttons, code, pressed, relay_can_press(s)))
+        return (void)snprintf(reply, size, pressed ? "ok no pointer, or held" : "ok not held");
+    wlr_seat_pointer_notify_button(s->seat, now_ms(), code,
+                                   pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(s->seat);
+    snprintf(reply, size, "ok");
+}
+
+// ...and released by us when the pointer leaves the screens, its screen hides or closes, or
+// everything pauses: before the pointer leaves that screen, so KWin gets the releases.
+static void release_relay_buttons(struct server *s, const char *why) {
+    if (!s->relay_buttons.held) return;
+    uint32_t code;
+    while ((code = ft_relay_buttons_take(&s->relay_buttons))) {
+        wlr_seat_pointer_notify_button(s->seat, now_ms(), code, WL_POINTER_BUTTON_STATE_RELEASED);
+        wlr_log(WLR_INFO, "relay button %u released (%s)", code, why);
+    }
+    wlr_seat_pointer_notify_frame(s->seat);
+}
+
 // Keys from the input relay (physical keyboards): "key <evdev code> <1 press|0 release>".
 // They go to the screen KWin has keyboard focus on (the last one clicked), while typing
 // goes to the desktop (keys_update). The release of a key the desktop got the press for
 // always goes through, or the key stays held there (a modifier held as typing moves to
-// Steam would otherwise modify every key typed after it).
+// Steam would otherwise modify every key typed after it). Mouse buttons go where the
+// pointer is instead (relay_button), and codes that are neither go nowhere.
 static void handle_key(struct server *s, uint32_t code, int value, char *reply, int size) {
     if (value == 2) return (void)snprintf(reply, size, "ok repeat ignored");  // KWin repeats itself
+    const enum ft_relay_key kind = ft_relay_key_kind(code);
+    if (kind == FT_RELAY_BUTTON) {
+        relay_button(s, code, value != 0, reply, size);
+        return;
+    }
+    if (kind == FT_RELAY_DROP) return (void)snprintf(reply, size, "ok not a key or mouse button");
     if (value || !key_held(&s->keyboard, code)) {
         if (!s->seat->keyboard_state.focused_surface) return (void)snprintf(reply, size, "ok no focus");
         if (!s->keys_desktop) return (void)snprintf(reply, size, "ok typing goes to Steam");

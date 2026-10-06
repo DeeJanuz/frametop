@@ -411,11 +411,46 @@ function run(c) {
     }
 }
 
+// The long poll has one failure mode: a reply that never comes. KWin's callDBus never calls
+// back when a call fails (an error reply, ft-floatd gone, or its 25 s D-Bus timeout, which
+// ft-floatd blocked that long hits); it only logs "Received D-Bus message is error". Then
+// polling stays true and the script stops hearing commands until KWin reloads it. A watchdog
+// re-arms the poll. Its period must stay above that 25 s timeout, whatever ft-floatd's
+// POLL_SECONDS is: by then the call it gives up on has ended. The serial is for a reply that
+// still comes later (KWin stalled with the reply queued): it runs its commands (ft-floatd
+// sends each one once) but doesn't poll again. Two polls would answer each other for good,
+// since ft-floatd answers a waiting poll empty when the next one comes.
+// When the watchdog fires again and again, ft-floatd is gone, and only starting it again
+// helps (it reloads the script then). Each failed call is a line in KWin's log, so the
+// script says so once and waits twice as long each time, up to 5 minutes. A reply starts
+// over at 30 s, so a lost reply is still polled again after 30 s.
+const POLL_WAIT = 30000, POLL_WAIT_MAX = 300000;
+const pollWatchdog = new QTimer();
+pollWatchdog.singleShot = true;
+pollWatchdog.interval = POLL_WAIT;
+let pollLost = false;  // the watchdog fired, and no reply since
+pollWatchdog.timeout.connect(() => {
+    if (!pollLost) print("frametop-float: NextCommand didn't answer, polling again");
+    pollLost = true;
+    pollWatchdog.interval = Math.min(pollWatchdog.interval * 2, POLL_WAIT_MAX);
+    polling = false;
+    poll();
+});
+let pollSerial = 0;
+
 function poll() {
     if (polling) return;
     polling = true;
+    const serial = ++pollSerial;
+    pollWatchdog.start();
     callDBus(SERVICE, PATH, IFACE, "NextCommand", reply => {
-        polling = false;
+        const current = serial === pollSerial;  // not a call the watchdog gave up on
+        if (current) {
+            pollWatchdog.stop();
+            pollWatchdog.interval = POLL_WAIT;
+            pollLost = false;
+            polling = false;
+        }
         if (reply) {
             try {
                 JSON.parse(reply).forEach(run);
@@ -423,7 +458,7 @@ function poll() {
                 print("frametop-float: bad command " + reply + ": " + e);
             }
         }
-        poll();
+        if (current) poll();
     });
 }
 

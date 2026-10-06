@@ -61,7 +61,7 @@ Run the second command after SteamVR has restarted, as in the install.
 ~/frametop/hands/rec/install.sh uninstall
 ```
 
-This removes the menu entry. Your recordings stay in `~/.local/share/frametop/hands/contrib`; delete that folder to remove them. To remove Frametop as well, follow [Uninstall](https://github.com/DeeJanuz/frametop#uninstall) in the README.
+This removes the menu entry. With your `sudo` password, it also takes back the camera broker's permission to read the cameras. If you also installed Frametop's live hand tracking, the camera broker keeps that permission, because live hand tracking still uses it. Your recordings stay in `~/.local/share/frametop/hands/contrib`; delete that folder to remove them. To remove Frametop as well, follow [Uninstall](https://github.com/DeeJanuz/frametop#uninstall) in the README.
 
 ## Help
 

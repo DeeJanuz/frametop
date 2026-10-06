@@ -6,15 +6,17 @@ How each part of Frametop works, where its settings live, and the commands for r
 
 From the headset, open Launch a program → Desktop. The installer replaces that launcher entry with Frametop's (`~/.local/share/applications/deckard-nested-desktop.desktop`), and `desktops.sh uninstall` gives the stock single-screen desktop back.
 
+The installer also adds Native Desktop to the same list: a copy of SteamOS's entry for its own desktop (`~/.local/share/applications/native-deckard-nested-desktop.desktop`), skipped when SteamOS has no such entry. The copy is made at install time, so `scripts/update-check.py` warns when SteamOS's entry changes, and `desktops.sh install` refreshes it. In Native Desktop, typing goes to Steam's side, so the input relay doesn't grab keyboards there, and a Meta tap runs Frametop's Meta action (by default, the Steam menu) as well as opening Plasma's launcher.
+
 From a terminal, on the Frame or from a PC over SSH:
 
 ```
-desktops.sh install        # the launcher's Desktop entry starts Frametop
-desktops.sh uninstall      # back to the stock SteamOS desktop
+desktops.sh install        # the launcher's Desktop entry starts Frametop; Native Desktop is the stock one
+desktops.sh uninstall      # back to the stock SteamOS desktop, as Desktop
 desktops.sh start | stop | restart | status | log [lines]
 ```
 
-`session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Only one desktop runs at a time. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop`, separate from the stock desktop's.
+`session/frametop-session.sh` runs the desktop. It starts ft-screens in the `dev` container (log: `/tmp/frametop-screens.log`), then KWin and Plasma on the host inside it. Only one Frametop desktop runs at a time. Its check doesn't look for Native Desktop, and running both at once is untested. `desktops.sh start` runs it in its own systemd unit, `frametop-desktop`. It keeps its Plasma config in `~/.config/frametop`, separate from the stock desktop's.
 
 When the VR launcher starts the desktop, it inherits the Steam client's environment. The session script drops the client's runtime from it (`LD_LIBRARY_PATH`, the `STEAM_*` settings, and the Steam overlay's Vulkan layer), so apps in the desktop use the system's libraries, including its video codecs, just as they would after a normal login.
 
@@ -66,7 +68,7 @@ In the last three modes the hotkey shows the screens anyway. A screen can also b
 - During VR games, the Always mode hides the screens unless the dashboard is open (the default), or leaves them up.
 - Controllers on the screens. Visible screens can keep SteamVR's laser mouse on, so controllers work them with the dashboard closed, but that also takes the controllers away from a game. By default this is off while a VR game runs, and the 3D mouse or the dashboard works the screens. Pointing a controller at a screen, a floating window, or the keyboard still turns its laser on, like SteamVR's own floating windows, and pointing away gives the game the controllers back. The other choices are always on, or only with the dashboard open, which also suits flatscreen games since they aren't scene apps.
 
-Input from the lasers reaches KWin through ft-screens' own seat. Keys come from the input relay, from pass-through keyboards and any key a pointer device passes through. Typing follows your last click: after a click on a screen it goes to the desktop, even with the SteamVR dashboard open, and after a mouse click on any other panel (the dashboard, Steam, an app like Spotify) it goes there instead. While it goes to the desktop, the relay grabs pass-through keyboards so gamescope, which reads every keyboard itself, doesn't type them into the Steam app too. A program that watches every keyboard for a hotkey loses a grabbed one; with `SHARE_KEYS=1` in `~/.config/frametop.conf`, their keys also go to `@frametop_keys` for it. That's off by default, since any local process that binds the name first would get everything typed into the desktop. Hidden screens don't take typing.
+Input from the lasers reaches KWin through ft-screens' own seat. Keys come from the input relay: from pass-through keyboards, a keyboard's media keys (its Consumer Control node), and any key a pointer device passes through. A mouse button passed through as a key in pointer mode (a side button for Back) goes to the screen the pointer is on instead, wherever typing goes, and only while the pointer is on a screen that shows and Frametop isn't paused. Its release always goes through, and ft-screens releases it itself when the pointer leaves the screens, its screen hides, or Frametop pauses (`scripts/test-relay-buttons.sh` checks this offline). Typing follows your last click: after a click on a screen it goes to the desktop, even with the SteamVR dashboard open, and after a mouse click on any other panel (the dashboard, Steam, an app like Spotify) it goes there instead. While it goes to the desktop, the relay grabs pass-through keyboards so gamescope, which reads every keyboard itself, doesn't type them into the Steam app too. A program that watches every keyboard for a hotkey loses a grabbed one; with `SHARE_KEYS=1` in `~/.config/frametop.conf`, their keys also go to `@frametop_keys` for it. That's off by default, since any local process that binds the name first would get everything typed into the desktop. Hidden screens don't take typing.
 
 Frametop's keyboard opens by itself when a text field on the desktop gets focus, and stays open until its Close key, a layout reset, or a mapped button closes it (or, with Keep it open off in Frametop Input Settings, until the text field loses focus). While the Steam menu (the dashboard) or Steam's own keyboard is up, it steps aside, and it comes back where it was when they're gone; one asked for meanwhile appears then. In the "only with the dashboard" visibility mode, the dashboard doesn't count. It doesn't open without a head pose (the headset in standby). It's a panel of keys (a US laptop layout, with Esc where Caps Lock would be, arrows, and a Close key) that ft-screens shows 0.7 m in front of you and below your eyes, facing you. It stays where it opened, and its grab bar (the pill along the top) moves it like a screen's. Type on it with a controller's laser or the 3D mouse. Shift, Ctrl and Alt latch for the next key, and a held key repeats. KWin starts `input/ft-textinput` as the desktop's input method, and KWin activates it whenever the focused app turns on text input for a field. It tells the relay (`textfield 1` or `0`), the relay decides by the Keyboard setting in Frametop Input Settings, and ft-screens opens the keyboard for the screen that has keyboard focus (`vrkeyboard show`, `hide`, or `toggle` from a mapped button). Its keys reach the focused screen as key presses, so it works in every app, but only apps that use Wayland text input (Qt, GTK, Firefox) open it by themselves; Chromium, Electron and X11 apps need the button. The session drops the `QT_IM_MODULE=xim` and `GTK_IM_MODULE=xim` that the gamescope session sets, or Qt and GTK apps wouldn't use Wayland text input either.
 
@@ -101,7 +103,7 @@ The relay also owns the volume keys, on every device that has them, the headset'
 desktops.sh relay install     # enable it (starts with the next reboot or SteamVR start)
 desktops.sh relay status | log | uninstall
 input/input-relay.py --no-grab   # try it without taking devices from SteamVR
-input/test/keys-test.py          # key combinations and modifier taps, against fake devices (safe next to the live relay)
+input/test/keys-test.py          # key combinations, modifier taps, and what reaches the desktop, against fake devices (safe next to the live relay)
 steam/ft-steam menu              # what Open Steam menu does; ft-steam check: Steam's UI still has the calls
 ```
 
@@ -175,7 +177,7 @@ layout/ft-layout hide N|all # hide a screen on its own, whatever the visibility 
 display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H shortcuts
 ```
 
-The layout is stored relative to your head when it's applied. `/tmp/frametop-layout.log` has the run from the last desktop start.
+The layout is stored relative to your head when it's applied. `/run/user/<uid>/frametop-layout.log`, in the host's runtime directory (not the nested desktop's `/run/user/<uid>/frametop`), has the run from the last desktop start and ft-screens' layout runs after it.
 
 ## Floating windows
 
@@ -223,7 +225,7 @@ Paused, Frametop leaves the headset's CPU and GPU to a VR game. The input relay 
 - The gaze service stops (`frametop-gaze`: ft-gazed, ft-gaze, our own eye tracker, the gaze panel), so nothing reads SteamVR's eye tracking. Our frame grabber, the root service `ft-eyegrab`, goes idle by itself 3 seconds after our eye tracker stops asking it for frames.
 - Hand tracking stops if it runs (`frametop-camd`, `frametop-hands`).
 - The desktop, as the Game optimization page of Frametop Input Settings says (`pause_desktop`): hidden (the default) or closed. Hidden, ft-screens hides every screen and floating window whatever the visibility mode, the hotkey, or the dashboard says, and gives KWin a frame callback once a second instead of every display frame. KWin draws a screen only after its frame callback, and its apps wait for theirs, so the desktop hardly draws, but its windows stay open. Remote desktop stops if it runs (`session/remote-ctl.sh`). Closed, `desktops.sh stop` closes the desktop and its windows, and resuming starts it again (about 12 seconds), in its start profile if it has one.
-- The relay lets go of the 3D mouse and feeds pointer devices to its virtual mouse and keyboard, as with `POINTER=0`. Typing goes to Steam. Mapped buttons and key combinations do nothing but pausing, the Steam menu, and commands; a key combination that does nothing is typed as usual.
+- The relay lets go of the 3D mouse, releasing any click still held on it (a mouse button, a mapped controller button, or a key combination), and feeds pointer devices to its virtual mouse and keyboard, as with `POINTER=0`. Typing goes to Steam. Mapped buttons and key combinations do nothing but pausing, the Steam menu, and commands; a key combination that does nothing is typed as usual.
 
 Resuming starts again only what pausing stopped, and plays a second sound. The pointer helper and ft-powerd keep running: they cost little, the helper is what says a game started, and stopping it would leave its virtual controller connected with its last pose.
 
@@ -239,6 +241,7 @@ input/ft-pause on | off | toggle   # pause or resume
 input/ft-pause status              # the state as JSON (the relay's "pause ?")
 input/vrws.py 10                   # the controllers' buttons from vrserver's web socket, for 10 s
 input/test/pause-test.py           # the gesture and the automatic pause, offline
+input/test/pause-buttons-test.py   # a click held into a pause comes up, offline
 ```
 
 The state outlives a relay restart, in `/run/user/UID/frametop-pause.json`. A SteamVR restart while paused starts the gaze service with it, and the relay stops it again when the pointer helper comes back.
@@ -260,7 +263,7 @@ Deferred: it costs a lot of the headset's CPU and needs more work, so `install.s
 
 Your hands show over the screens: where a tracked hand is between an eye and a screen, ft-screens lets that eye see the room through the screen. The same tracker detects pinches and grips, and with `POINTER_HANDS=1` in `~/.config/frametop.conf` they work the pointer. In gaze mode a pinch clicks where you look when it opens; hold it and move the hand to correct the pointer first. Without gaze mode a pinch is a press like the mouse's button, so a held pinch drags. A grip (closing the hand) presses and drags. To install it: `hands/run.sh install`.
 
-- `ft-camd` borrows XRService's camera buffers and publishes the four IR tracking cameras to `/run/user/UID/frametop-hands/cam-ring`. It runs on the host as `frametop-camd.service`, with file capabilities that `hands/run.sh install` sets through sudo, and it drops them once set up. A rebuild clears them: `hands/run.sh caps`.
+- `ft-camd` borrows XRService's camera buffers and publishes the four IR tracking cameras to `/run/user/UID/frametop-hands/cam-ring`. It runs on the host as `frametop-camd.service`, with file capabilities that `hands/run.sh install` sets through sudo, and it drops them once set up. A rebuild clears them: `hands/run.sh caps`. The Hand Recorder's installer (`hands/rec/install.sh`) sets them the same way. `hands/run.sh uncaps` takes them back while neither the services nor the Hand Recorder is installed. `hands/run.sh uninstall` and `hands/rec/install.sh uninstall` run it after removing their own part, and `uninstall.sh` always takes them back.
 - `ft-hands` runs in the `dev` container as `frametop-hands.service`. It finds and triangulates the hands, and publishes `hands` (read by ft-screens' cutouts) and `gestures` (pinches and grips, read by the pointer helper) next to the ring.
 - The install leaves both off, and they don't start with SteamVR. `ft-handsctl on` starts them while SteamVR runs, and `ft-handsctl off` stops them; they also stop with SteamVR. The install links `ft-handsctl` into `~/.local/bin`. `ft-handsctl status` and `ft-handsctl log` (or `hands/run.sh status` and `log`) show how they're doing, `ft-handsctl cutouts on|off` turns just the cutouts off, and `ft-handsctl gestures` shows pinches and grips live.
 - Settings in `~/.config/frametop.conf`: `HANDS_SWAP_SIDES` (`auto`, the default: ft-hands tells from the hands when some SteamVR restart has swapped the side cameras' names, and fixes them; `0` or `1` force them, and `hands/tools/check_sides.py --ring` tells which is right), `HANDS_CPUS`, the cameras it tracks with (`HANDS_CAMERAS`, `HANDS_BRIGHT`, `HANDS_BRIGHT_ON`, `HANDS_BRIGHT_OFF`, `HANDS_COLOR_LEFT`, `HANDS_COLOR_CROP`), and the pointer helper's `POINTER_HANDS`, `POINTER_PINCH_GAIN`, `POINTER_PINCH_DEADZONE`, `POINTER_GRIP_GAIN`, `POINTER_GRIP_BELOW`, and `POINTER_PINCH_TYPING`. The example config explains each.

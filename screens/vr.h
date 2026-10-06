@@ -39,6 +39,8 @@ int ft_vr_modifiers(uint32_t format, uint64_t *out, int max);
 bool ft_vr_screens_shown(void);
 // Frametop is paused for a VR game ("pause on"): everything is hidden, and KWin slows down.
 bool ft_vr_paused(void);
+// Screen (or floating window) `index` shows now. True without SteamVR (--no-vr).
+bool ft_vr_screen_visible(int index);
 // How much of a screen you see, for its frame rate (compositor.c): hidden (or out of view),
 // in view, or focused (you look at it, or a laser or the mouse is on it). Focused without
 // SteamVR (--no-vr) or for an unknown screen.

@@ -111,6 +111,9 @@ reading only.
 
 The file is 324,122 bytes. Only bytes 0x0-0x1f3 are used; the rest is zero. It's packed and
 unaligned, so read it with memcpy. Offsets are also in `~/frametop/gaze/ft-gaze.cpp`.
+On the SteamOS 0.4.x beta (SteamVR 2.18.2) every field from 0x157 on sits 5 bytes later, and the
+counter stays at 0x38 (measured 2026-10-04, PR #26). The offsets below are stable's; ft-gaze detects
+which layout is live.
 
 | Offset | What |
 | --- | --- |

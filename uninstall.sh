@@ -10,9 +10,10 @@
 # It never stops what you're using now: the input relay carries the keyboard and mouse, and the
 # desktop runs from the repo. So it goes in two steps:
 #   1. Frametop stops starting. The launcher's Desktop entry goes back to the stock desktop, and
-#      Frametop's services, SteamVR driver, menu entries, and system files (our eye tracker's
-#      frame grabber and the Bluetooth fixes, with sudo) are removed. What runs now keeps running
-#      until you restart the headset.
+#      Frametop's Native Desktop entry, services, SteamVR driver, menu entries, and system files
+#      (our eye tracker's frame grabber and the Bluetooth fixes, with sudo) are removed, and so
+#      are the file capabilities of hand tracking's camera broker (ft-camd, with sudo). What runs
+#      now keeps running until you restart the headset.
 #   2. After the restart, run it again. It deletes the code (~/frametop) and, if you want, your
 #      settings and the build container.
 # When nothing of Frametop is running, one run does both.
@@ -33,6 +34,7 @@ EOF
 dry=0
 apps=$HOME/.local/share/applications
 override=$apps/deckard-nested-desktop.desktop
+native_copy=$apps/native-deckard-nested-desktop.desktop
 relay_unit=$HOME/.config/systemd/user/frametop-input-relay.service
 driver=$HOME/.local/share/frametop/ft_pointer
 vrpathreg=/opt/steamvr/bin/linuxarm64/vrpathreg
@@ -102,9 +104,12 @@ main() {
   fi
   [ "$dry" = 1 ] && echo "Dry run: nothing changes."
   repo=$(find_repo)
+  camd=$repo/hands/build/ft-camd
+  camd_caps=$(getcap "$camd" 2>/dev/null || true)
 
   # Step 1: what makes Frametop start. Nothing here stops a running program.
   [ -f "$override" ] && grep -q 'Frametop' "$override" || override=
+  [ -f "$native_copy" ] || native_copy=
   units=("$HOME"/.config/systemd/user/frametop-*.service)
   for f in ft-input-settings ft-display-settings ft-layout-reset ft-screens-toggle ft-remote-settings ft-gazeprobe; do
     [ -e "$apps/$f.desktop" ] && entries+=("$apps/$f.desktop")
@@ -114,15 +119,17 @@ main() {
   [ -L "$handsctl" ] || handsctl=
   exists "${eyegrab_files[@]}" "${bt_files[@]}" && sys=1
 
-  if [ -n "$override" ] || [ ${#units[@]} -gt 0 ] || [ ${#entries[@]} -gt 0 ] || [ -d "$driver" ] ||
-     [ -n "$handsctl" ] || [ "$sys" = 1 ]; then
+  if [ -n "$override" ] || [ -n "$native_copy" ] || [ ${#units[@]} -gt 0 ] || [ ${#entries[@]} -gt 0 ] ||
+     [ -d "$driver" ] || [ -n "$handsctl" ] || [ "$sys" = 1 ] || [ -n "$camd_caps" ]; then
     step "Step 1 of 2: stop Frametop from starting"
     echo "This removes:"
     [ -n "$override" ] && echo "  - the launcher's Desktop entry (Launch a program -> Desktop opens the stock desktop again)"
+    [ -n "$native_copy" ] && echo "  - the launcher's Native Desktop entry (Desktop opens the same stock desktop then)"
     for f in "${units[@]}"; do echo "  - the service $(basename "$f")"; done
     [ -d "$driver" ] && echo "  - the 3D mouse's SteamVR driver (ft_pointer)"
     [ ${#entries[@]} -gt 0 ] && echo "  - ${#entries[@]} menu entries (Frametop Display Settings, Input Settings, ...)"
     [ -n "$handsctl" ] && echo "  - $handsctl"
+    [ -n "$camd_caps" ] && echo "  - the hand camera broker's file capabilities (needs your password)"
     exists "${eyegrab_files[@]}" && echo "  - our eye tracker's frame grabber (a system service: needs your password)"
     exists "${bt_files[@]}" && echo "  - the Bluetooth fixes (system files: needs your password)"
     echo "What runs now keeps running until you restart the headset, so your keyboard, mouse, and"
@@ -130,6 +137,7 @@ main() {
     ask "Uninstall Frametop?" n || { echo "Nothing changed."; return 0; }
 
     [ -n "$override" ] && run rm -f "$override"
+    [ -n "$native_copy" ] && run rm -f "$native_copy"
     if [ ${#units[@]} -gt 0 ]; then
       for f in "${units[@]}"; do names+=("$(basename "$f")"); done
       run systemctl --user disable "${names[@]}" 2>/dev/null || true
@@ -147,13 +155,20 @@ main() {
     [ -n "$handsctl" ] && run rm -f "$handsctl"
     if [ "$sys" = 1 ]; then
       echo "The system files need your password (sudo)."
+      # $1 is ft-camd when it has capabilities to remove, else empty; the system files follow.
       if ! run sudo bash -c '
+        camd=$1; shift
         for u in frametop-eyegrab steamframe-bt-fixups; do systemctl disable $u.service 2>/dev/null; done
         rm -f "$@"
         rmdir /etc/frametop /etc/steamframe /etc/systemd/system/bluetooth.service.d 2>/dev/null
-        systemctl daemon-reload; true' sys "${eyegrab_files[@]}" "${bt_files[@]}"; then
+        [ -n "$camd" ] && [ -x "$camd" ] && setcap -r "$camd" 2>/dev/null
+        systemctl daemon-reload; true' sys "${camd_caps:+$camd}" "${eyegrab_files[@]}" "${bt_files[@]}"; then
         echo "warning: the system files weren't removed (no password?). Run this again to retry." >&2
       fi
+    elif [ -n "$camd_caps" ]; then
+      echo "ft-camd's file capabilities need your password (sudo) to remove."
+      run sudo setcap -r "$camd" ||
+        echo "warning: ft-camd keeps its capabilities (no password?). Run this again to retry." >&2
     fi
     [ "$dry" = 1 ] || echo "Frametop no longer starts."
   fi

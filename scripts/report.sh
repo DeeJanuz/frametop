@@ -90,7 +90,7 @@ section "Gaze service (last 60 lines, podman's left out)"
 journalctl --user -u frametop-gaze -n 300 --no-pager -o short 2>/dev/null | grep -v ' podman\[' | tail -n 60
 section "Our eye tracker's frame grabber (last 20 lines)"
 journalctl -u frametop-eyegrab -n 20 --no-pager -o short 2>/dev/null
-for f in /tmp/frametop-session.log /tmp/frametop-screens.log /tmp/frametop-layout.log; do
+for f in /tmp/frametop-session.log /tmp/frametop-screens.log "$XDG_RUNTIME_DIR/frametop-layout.log"; do
   section "$f (last 60 lines)"
   tail -n 60 "$f" 2>/dev/null || echo "missing"
 done

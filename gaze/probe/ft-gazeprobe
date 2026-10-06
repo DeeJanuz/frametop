@@ -203,7 +203,7 @@ class GazeReader:
                 return
             print(line, file=sys.stderr)
             text = line.removeprefix("ft-gaze: ")
-            if not text.startswith(("action manifest", "eye-server.mmap open")):
+            if not text.startswith(("action manifest", "eye-server.mmap open", "eye-server.mmap layout:")):
                 self.last_err = text  # worth repeating if ft-gaze stops (not the startup lines)
             self.on_status(text)
             stream.read_line_async(GLib.PRIORITY_DEFAULT, self.cancel, got)
