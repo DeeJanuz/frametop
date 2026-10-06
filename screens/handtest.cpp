@@ -163,7 +163,7 @@ int main(int argc, char **argv) {
             handcut::EyePositions(head, eyes);
             cut = handcut::Project(panel, hands.capsules(), eyes, eyes2d);
         }
-        const handcut::Output *out = cut ? renderer.Composite(0, bo, client, eyes2d) : nullptr;
+        const handcut::Output *out = cut ? renderer.Composite(0, bo, 1, client, eyes2d) : nullptr;
         if (out) {
             auto it = imports.find(out);
             if (it == imports.end()) {
@@ -177,8 +177,7 @@ int main(int argc, char **argv) {
                     vr::VROverlay()->SetOverlayFlag(ov, vr::VROverlayFlags_SideBySide_Parallel, true);
                     cutting = true;
                 }
-                shown = it->second;
-                vr::VROverlay()->SetOverlayTexture(ov, &tex);
+                if (shown != it->second) shown = it->second, vr::VROverlay()->SetOverlayTexture(ov, &tex);
                 ms += renderer.lastMs(), worst = std::max(worst, renderer.lastMs());
                 ++cutFrames;
                 caps2d += eyes2d[0].size() + eyes2d[1].size();
@@ -192,10 +191,12 @@ int main(int argc, char **argv) {
         }
         ++frames;
         if (now - lastReport > 2'000'000'000) {
+            const handcut::CutStats st = renderer.TakeStats();
             std::printf("%.0f s: %d ticks, %d with a cutout (%.1f capsules per eye), composite %.2f ms avg %.2f ms worst, "
-                        "%zu hand capsules known\n",
+                        "%zu hand capsules known; %d draws (%d partial), %d same, %d busy\n",
                         (now - start) / 1e9, frames, cutFrames, cutFrames ? caps2d / 2.0 / cutFrames : 0.0,
-                        cutFrames ? ms / cutFrames : 0.0, worst, hands.capsules().size());
+                        cutFrames ? ms / cutFrames : 0.0, worst, hands.capsules().size(), st.draws, st.partial, st.same,
+                        st.busy);
             std::fflush(stdout);
             lastReport = now, frames = cutFrames = 0, ms = worst = 0, caps2d = 0;
         }
