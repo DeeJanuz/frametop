@@ -123,12 +123,16 @@ jobs:
           ./ft python -V
           # installed mode, in a sandbox: update digest-pins, then runs.
           # FT_IMAGE must go: it is the explicit user override and would
-          # shadow the pin this section is meant to test.
+          # shadow the pin this section is meant to test. The published
+          # reference is captured BEFORE the unset (an empty $FT_IMAGE
+          # here was podman pull "" — "repository name must have at
+          # least one component").
+          published_ref="$FT_IMAGE"
           unset FT_IMAGE
           mkdir -p /tmp/ft-home/.config/frametop /tmp/ft-home/bin
-          echo "$FT_IMAGE" > /tmp/ft-home/.config/frametop/published
+          echo "$published_ref" > /tmp/ft-home/.config/frametop/published
           install ./ft /tmp/ft-home/bin/ft
-          FT_IMAGE_PUBLISHED="$FT_IMAGE" XDG_CONFIG_HOME=/tmp/ft-home/.config \
+          FT_IMAGE_PUBLISHED="$published_ref" XDG_CONFIG_HOME=/tmp/ft-home/.config \
             /tmp/ft-home/bin/ft update
           pinned=$(cat /tmp/ft-home/.config/frametop/image)
           grep -q '@sha256:' <<<"$pinned" || { echo "no digest pinned: $pinned"; exit 1; }
