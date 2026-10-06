@@ -45,6 +45,12 @@ permissions:
   contents: read
   packages: write
 
+# A newer push to the same branch supersedes the queued/running one: only
+# the newest commit of a burst gets built.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
