@@ -215,7 +215,7 @@ A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland com
 
 ## Packaging
 
-Frametop can also run from a prebuilt OCI image instead of building on the device: GitHub Actions builds an image in which the toolchain, the native binaries, and the locked Python environment (via [uv](https://docs.astral.sh/uv/)) are frozen, pushes it to GHCR, and the `ft` wrapper at the repo root is the single interface to it — build, run programs, update, and shell in. Everything the container integration needs (mounts, names, the image reference) lives in that one script, so the systemd units become one-liners. The rationale — why an image, why not Flatpak or uv alone, what it solves — is in [pack/design.md](pack/design.md), and [pack/README.md](pack/README.md) documents the image itself.
+`pack/` builds Frametop as an OCI image: the toolchain, the native binaries, and the locked Python environment (via [uv](https://docs.astral.sh/uv/)), built and tested by GitHub Actions. It is the groundwork for installing Frametop without building anything on the headset. No installer uses it yet. For development, `./ft dev build` builds the image and `./ft dev test` runs the tests inside it. [pack/design.md](pack/design.md) explains why an image and what is still open, and [pack/README.md](pack/README.md) documents the image itself.
 
 ## Developing from a PC
 

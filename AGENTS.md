@@ -35,12 +35,11 @@ A SteamOS update replaces SteamVR, KWin, and gamescope with the rest of the OS i
 
 ## The image (`pack/`)
 
-`pack/Containerfile` builds the OCI image in which Frametop runs; [pack/design.md](pack/design.md) explains why and [pack/README.md](pack/README.md) documents the specifics. Rules:
+`pack/Containerfile` builds Frametop as an OCI image, the groundwork for installing without building on the headset; no installer uses it yet. [pack/design.md](pack/design.md) explains why and what is open, and [pack/README.md](pack/README.md) documents the specifics. Rules:
 
-- **Pin every input.** Base images by digest, Python via `uv.lock` (commit the lock, never a bare `uv pip install`), vendored headers and libraries by tag, CI actions by commit SHA. Anything that floats makes users' environments drift again, which is the problem the image exists to solve.
-- **`ft` is the single integration point.** Container names, mounts, the image-reference chain, and the dev/runtime mode split live in the wrapper, not in the units or install scripts. Keep it working in both homes (a repo checkout, and installed in `~/.local/bin` without a repo) and in both modes on the Frame (`FT_FRAME=1`), and under both docker and podman. New container integration goes there, gated behind `FT_FRAME=1` until validated on the device.
-- **Build and test through the image.** `./ft dev build` / `./ft dev test` are the reference path; `just test` must stay green inside the image, and CI (`pack/`-triggered workflow) is the gate. Keep the containerfile buildable on arm64 — that is the only architecture the Frame has.
-- **Host dependencies stay explicit.** When a change starts depending on a SteamOS host file, a SteamVR quirk, or a mount that only exists on the device, say so in `pack/README.md` and add an update-check if it can break on a SteamOS update.
+- **Pin every input.** Base images by digest, Python via `uv.lock` (commit the lock, never a bare `uv pip install`), downloads by tag or commit and sha256, CI actions by commit SHA.
+- **One build recipe.** The image runs the components' own `build.sh` scripts (`FRAME_IN_BOX=1`), and the OpenVR SDK they build against is pinned in `scripts/openvr.sh`. Change a build there, not in the Containerfile, and keep the Containerfile buildable on arm64, the only architecture the Frame has.
+- **Keep the tests green in the image.** `./ft dev test` runs `just test` inside it, and CI runs the same recipes. A new offline test that needs no headset goes in the `justfile` too.
 
 ## Names
 
