@@ -140,3 +140,36 @@ jobs:
           # :latest is refused for what gets deployed
           echo "${IMAGE}:latest" > /tmp/ft-home/.config/frametop/image
           XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V && exit 1 || true
+
+  # The installable wrapper, with checksums — published only when build,
+  # test, and smoke all passed. The wrapper is extracted from the image
+  # this run built and compared byte-for-byte with the checkout's copy:
+  # the artifact, the image, and the commit are one thing.
+  artifact:
+    needs: [build, test, smoke]
+    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Verify the wrapper inside the image and checksum it
+        run: |
+          mkdir -p out
+          docker pull "${IMAGE}:${{ needs.build.outputs.tag }}"
+          docker run --rm --entrypoint cat \
+            "${IMAGE}:${{ needs.build.outputs.tag }}" /src/frametop/ft > out/ft
+          cmp out/ft ./ft || { echo "ft in image diverged from the checkout"; exit 1; }
+          chmod +x out/ft
+          docker inspect --format '{{index .RepoDigests 0}}' \
+            "${IMAGE}:${{ needs.build.outputs.tag }}" > out/image-digest.txt
+          ( cd out && sha256sum ft > ft.sha256 )
+          cat out/ft.sha256 out/image-digest.txt
+      # actions/upload-artifact@v4.6.2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ft-${{ needs.build.outputs.tag }}
+          path: out/
