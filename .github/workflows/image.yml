@@ -25,6 +25,7 @@ on:
       - "session/**"
       - "input/**"
       - "hands/**"
+      - "scripts/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".python-version"
@@ -34,12 +35,6 @@ on:
       - "!**.md"
       - "!**/DESIGN.md"
   workflow_dispatch:
-    inputs:
-      runner:
-        description: "where to run (cloud arm64, or the local ft-arm64 runner via scripts/gh-runner.sh)"
-        type: choice
-        default: cloud
-        options: [cloud, local]
 
 permissions:
   contents: read
@@ -51,13 +46,14 @@ concurrency:
   group: image-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-
 jobs:
   image:
-    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
+    runs-on: ubuntu-24.04-arm
     steps:
+      # Image names must be lowercase, and github.repository keeps the owner's
+      # capitals (DeeJanuz/frametop).
+      - name: image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
       # actions/checkout@v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       # docker/setup-buildx-action@v4.4.1
