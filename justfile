@@ -7,18 +7,8 @@
 default:
     @just --list
 
-# the Python suites (strict: these must pass everywhere)
-test:
-    #!/usr/bin/env bash
-    set -e
-    python3 session/tests/test_fix_panels.py
-    python3 input/test/pause-test.py >/dev/null && echo "input/test/pause-test.py: ok"
-    python3 input/test/keys-test.py >/dev/null && echo "input/test/keys-test.py: ok"
-    for t in hands/rec/tests/*.py gaze/test/*.py; do
-        [ -f "$t" ] || continue
-        python3 "$t" >/dev/null 2>&1 && echo "$t: ok" || echo "$t: FAIL or needs the Frame"
-    done
-    pytest -q session/tests
+# everything, strict (the recipes are the source of truth)
+test: test-python test-c test-bash
 
 # the Python suites as a strict gate (every failure fails the run)
 test-python:

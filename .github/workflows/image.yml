@@ -104,14 +104,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # The suites run with just, inside the built image (see justfile). The tag
-      # is the one the build pushed: metadata-action's version output (the
-      # sanitized branch name, or the semver tag).
-      - name: Run the Python suites inside the built image
+      # The suites live in the test job (strict: test-python/test-c/
+      # test-bash). Smoke only checks the artifact itself: binaries, venv,
+      # and the wrapper paths. The tag is the one the build pushed:
+      # metadata-action's version output (the sanitized branch name, or the
+      # semver tag).
+      - name: Check the built image from the outside
         run: |
-          docker run --rm \
-            -v "$PWD":/src/frametop --workdir /src/frametop \
-            "${IMAGE}:${{ needs.build.outputs.tag }}" just test
+          docker run --rm --entrypoint sh \
+            "${IMAGE}:${{ needs.build.outputs.tag }}" -c \
+            'ls /opt/frametop/bin | grep -q ft-screens && /opt/frametop/venv/bin/python -V'
       # The wrapper is the counterpart of the image: every run on a device
       # goes through it, so a wrapper change can break a working image just
       # like an image change can. The smoke job therefore exercises the
