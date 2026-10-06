@@ -33,13 +33,18 @@ test-c:
       -lm -o build/tests/controller-click-test
     build/tests/controller-click-test && echo "screens/tests/controller-click-test.c: ok"
 
-# shell scripts: syntax-gate everything that ships
+# shell scripts: syntax-gate everything that ships. No git: the image has
+# none, and a mounted checkout can trip "dubious ownership" — find lists
+# what the repo actually ships. The count guard makes a silently short
+# list fail the gate instead of passing it.
 test-bash:
     #!/usr/bin/env bash
     set -e
+    mapfile -t scripts < <(find . -name '*.sh' -type f \
+        -not -path './.git/*' -not -path '*/build/*' | sort)
+    [ "${#scripts[@]}" -ge 20 ] || { echo "only ${#scripts[@]} scripts found — the list is broken"; exit 1; }
     status=0
-    for f in $(git ls-files '*.sh') ft; do
-        [ -f "$f" ] || continue
+    for f in "${scripts[@]}" ft; do
         bash -n "$f" && echo "bash -n $f: ok" || status=1
     done
     exit $status

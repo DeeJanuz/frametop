@@ -12,7 +12,7 @@ FROM registry.fedoraproject.org/fedora-toolbox:44@sha256:034cb7c472038e2d879ddc1
 
 # Toolchain (the binaries are built in here) and the libraries they link.
 RUN dnf -y install --setopt=install_weak_deps=False \
-      gcc gcc-c++ make pkgconf-pkg-config git curl unzip just \
+      gcc gcc-c++ make pkgconf-pkg-config curl unzip just \
       pipewire-devel libxkbcommon-devel libinput-devel systemd-devel dbus-devel \
       libdrm-devel mesa-libgbm-devel wayland-devel vulkan-loader-devel \
       vulkan-headers plasma-wayland-protocols wlroots-devel pixman-devel \
