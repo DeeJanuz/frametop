@@ -27,89 +27,58 @@ RUN dnf -y install --setopt=install_weak_deps=False \
     && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
               /usr/share/wallpapers
 
-# uv, pinned. Python dependencies come from the committed uv.lock, not from
-# whatever PyPI serves on build day.
+# uv, pinned and checked. Python dependencies come from the committed uv.lock,
+# not from whatever PyPI serves on build day.
 RUN curl -fsSL https://github.com/astral-sh/uv/releases/download/0.12.23/uv-aarch64-unknown-linux-gnu.tar.gz \
-    | tar -xz --strip-components=1 -C /usr/local/bin
+      -o /tmp/uv.tar.gz \
+ && echo "6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f  /tmp/uv.tar.gz" | sha256sum -c \
+ && tar -xzf /tmp/uv.tar.gz --strip-components=1 -C /usr/local/bin \
+ && rm /tmp/uv.tar.gz
 
-# OpenVR: the pinned public tag the Frame-side build scripts pin
-# (screens/build.sh; the header SteamVR ships on the Frame predates the
-# interface versions Frametop uses). The openvr repo carries the prebuilt
-# linuxarm64 API library in its tree, so header and library come from the same
-# commit; at runtime the library lives in /opt/frametop/lib, found through the
-# binaries' rpath. (Valve no longer publishes release archives.)
-RUN install -d /opt/frametop/include /opt/frametop/lib \
- && curl -fsSL https://github.com/ValveSoftware/openvr/raw/v2.15.6/headers/openvr.h -o /opt/frametop/include/openvr.h \
- && curl -fsSL https://github.com/ValveSoftware/openvr/raw/v2.15.6/headers/openvr_driver.h -o /opt/frametop/include/openvr_driver.h \
- && curl -fsSL https://github.com/ValveSoftware/openvr/raw/v2.15.6/bin/linuxarm64/libopenvr_api.so -o /opt/frametop/lib/libopenvr_api.so \
- && curl -fsSL https://raw.githubusercontent.com/nothings/stb/2c980bb59875b0d32144a71867fbdebb2f77cd20/stb_truetype.h \
-      -o /opt/frametop/include/stb_truetype.h
+# OpenVR's API library for linking, from the SDK tag the build scripts pin
+# (scripts/openvr.sh fetches the headers). The image has no SteamVR, so the
+# binaries link this copy; their rpath names SteamVR's folder first, so on the
+# Frame they load SteamVR's own libopenvr_api, as the on-device builds do.
+RUN install -d /opt/frametop/bin /opt/frametop/lib \
+ && curl -fsSL https://github.com/ValveSoftware/openvr/raw/v2.15.6/bin/linuxarm64/libopenvr_api.so \
+      -o /opt/frametop/lib/libopenvr_api.so \
+ && echo "cc3671d24dd23fb61494e8a8327cf4fe7f638a60508ff7225984a03f2f5947e9  /opt/frametop/lib/libopenvr_api.so" | sha256sum -c
 
-# Python environment from the lockfile (uv-managed CPython, not the system one:
-# the venv must not depend on which Fedora is current). Rebuilt only when the
-# lockfile changes, so source edits below reuse this layer. The environment
-# variable comes first so the venv lands in /opt/frametop/venv.
-ENV UV_PROJECT_ENVIRONMENT=/opt/frametop/venv
+# Python: Fedora's own python3 (the digest-pinned base freezes it), with the
+# locked packages in a venv on top. The venv sees the system site-packages,
+# because PySide6 and Kirigami come from dnf for this python3: one interpreter
+# imports both, as in the dev container on the Frame. Rebuilt only when the
+# lockfile changes, so source edits below reuse this layer.
+# uv sync --frozen --group tracker: the default dev group (pytest/ruff for CI's
+# in-image tests) plus the tracker stack; the types group (mypy) stays out.
+# --no-cache keeps uv's download cache out of the image.
+ENV UV_PROJECT_ENVIRONMENT=/opt/frametop/venv UV_PYTHON=/usr/bin/python3 UV_PYTHON_DOWNLOADS=never
 COPY pyproject.toml uv.lock .python-version /src/frametop/
-# uv sync --frozen --group tracker: the default groups (dev: pytest/ruff for
-# CI's in-image tests; tracker: the hand tracker's stack) plus the tracker —
-# the `types` group (mypy) stays out. --no-cache keeps uv's download cache
-# out of the image.
-RUN cd /src/frametop && uv sync --frozen --group tracker --no-cache
+RUN uv venv --system-site-packages /opt/frametop/venv \
+ && cd /src/frametop && uv sync --frozen --group tracker --no-cache \
+ && /opt/frametop/venv/bin/python -c 'import PySide6, numpy, cv2'
 
-# The sources, then the binaries (built as the Frame-side build scripts build
-# them; outputs go to /opt/frametop/bin). Hand tracking is deferred exactly as
-# in install.sh: it builds ncnn from source and isn't needed until
-# hands/run.sh install runs.
+# The sources, then the binaries, built by the same build scripts as on the
+# Frame (FRAME_IN_BOX=1: they run here instead of entering the dev container).
+# Each program stays in its build/ folder in /src/frametop and is copied to
+# /opt/frametop. Hand tracking is deferred exactly as in install.sh: it builds
+# ncnn from source and isn't needed until hands/run.sh install runs.
 COPY . /src/frametop
 WORKDIR /src/frametop
-RUN set -eux; mkdir -p /opt/frametop/bin
-# ft-screens and ft-handtest (screens/build.sh, against /opt/frametop instead of /opt/steamvr)
-RUN set -eux; cd screens; mkdir -p build; \
-    gcc -std=c11 -O2 -Wall -Wno-unused-parameter -c -o build/compositor.o compositor.c \
-      $(pkg-config --cflags wlroots-0.20 wayland-server xkbcommon libdrm pixman-1); \
-    cxx="g++ -std=c++17 -O2 -Wall -Wno-missing-field-initializers -I/opt/frametop/include $(pkg-config --cflags egl glesv2 gbm libdrm)"; \
-    $cxx -c -o build/vr.o vr.cpp; \
-    $cxx -c -o build/keyboard.o keyboard.cpp; \
-    $cxx -c -o build/handcut.o handcut.cpp; \
-    $cxx -c -o build/handtest.o handtest.cpp; \
-    vrlibs="$(pkg-config --libs egl glesv2 gbm) -L/opt/frametop/lib -lopenvr_api -Wl,-rpath,/opt/frametop/lib"; \
-    g++ -o /opt/frametop/bin/ft-screens build/compositor.o build/vr.o build/keyboard.o build/handcut.o \
-      $(pkg-config --libs wlroots-0.20 wayland-server xkbcommon pixman-1) $vrlibs; \
-    g++ -o /opt/frametop/bin/ft-handtest build/handtest.o build/handcut.o $vrlibs
-# ft-pointer (pointer/helper/build.sh) and the ft_pointer driver (pointer/driver/build.sh;
-# static C++ runtime, checked against the host's glibc 2.39)
-RUN set -eux; cd pointer/helper; mkdir -p build; \
-    g++ -std=c++17 -O2 -Wall -Wno-unused-parameter -I/opt/frametop/include -I../common \
-      -o /opt/frametop/bin/ft-pointer ft-pointer.cpp \
-      -L/opt/frametop/lib -lopenvr_api -Wl,-rpath,/opt/frametop/lib -lpthread; \
-    cd ../driver; mkdir -p build; \
-    g++ -std=c++17 -O2 -fPIC -shared -fvisibility=hidden -fno-math-errno -Wall -Wno-unused-parameter \
-      -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL \
-      -I/opt/frametop/include -o build/driver_ft_pointer.so driver_ft_pointer.cpp -lpthread; \
-    max=$(objdump -T build/driver_ft_pointer.so | grep -oE "GLIBC_[0-9.]+" | sort -uV | tail -1); \
-    [ "$(printf "%s\n" "$max" GLIBC_2.39 | sort -V | tail -1)" = GLIBC_2.39 ] \
-      || { echo "driver needs newer glibc than the host has" >&2; exit 1; }; \
-    install -D build/driver_ft_pointer.so /opt/frametop/lib/driver_ft_pointer.so
-# ft-gaze and ft-gazepanel (gaze/build.sh)
-RUN set -eux; cd gaze; mkdir -p build; \
-    g++ -std=c++17 -O2 -Wall -Wno-unused-parameter -Wno-missing-field-initializers \
-      -I/opt/frametop/include -I../pointer/common \
-      -o /opt/frametop/bin/ft-gaze ft-gaze.cpp \
-      -L/opt/frametop/lib -lopenvr_api -Wl,-rpath,/opt/frametop/lib -lpthread; \
-    g++ -std=c++17 -O2 -Wall -Wno-unused-parameter -Wno-missing-field-initializers \
-      -I/opt/frametop/include $(pkg-config --cflags gbm libdrm) \
-      -o /opt/frametop/bin/ft-gazepanel panel/ft-gazepanel.cpp \
-      -L/opt/frametop/lib -lopenvr_api -Wl,-rpath,/opt/frametop/lib \
-      $(pkg-config --libs gbm libdrm) -lpthread
-# ft-powerd (power/build.sh)
-RUN set -eux; cd power; mkdir -p build; \
-    g++ -std=c++17 -O2 -Wall -Wno-unused-parameter -I/opt/frametop/include \
-      -o /opt/frametop/bin/ft-powerd ft-powerd.cpp \
-      -L/opt/frametop/lib -lopenvr_api -Wl,-rpath,/opt/frametop/lib
+ENV FRAME_IN_BOX=1 OPENVR_LIB=/opt/frametop/lib
+RUN screens/build.sh \
+ && install -t /opt/frametop/bin screens/build/ft-screens screens/build/ft-handtest
+RUN pointer/helper/build.sh && pointer/driver/build.sh \
+ && install -t /opt/frametop/bin pointer/helper/build/ft-pointer \
+ && install -t /opt/frametop/lib pointer/driver/build/driver_ft_pointer.so
+RUN gaze/build.sh \
+ && install -t /opt/frametop/bin gaze/build/ft-gaze gaze/build/ft-gazepanel
+RUN power/build.sh \
+ && install -t /opt/frametop/bin power/build/ft-powerd
 
-# The wrapper's default environment: Frametop's binaries and locked Python
-# first, the system (dnf Qt stack) after. sleep infinity as the default command
-# keeps the image usable with distrobox create, like the toolbox base.
+# The default environment: Frametop's binaries and the venv's python3 (Fedora's
+# interpreter, with the locked packages and the dnf Qt stack) first.
+# sleep infinity as the default command keeps the image usable with distrobox
+# create, like the toolbox base.
 ENV PATH=/opt/frametop/venv/bin:/opt/frametop/bin:/usr/local/bin:/usr/bin:/usr/sbin
 CMD ["sleep", "infinity"]
