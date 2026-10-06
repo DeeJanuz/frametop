@@ -4,6 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 "$root/scripts/sync.sh" >/dev/null
 exec "$root/scripts/frame.sh" -C pointer/helper 'set -e; mkdir -p build
-g++ -std=c++17 -O2 -Wall -Wno-unused-parameter -I/opt/steamvr/tools/hellovr_vulkan_linux/src/openvr/headers -I../common \
-  -o build/ft-pointer ft-pointer.cpp -L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64 -lpthread
+. ../../scripts/openvr.sh
+g++ -std=c++17 -O2 -Wall -Wno-unused-parameter $OPENVR_CFLAGS -I../common \
+  -o build/ft-pointer ft-pointer.cpp $OPENVR_LIBS -lpthread
 echo "built build/ft-pointer"'
