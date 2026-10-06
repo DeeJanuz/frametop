@@ -117,7 +117,6 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
-    { name = "mypy" },
     { name = "pyflakes" },
     { name = "pytest" },
     { name = "ruff" },
@@ -127,12 +126,14 @@ tracker = [
     { name = "numpy" },
     { name = "opencv-python-headless" },
 ]
+types = [
+    { name = "mypy" },
+]
 
 [package.metadata]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mypy", specifier = ">=1.19" },
     { name = "pyflakes", specifier = ">=3.4" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.14" },
@@ -142,6 +143,7 @@ tracker = [
     { name = "numpy", specifier = ">=2.2" },
     { name = "opencv-python-headless", specifier = ">=4.11" },
 ]
+types = [{ name = "mypy", specifier = ">=1.19" }]
 
 [[package]]
 name = "fsspec"

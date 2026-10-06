@@ -21,7 +21,11 @@ RUN dnf -y install --setopt=install_weak_deps=False \
       # the KDE/Qt stack has no PyPI wheels, so it stays a dnf package
       python3-pyside6 kf6-kirigami kf6-qqc2-desktop-style qt6-qtwayland \
       breeze-icon-theme plasma-breeze krdp freerdp tigervnc-x11-server xrandr \
-    && dnf clean all
+    && dnf -y remove 'glibc-langpack-*' \
+    && dnf -y install glibc-langpack-en \
+    && dnf clean all \
+    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
+              /usr/share/wallpapers
 
 # uv, pinned. Python dependencies come from the committed uv.lock, not from
 # whatever PyPI serves on build day.
@@ -47,7 +51,11 @@ RUN install -d /opt/frametop/include /opt/frametop/lib \
 # variable comes first so the venv lands in /opt/frametop/venv.
 ENV UV_PROJECT_ENVIRONMENT=/opt/frametop/venv
 COPY pyproject.toml uv.lock .python-version /src/frametop/
-RUN cd /src/frametop && uv sync --frozen --all-groups
+# uv sync --frozen --group tracker: the default groups (dev: pytest/ruff for
+# CI's in-image tests; tracker: the hand tracker's stack) plus the tracker —
+# the `types` group (mypy) stays out. --no-cache keeps uv's download cache
+# out of the image.
+RUN cd /src/frametop && uv sync --frozen --group tracker --no-cache
 
 # The sources, then the binaries (built as the Frame-side build scripts build
 # them; outputs go to /opt/frametop/bin). Hand tracking is deferred exactly as

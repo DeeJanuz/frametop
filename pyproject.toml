@@ -14,6 +14,11 @@ dev = [
     "pytest>=8",
     "ruff>=0.14",
     "pyflakes>=3.4",
+]
+# type checking is dev tooling outside the image: the image installs the
+# default groups (dev for CI's pytest/ruff, tracker for the hand tracker)
+# but not this one
+types = [
     "mypy>=1.19",
 ]
 tracker = [
