@@ -195,6 +195,9 @@ def take_dot(i):
 
 check("gaze mode off, Gaze page open (wake): ours runs, uncalibrated", ask("wake 60"), "ok")
 check("the service knows ours has no calibration", wait(lambda: svc.checks.calibrated() is False, 6), True)
+# ft-eyes' status can come before the fake ft-gaze's first sample, and without one the refusal
+# below is "the headset is off" instead (failed about 1 run in 4 until 2026-10-06).
+check("SteamVR sees the eyes (the fake ft-gaze is sending)", wait(svc.checks.eyes_seen, 6), True)
 check("a quick check is refused while ours has no calibration", svc.checks.start("quick", "test"),
       "error our tracker isn't calibrated yet: use Calibrate")
 helper_state["reply"] = "ok on worn"
