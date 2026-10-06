@@ -630,5 +630,61 @@ class ManyPartsTest(unittest.TestCase):
         self.assertEqual(r.summary["sets"], 120 + 30)
 
 
+class StandaloneTest(unittest.TestCase):
+    """The standalone Hand Recorder's tree (standalone.json at the top): ft-hands runs on the
+    host, the version comes from the build info, and repairs point at its install command."""
+    INFO = {"name": "frametop-hand-recorder", "version": "0.1.0", "frametop": "4ba49af",
+            "reinstall": "run the install command again"}
+
+    def test_build_info(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "standalone.json")
+            self.assertIsNone(takes.standalone(path))
+            with open(path, "w") as f:
+                json.dump(self.INFO, f)
+            self.assertEqual(takes.standalone(path), self.INFO)
+            with open(path, "w") as f:
+                f.write("[1]")
+            self.assertIsNone(takes.standalone(path))
+        with mock.patch.object(takes, "standalone", return_value=self.INFO):
+            self.assertEqual(takes.tool_version(), "ft-handrec 4ba49af (frametop-hand-recorder 0.1.0)")
+
+    def recorder_argv(self, standalone):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(session, "STANDALONE", standalone), \
+                mock.patch.object(session, "in_container", return_value=False), \
+                mock.patch.object(session.subprocess, "Popen") as popen:
+            session.Recorder(d, 1, 10, None, None)
+            return popen.call_args[0][0]
+
+    def tracker_argv(self, standalone):
+        fake = mock.Mock(ring=None)
+        with mock.patch.object(session, "STANDALONE", standalone), \
+                mock.patch.object(session.subprocess, "run") as run:
+            session.Session._start_tracker(fake)
+        return fake._start_unit.call_args[0][2], run
+
+    def test_ft_hands_on_the_host(self):
+        self.assertEqual(self.recorder_argv(self.INFO)[0], session.FT_HANDS)
+        argv, run = self.tracker_argv(self.INFO)
+        self.assertEqual(argv[0], session.FT_HANDS)
+        self.assertIn("--no-gestures", argv)
+        run.assert_not_called()   # no container to bring up
+
+    def test_ft_hands_in_the_dev_container(self):
+        self.assertTrue(self.recorder_argv(None)[0].endswith("distrobox"))
+        argv, _ = self.tracker_argv(None)
+        self.assertEqual(argv[:4], [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--"])
+        self.assertEqual(argv[4], session.FT_HANDS)
+
+    def test_fix_hint(self):
+        with mock.patch.object(session, "STANDALONE", self.INFO):
+            self.assertEqual(session.fix_hint("hands/build.sh"), "run the install command again")
+            text = session.camera_text({"status": "degraded", "reason": "2 of 4", "ring_missing": ["upper_left"]})
+        with mock.patch.object(session, "STANDALONE", None):
+            self.assertEqual(session.fix_hint("hands/build.sh"), "hands/build.sh")
+        self.assertIn("run the install command again", text)
+        self.assertNotIn("~/frametop", text)
+
+
 if __name__ == "__main__":
     unittest.main()

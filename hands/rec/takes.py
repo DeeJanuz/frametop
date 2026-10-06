@@ -83,8 +83,26 @@ def find_zstd():
     return next((p for p in ZSTD_PATHS if os.access(p, os.X_OK)), None)
 
 
+def standalone(path=None):
+    """The standalone Hand Recorder's build info, or None in a Frametop checkout. Its release
+    (github.com/DeeJanuz/frametop-hand-recorder) ships this repo's tree with standalone.json at
+    the top: {"name", "version", "frametop": this repo's git describe, "reinstall": how to repair
+    an install}. Its binaries are built for the SteamOS host, so nothing runs in the dev container."""
+    try:
+        with open(path or os.path.join(REPO, "standalone.json")) as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return info if isinstance(info, dict) else None
+
+
 def tool_version():
-    """ft-handrec plus the checkout's git describe, for session.json and the manifest."""
+    """ft-handrec plus the checkout's git describe, for session.json and the manifest. The
+    standalone Hand Recorder has no checkout: the describe it was built from, and its version."""
+    info = standalone()
+    if info:
+        return "ft-handrec %s (%s %s)" % (info.get("frametop") or "unknown", info.get("name") or "standalone",
+                                          info.get("version") or "unknown")
     try:
         out = subprocess.run(["git", "-C", REPO, "describe", "--always", "--dirty", "--tags"],
                              capture_output=True, text=True, timeout=5)

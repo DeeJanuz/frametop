@@ -24,7 +24,9 @@ Everything lives under ~/.local/share/frametop/hands/contrib (--base). Nothing i
 unless the person presses Upload; while CONSENT.md or UPLOAD.md is a draft, Upload stays off
 unless FT_HANDREC_ALLOW_UPLOAD=1 (the maintainer's rehearsal against a test repo, picked with
 FT_HANDREC_DATASET). --hub-dry-run does everything but the network calls.
-Launch with hands/rec/ft-handrec (host wrapper).
+Launch with hands/rec/ft-handrec (host wrapper). The standalone Hand Recorder
+(github.com/DeeJanuz/frametop-hand-recorder) runs this backend on the host, from a venv, with
+its own window for SteamVR's dashboard: --qml its main.qml, --style Basic.
 """
 import argparse
 import datetime
@@ -291,6 +293,16 @@ class Backend(QObject):
     @Property(str, constant=True)
     def consentText(self):
         return read_text(CONSENT_PATH) or "CONSENT.md is missing."
+
+    @Property(str, constant=True)
+    def toolVersion(self):
+        """What session.json records as the tool (takes.tool_version), for the window to show."""
+        return takes.tool_version()
+
+    @Property(bool, constant=True)
+    def standalone(self):
+        """The standalone Hand Recorder's install, not a Frametop checkout (takes.standalone)."""
+        return takes.standalone() is not None
 
     @Property(str, constant=True)
     def consentVersion(self):
@@ -1173,6 +1185,9 @@ def main():
                     help="test: Upload checks the export and says what it would send, with no network calls")
     ap.add_argument("--ignore-cameras", action="store_true",
                     help="start sessions even if the camera check (hands/camcheck.py) finds the upper cameras off")
+    ap.add_argument("--qml", default=os.path.join(HERE, "main.qml"),
+                    help="the window (default: this folder's main.qml, which needs Kirigami)")
+    ap.add_argument("--style", default="org.kde.desktop", help="the Qt Quick Controls style")
     a, qt_args = ap.parse_known_args()
     app = QGuiApplication([sys.argv[0]] + qt_args)
     app.setApplicationName("ft-handrec")
@@ -1180,7 +1195,7 @@ def main():
     app.setDesktopFileName("ft-handrec")
     if not QIcon.themeName():
         QIcon.setThemeName("breeze")
-    QQuickStyle.setStyle("org.kde.desktop")
+    QQuickStyle.setStyle(a.style)
     store = takes.Store(a.base)
     engine = QQmlApplicationEngine()
     engine.addImageProvider("frames", FrameProvider(store))
@@ -1195,7 +1210,7 @@ def main():
     app.aboutToQuit.connect(backend.shutdown)
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("startPage", a.page)
-    engine.load(QUrl.fromLocalFile(os.path.join(HERE, "main.qml")))
+    engine.load(QUrl.fromLocalFile(os.path.abspath(a.qml)))
     if not engine.rootObjects():
         sys.exit(1)
 

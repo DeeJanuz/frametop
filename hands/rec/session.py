@@ -51,6 +51,7 @@ sys.path.insert(0, HANDS)
 import camcheck  # noqa: E402  (hands/camcheck.py: are all four mono cameras running?)
 sys.path.insert(0, HERE)
 import sides  # noqa: E402  (hands/rec/sides.py: which side camera is which)
+import takes  # noqa: E402  (hands/rec/takes.py: the version, and the standalone recorder's build info)
 FT_HANDS = os.path.join(HANDS, "build", "ft-hands")
 FT_CAMD = os.path.join(HANDS, "build", "ft-camd")
 PANEL_BIN = os.path.join(HERE, "build", "ft-handpanel")
@@ -60,6 +61,9 @@ BASE_DIR = os.path.expanduser("~/.local/share/frametop/hands/contrib")
 PANEL_SOCKET = "ft_handpanel"
 CAMD_UNIT = "frametop-handrec-camd.service"
 HANDS_UNIT = "frametop-handrec-hands.service"
+# The standalone Hand Recorder (takes.standalone()): its binaries run on the host, so ft-hands
+# starts directly rather than in the dev container, and repairs mean its install command.
+STANDALONE = takes.standalone()
 
 RECORD_HZ = 10
 SIDES_READ_S = 0.5       # how often the tracking ft-hands' side camera decision is read
@@ -129,6 +133,13 @@ def host_command(*cmd):
         return list(cmd)
     return ["env", "-C", os.path.expanduser("~"), "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus" % os.getuid(),
             exe] + list(cmd)
+
+
+def fix_hint(frametop):
+    """How to repair a missing or broken part: Frametop's command, or the standalone install's."""
+    if STANDALONE:
+        return STANDALONE.get("reinstall") or "run the Hand Recorder's install command again"
+    return frametop
 
 
 def host_path(path):
@@ -369,10 +380,10 @@ def start_camd(path=None, log=lambda line: None, stop=lambda: False, timeout=15.
     if ring_alive(path):
         return False
     if not os.access(FT_CAMD, os.X_OK):
-        raise RuntimeError("ft-camd isn't built: hands/build.sh")
+        raise RuntimeError("ft-camd isn't built: " + fix_hint("hands/build.sh"))
     caps = subprocess.run(["getcap", FT_CAMD], capture_output=True, text=True) if shutil.which("getcap") else None
     if caps is not None and "cap_sys_ptrace" not in caps.stdout:
-        raise RuntimeError("ft-camd needs its capabilities: hands/run.sh caps (asks for sudo)")
+        raise RuntimeError("ft-camd needs its capabilities: " + fix_hint("hands/run.sh caps (asks for sudo)"))
     started = start_unit(CAMD_UNIT, "the camera broker", [FT_CAMD, "--status", "60"], log)
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -614,7 +625,7 @@ class Recorder:
                 "--sides", "auto" if swap is None else "1" if swap else "0"]
         if ring:
             argv += ["--ring", ring]
-        if not in_container():
+        if not in_container() and not STANDALONE:
             argv = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--"] + argv
         self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
         self.started_ns = mono_ns()
@@ -1117,15 +1128,6 @@ class _Redo(Exception):
     pass
 
 
-def _git_describe():
-    try:
-        r = subprocess.run(["git", "-C", REPO, "describe", "--always", "--dirty", "--tags"],
-                           capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() or "unknown"
-    except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-
-
 def _os_version():
     path = "/run/host/etc/os-release" if in_container() else "/etc/os-release"
     try:
@@ -1193,8 +1195,8 @@ def camera_text(result):
         return camcheck.USER_TEXT
     if camcheck.is_ring_short(result):
         return ("The headset's tracking cameras are all running, but the recorder can't read some of them (%s). "
-                "Close the Hand Recorder, run ~/frametop/hands/rec/install.sh again, and open it again. If that "
-                "doesn't help, ask in the Frametop Discord." % result.get("reason", ""))
+                "Close the Hand Recorder, %s, and open it again. If that doesn't help, ask in the Frametop "
+                "Discord." % (result.get("reason", ""), fix_hint("run ~/frametop/hands/rec/install.sh again")))
     return ("Not all of the headset's tracking cameras are running (%s). Restart SteamVR, or restart the "
             "headset if that doesn't fix it." % result.get("reason", ""))
 
@@ -1444,7 +1446,7 @@ class Session:
         self._ring_path = ring_path
         if not self.dry_run:
             if not os.access(FT_HANDS, os.X_OK):
-                raise _Fail("ft-hands isn't built: hands/build.sh")
+                raise _Fail("ft-hands isn't built: " + fix_hint("hands/build.sh"))
             self._ensure_ring(ring_path)
             if not tracker_running():
                 if self.start_processes:
@@ -1462,7 +1464,7 @@ class Session:
             pass
         removed = self._write_calibration() + self._write_device()
         self._session_json = {
-            "schema": 1, "tool": "ft-handrec " + _git_describe(), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "schema": 1, "tool": takes.tool_version(), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "contributor": self.profile.get("contributor", ""),
             "lighting": lighting_record(self.lighting_choice, lighting),
             "checklist": self.checklist,
@@ -1599,11 +1601,12 @@ class Session:
             raise _Stop()
 
     def _start_tracker(self):
-        up = os.path.join(REPO, "scripts", "container-up.sh")
-        if os.access(up, os.X_OK):
-            subprocess.run(host_command(up), capture_output=True, timeout=120)
-        argv = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--", FT_HANDS,
-                "--no-gestures", "--status", "0"]
+        argv = [FT_HANDS, "--no-gestures", "--status", "0"]
+        if not STANDALONE:   # built in the dev container: it runs there
+            up = os.path.join(REPO, "scripts", "container-up.sh")
+            if os.access(up, os.X_OK):
+                subprocess.run(host_command(up), capture_output=True, timeout=120)
+            argv = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--"] + argv
         if self.ring:
             argv += ["--ring", self.ring]
         self._start_unit(HANDS_UNIT, "hand tracking for feedback", argv)
@@ -1626,7 +1629,7 @@ class Session:
             self._log("using the ft-handpanel that's running")
             return
         if not os.access(self.panel_bin, os.X_OK):
-            raise _Fail("ft-handpanel isn't built: hands/rec/build.sh")
+            raise _Fail("ft-handpanel isn't built: " + fix_hint("hands/rec/build.sh"))
         self._panel_proc = subprocess.Popen([self.panel_bin, "--watch-stdin"], stdin=subprocess.PIPE,
                                             stdout=self._log_file, stderr=self._log_file)
         end = time.monotonic() + 15

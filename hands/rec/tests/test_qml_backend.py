@@ -2,7 +2,8 @@
 """main.qml against ft_handrec.Backend: every backend.name(...) the window calls is a slot, and
 every backend.name it reads is a property or a slot. A method that lost its @Slot shows up in
 QML only as "is not a function" when its button is pressed (2026-10-03: Export did nothing).
-Needs PySide6 (the dev container); skipped without it.
+Needs PySide6 (the dev container); skipped without it. FT_HANDREC_QML=PATH checks another
+window against the same backend (the standalone Hand Recorder's, in its CI).
 
   python3 hands/rec/tests/test_qml_backend.py
 """
@@ -14,6 +15,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REC = os.path.dirname(HERE)
 sys.path.insert(0, REC)
+QML = os.environ.get("FT_HANDREC_QML") or os.path.join(REC, "main.qml")
 
 
 class QmlBackendTest(unittest.TestCase):
@@ -25,7 +27,7 @@ class QmlBackendTest(unittest.TestCase):
         meta = self.meta = ft_handrec.Backend.staticMetaObject
         self.slots = {bytes(meta.method(i).name()).decode() for i in range(meta.methodCount())}
         self.props = {meta.property(i).name() for i in range(meta.propertyCount())}
-        with open(os.path.join(REC, "main.qml")) as f:
+        with open(QML) as f:
             self.qml = f.read()
 
     def test_calls_are_slots(self):

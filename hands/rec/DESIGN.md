@@ -23,6 +23,17 @@ The plan this belongs to is `~/Desktop/Projects/frame-hands/notes/hands-plan.md`
 
 Every part runs in the dev container, as ft-hands and Input Settings do. The host Python isn't used: it lacks PySide6 and zstd. `setup/dev-container.sh` gains `zstd`.
 
+### The standalone Hand Recorder
+
+[frametop-hand-recorder](https://github.com/DeeJanuz/frametop-hand-recorder) is the recorder for people without Frametop. It pins this repo as a submodule and ships the parts above with its own window, a Qt Quick Controls `main.qml` sized for SteamVR's dashboard. Its release builds the binaries for the SteamOS host: ft-camd and ft-hands statically (`make LDFLAGS=-static`), and ft-handpanel against SteamVR's `libopenvr_api`. Everything runs on the host, the Python from a venv (`ft_handrec.py --qml ITS_QML --style Basic`).
+
+Its tarball keeps this tree's layout (`hands/build/`, `hands/rec/`, `hands/models/`), so the paths here don't change. A `standalone.json` at the top marks it (`takes.standalone()`):
+- `session.py` starts ft-hands directly, not through distrobox.
+- session.json's `tool` and the manifest's are `ft-handrec <describe> (frametop-hand-recorder <version>)`.
+- The repair hints say to run its install command again.
+
+The recordings go to the same `~/.local/share/frametop/hands/contrib`, so either recorder shows both's sessions.
+
 ## Processes during a session
 
 - **ft-camd** publishes the camera ring. If it isn't running, the session starts it as the transient user unit `frametop-handrec-camd.service`, the way `hands/ft-cutouts` starts `frametop-cutouts-camd.service` (needs `hands/build/ft-camd` with capabilities: `hands/run.sh caps`). An ft-camd already running from ft-cutouts or ft-handsctl is used as it is.
