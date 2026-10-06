@@ -82,7 +82,7 @@ bool TestPattern(int drm, int w, int h, gbm_bo **out, ft_dmabuf *b) {
 // see-through, with dots on the wrist, middle knuckle and fingertips of each tracked hand,
 // one colour per timing: magenta where the cameras saw the hand, cyan moved ahead to now,
 // green moved ahead to now + lead (what the cutouts use). White dots mark the panel's
-// corners. Record the headset view meanwhile and compare (frame-hands/train/forearm/
+// corners. Record the headset view meanwhile and compare (frame-hands/probes/
 // probe_video.py), or look: which colour sits on your fingertips, still and moving?
 // Each tick goes to the log as a JSON line, after a header line with the panel and eyes.
 struct Variant {
