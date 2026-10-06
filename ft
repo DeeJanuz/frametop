@@ -111,6 +111,11 @@ engine=${FT_ENGINE:-$(command -v podman || command -v docker || true)}
 # Repo mode mounts the checkout; installed mode uses the image's own copy.
 mounts=()
 [ "$repo_mode" = 1 ] && mounts+=(-v "$root":/src/frametop)
+# A container's own network namespace starts with the kernel's datagram queue
+# of 10; systemd sets 512 on the host. The input relay sends without blocking
+# and drops what a full queue refuses, so at 10 its burst of key and button
+# releases loses the last ones (keys-test.py caught this).
+mounts+=(--sysctl net.unix.max_dgram_qlen=512)
 
 # How the programs run on the Frame (mounts, devices, groups, namespaces) is
 # not decided yet: see "The runtime on the Frame" in pack/design.md. Runs here

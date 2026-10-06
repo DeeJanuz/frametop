@@ -92,7 +92,7 @@ jobs:
       # what passes here is what a user pulls.
       - name: test (python, c, bash)
         run: |
-          docker run --rm \
+          docker run --rm --sysctl net.unix.max_dgram_qlen=512 \
             -v "$PWD":/src/frametop --workdir /src/frametop \
             "${IMAGE}:${{ steps.meta.outputs.version }}" \
             just test-python test-c test-bash

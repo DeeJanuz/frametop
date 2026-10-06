@@ -172,7 +172,7 @@ that:
 | ft-pointer | `~/.config/frametop.conf`, `/opt/steamvr` (it runs `vrcmd`) |
 | ft-gaze, ft-gazepanel | `/dev/shm` (SteamVR's `eye-server.mmap`), `/dev/dri` |
 | Settings apps | the Wayland socket and session bus, `distrobox-host-exec` (they run `systemctl --user` on the host) |
-| All of them | the host network namespace: they talk over abstract sockets (`@ft_screens`, `@ft_pointer`, ...) |
+| All of them | the host network namespace: they talk over abstract sockets (`@ft_screens`, `@ft_pointer`, ...), and the host's datagram queue length (`net.unix.max_dgram_qlen`, 512 from systemd; a container's own namespace starts at 10, and the input relay's burst of releases then loses its last ones, which leaves buttons held) |
 
 OpenVR clients need more, found on the device with a containerized ft-powerd
 (SteamOS 0.4.3, SteamVR 2.18.2): the path registry `~/.config/openvr`, also at
