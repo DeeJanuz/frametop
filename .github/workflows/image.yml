@@ -1,7 +1,15 @@
-# Build and publish the Frametop image (pack/Containerfile). Native arm64
-# runner: the Frame is aarch64, and cross-building would double the build time.
-# Actions are pinned to commit SHAs (the version each SHA corresponds to is in
-# the comment); dependabot-style bumps change the SHA deliberately.
+# Build, verify, and publish the Frametop image (pack/Containerfile).
+# Native arm64 runner: the Frame is aarch64, and cross-building would double
+# the build time. Actions are pinned to commit SHAs (the version each SHA
+# corresponds to is in the comment); dependabot-style bumps change the SHA
+# deliberately.
+#
+# One job, steps in order — deliberately NOT parallel jobs: every stage uses
+# the image, and separate runners would each re-pull the ~1.5 GB from GHCR
+# that the build just pushed. The image is built once into the local Docker
+# cache, verified (test → smoke), and only pushed to GHCR after the checks:
+# what lands in the registry is always green. The wrapper artifact (with
+# checksums) follows the push, so its image-digest.txt names a real digest.
 name: image
 
 on:
@@ -41,7 +49,7 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  build:
+  image:
     runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
     steps:
       # actions/checkout@v7.0.1
@@ -63,64 +71,42 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-      # docker/build-push-action@v7.4.0
+      # Build into the local Docker cache only (no push yet): the checks
+      # below run against this image, and nothing lands in GHCR unless they
+      # pass. docker/build-push-action@v7.4.0
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         id: build
         with:
           context: .
           file: pack/Containerfile
-          push: true
+          push: false
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-    outputs:
-      tag: ${{ steps.meta.outputs.version }}
 
-  # The unit gate: Python (strict), C, and shell — inside the built image,
-  # so what passes here is what a user pulls. Separate from smoke: smoke
-  # asks "is the artifact sound", this asks "is the code right".
-  test:
-    needs: build
-    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
-    steps:
-      # actions/checkout@v7.0.1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Run the unit suites inside the built image
+      # The unit gate: Python (strict), C, and shell — inside the image, so
+      # what passes here is what a user pulls.
+      - name: test (python, c, bash)
         run: |
           docker run --rm \
             -v "$PWD":/src/frametop --workdir /src/frametop \
-            "${{ env.IMAGE }}:${{ needs.build.outputs.tag }}" \
+            "${IMAGE}:${{ steps.meta.outputs.version }}" \
             just test-python test-c test-bash
 
-  smoke:
-    needs: build
-    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
-    steps:
-      # actions/checkout@v7.0.1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      # The suites live in the test job (strict: test-python/test-c/
-      # test-bash). Smoke only checks the artifact itself: binaries, venv,
-      # and the wrapper paths. The tag is the one the build pushed:
-      # metadata-action's version output (the sanitized branch name, or the
-      # semver tag).
-      - name: Check the built image from the outside
+      # Smoke: the artifact itself (binaries, venv) and the wrapper paths.
+      # The wrapper is the counterpart of the image — every device run goes
+      # through it, so it is exercised against exactly this image.
+      - name: smoke (image from the outside)
         run: |
           docker run --rm --entrypoint sh \
-            "${IMAGE}:${{ needs.build.outputs.tag }}" -c \
+            "${IMAGE}:${{ steps.meta.outputs.version }}" -c \
             'ls /opt/frametop/bin | grep -q ft-screens && /opt/frametop/venv/bin/python -V'
-      # The wrapper is the counterpart of the image: every run on a device
-      # goes through it, so a wrapper change can break a working image just
-      # like an image change can. The smoke job therefore exercises the
-      # wrapper itself, against the image this run built.
-      - name: Exercise the ft wrapper against the built image
+
+      - name: smoke (the ft wrapper)
         run: |
-          export FT_IMAGE="${IMAGE}:${{ needs.build.outputs.tag }}"
+          export FT_IMAGE="${IMAGE}:${{ steps.meta.outputs.version }}"
           # repo mode: a program runs from the image, with the checkout mounted
           ./ft python -V
           # installed mode, in a sandbox: update digest-pins, then runs.
@@ -143,35 +129,29 @@ jobs:
           echo "${IMAGE}:latest" > /tmp/ft-home/.config/frametop/image
           XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V && exit 1 || true
 
-  # The installable wrapper, with checksums — published only when build,
-  # test, and smoke all passed. The wrapper is extracted from the image
-  # this run built and compared byte-for-byte with the checkout's copy:
-  # the artifact, the image, and the commit are one thing.
-  artifact:
-    needs: [build, test, smoke]
-    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
-    steps:
-      # actions/checkout@v7.0.1
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Verify the wrapper inside the image and checksum it
+      # All checks green: now the push. Everything below treats the local
+      # image as the source; the registry copy is the same bytes.
+      - name: push to ghcr
+        run: |
+          while read -r tag; do docker push "$tag"; done \
+            <<< "${{ steps.meta.outputs.tags }}"
+
+      # The installable wrapper, with checksums. Extracted from the image
+      # this run built and compared byte-for-byte with the checkout's copy:
+      # the artifact, the image, and the commit are one thing.
+      - name: artifact (ft + checksums)
         run: |
           mkdir -p out
-          docker pull "${IMAGE}:${{ needs.build.outputs.tag }}"
           docker run --rm --entrypoint cat \
-            "${IMAGE}:${{ needs.build.outputs.tag }}" /src/frametop/ft > out/ft
+            "${IMAGE}:${{ steps.meta.outputs.version }}" /src/frametop/ft > out/ft
           cmp out/ft ./ft || { echo "ft in image diverged from the checkout"; exit 1; }
           chmod +x out/ft
           docker inspect --format '{{index .RepoDigests 0}}' \
-            "${IMAGE}:${{ needs.build.outputs.tag }}" > out/image-digest.txt
+            "${IMAGE}:${{ steps.meta.outputs.version }}" > out/image-digest.txt
           ( cd out && sha256sum ft > ft.sha256 )
           cat out/ft.sha256 out/image-digest.txt
       # actions/upload-artifact@v4.6.2
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ft-${{ needs.build.outputs.tag }}
+          name: ft-${{ steps.meta.outputs.version }}
           path: out/
