@@ -1,13 +1,18 @@
-# Keep the build context small: everything that is gitignored or regenerated.
+# Keep the build context small: what .gitignore ignores, and regenerated files.
+# Unlike .gitignore, patterns here only match at the top unless they start
+# with **/, so the ones that can appear in any folder do.
 .git/
+.worktrees/
 .venv/
-build/
-target/
-captures/
-__pycache__/
-*.pyc
-*.raw
-*.pgm
-.env*
+**/build/
+**/target/
+**/captures/
+**/__pycache__/
+**/*.pyc
+# Eye-camera frame dumps are biometric (see .gitignore): never in an image.
+**/*.raw
+**/*.pgm
+**/.env
+**/.env.*
 frametop-report-*.txt
 .frame-job.d/
