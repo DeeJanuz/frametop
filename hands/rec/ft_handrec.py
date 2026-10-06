@@ -299,11 +299,6 @@ class Backend(QObject):
         """What session.json records as the tool (takes.tool_version), for the window to show."""
         return takes.tool_version()
 
-    @Property(bool, constant=True)
-    def standalone(self):
-        """The standalone Hand Recorder's install, not a Frametop checkout (takes.standalone)."""
-        return takes.standalone() is not None
-
     @Property(str, constant=True)
     def consentVersion(self):
         return consent_version()
@@ -401,7 +396,8 @@ class Backend(QObject):
             measured = ""
             try:
                 ring = mod.ring_lighting()
-                if ring is None and not self.sessionActive:
+                # A dry run starts nothing, the camera broker included.
+                if ring is None and not self.sessionActive and not self._session_options.get("dry_run"):
                     if mod.start_camd():
                         self._camd_started = True
                     time.sleep(1.0)    # the first near-black frames
