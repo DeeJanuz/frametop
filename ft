@@ -21,8 +21,7 @@
 #
 # Usage:
 #   ft <prog> [args]    [both]    run a program from /opt/frametop
-#   ft update           [both]    pull the published image, pin its digest,
-#                                 refresh this wrapper from it
+#   ft update           [both]    pull the published image, pin its digest
 #   ft clean            [both]    remove frametop's leftover containers and
 #                                 unused frametop images (see below)
 # Development commands live behind "ft dev" (they need a repo checkout):
@@ -47,13 +46,20 @@ ref_file=$config_dir/image          # installed: the pinned image reference
 published_file=$config_dir/published  # installed: where updates come from
 
 reject_latest() { # reject_latest <what> <ref>
-  case $2 in
-    *:latest|*:latest@*|latest)
-      echo "ft: $2 uses the moving :latest tag — refused for $1." >&2
-      echo "    Pin a version tag or a digest (repo@sha256:...) instead," >&2
-      echo "    e.g. in $published_file or $ref_file." >&2
-      exit 2 ;;
+  # A reference with neither a tag nor a digest means :latest too. The tag is
+  # after the last "/", so a registry port (host:5000/...) isn't one.
+  local name=${2%%@*} latest=0
+  case ${name##*/} in
+    *:latest) latest=1 ;;
+    *:*) ;;
+    *) [[ $2 == *@sha256:* ]] || latest=1 ;;
   esac
+  if [ "$latest" = 1 ]; then
+    echo "ft: $2 uses the moving :latest tag — refused for $1." >&2
+    echo "    Pin a version tag or a digest (repo@sha256:...) instead," >&2
+    echo "    e.g. in $published_file or $ref_file." >&2
+    exit 2
+  fi
 }
 
 # The reference updates pull from: $FT_IMAGE_PUBLISHED, then the config file.
@@ -104,38 +110,19 @@ engine=$(command -v podman || command -v docker || true)
 mounts=()
 [ "$repo_mode" = 1 ] && mounts+=(-v "$root":/src/frametop)
 
-# The Frame's additions (shared memory, sockets, the real SteamVR) are gated
-# behind FT_FRAME=1 until they are validated on the device.
-if [ "${FT_FRAME:-0}" = 1 ]; then
-  mounts+=(
-    --env HOME=/home/steamos         # OpenVR's registry is looked up under this HOME
-    --ipc=host                       # /dev/shm for the hands/gaze shared-memory files
-    -v /run/user/"${FT_UID:-1000}":/run/user/"${FT_UID:-1000}"  # Wayland + frametop sockets
-    -v /opt/steamvr:/opt/steamvr:ro  # the real SteamVR runtime (openvr_api, vrpathreg)
-    -v /tmp:/tmp                     # SteamVR's IPC control file lives in /tmp
-                                     # (verified on device: without it VR_Init fails 124)
-    # OpenVR's path registry. Rootless podman maps the container's root to
-    # the desktop user, so files written into these mounts land as steamos
-    # on the host — no root-owned files, and the registry's absolute
-    # /home/steamos/... references stay valid.
-    -v "${HOME}/.config/openvr:/root/.config/openvr:ro"
-    -v "${HOME}/.config/openvr:/home/steamos/.config/openvr"
-    -v "${HOME}/.local/share/Steam/config:/home/steamos/.local/share/Steam/config"
-    -v "${HOME}/.local/share/Steam/logs:/home/steamos/.local/share/Steam/logs"
-    -v "${HOME}/.local/share/frametop/ft_pointer:/home/steamos/.local/share/frametop/ft_pointer:ro"
-  )
-fi
+# How the programs run on the Frame (mounts, devices, groups, namespaces) is
+# not decided yet: see "The runtime on the Frame" in pack/design.md. Runs here
+# get no access to the host beyond the repo mount.
 
 run_in_image() {
   [ -n "$image" ] || image=$(default_image)
-  # A stable name (frametop-<program>) so systemd, podman ps and podman logs
-  # read like the system reads; a leftover from a crashed run gets replaced.
-  local prog=${1%% *}
+  # frametop-<program>-<pid>: podman ps names the program, two runs of one
+  # program (python3 a.py, python3 b.py) don't replace each other, and
+  # ft clean finds the leftovers of crashed runs by the prefix.
   local name
-  name=frametop-$(printf '%s' "$prog" | tr -c 'a-zA-Z0-9._-' '-')
-  "$engine" rm -f "$name" >/dev/null 2>&1 || true
+  name=frametop-$(printf '%s' "${1##*/}" | tr -c 'a-zA-Z0-9._-' '-')-$$
   exec "$engine" run --rm --name "$name" ${mounts[@]+"${mounts[@]}"} \
-    --workdir /src/frametop ${FT_FRAME:+--network=host} "$image" "$@"
+    --workdir /src/frametop "$image" "$@"
 }
 
 need_repo() {
@@ -151,7 +138,8 @@ update() {
   local digest
   if digest=$("$engine" inspect --format '{{index .RepoDigests 0}}' "$published" 2>/dev/null) && [ -n "$digest" ]; then
     mkdir -p "$config_dir"
-    printf '%s\n' "$digest" > "$ref_file"
+    # Written whole or not at all: an empty pin would stop every run.
+    printf '%s\n' "$digest" > "$ref_file.new" && mv "$ref_file.new" "$ref_file"
     echo "ft update: pinned $digest"
   else
     echo "ft update: could not read a digest for $published — keeping $image." >&2
