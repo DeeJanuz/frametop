@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Collect what a Frametop bug report needs into one text file: versions, service states,
-# settings, and recent logs. Bluetooth addresses and the headset's serial number are masked.
+# settings, recent logs, and the gaze report (scripts/gaze-report.py). Bluetooth addresses and
+# the headset's serial number are masked.
 # Usage: scripts/report.sh   (in a terminal on the Frame, or from a PC over SSH)
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 . "$root/scripts/_env.sh"
 out=$root/frametop-report-$(date +%Y%m%d-%H%M%S).txt
+echo "Collecting (up to half a minute: the gaze service is woken to see whether the eye tracker sends)..."
 
 on_frame_script "$FRAME_REPO" > "$out" 2>&1 <<'EOF' || true
 repo=$1
@@ -68,28 +70,9 @@ section "Pointer helper (last 60 lines)"
 journalctl --user -u frametop-pointer -n 60 --no-pager -o short 2>/dev/null
 section "Power service (last 30 lines)"
 journalctl --user -u frametop-power -n 30 --no-pager -o short 2>/dev/null
-section "Gaze"
-echo "frametop-gaze: $(systemctl --user is-enabled frametop-gaze 2>/dev/null) / $(systemctl --user is-active frametop-gaze 2>/dev/null)"
-echo "frametop-eyegrab (our eye tracker's frame grabber): $(systemctl is-enabled frametop-eyegrab 2>/dev/null) / $(systemctl is-active frametop-eyegrab 2>/dev/null)"
-for f in calibration.json eyes/calibration.json; do  # SteamVR's correction, our tracker's calibration
-  p=~/.local/state/frametop/gaze/$f
-  echo "$f: $([ -f "$p" ] && date -r "$p" '+%F %T' || echo none)"
-done
-python3 - "$repo" <<'PY' 2>&1 || true
-import json, subprocess, sys
-out = subprocess.run([sys.executable, sys.argv[1] + "/gaze/ft-gazectl", "status"], capture_output=True, text=True, timeout=10)
-text = (out.stdout or out.stderr).strip()
-try:
-    print("status:", json.dumps(json.loads(text), separators=(",", ":")))
-except ValueError:
-    print("status:", text or "no answer from the gaze service")
-PY
-section "Gaze checks and calibration dots (last 10)"
-tail -n 10 ~/.local/state/frametop/gaze/checks.jsonl 2>/dev/null | cut -c1-400 || true
-section "Gaze service (last 60 lines, podman's left out)"
-journalctl --user -u frametop-gaze -n 300 --no-pager -o short 2>/dev/null | grep -v ' podman\[' | tail -n 60
-section "Our eye tracker's frame grabber (last 20 lines)"
-journalctl -u frametop-eyegrab -n 20 --no-pager -o short 2>/dev/null
+# The gaze service, SteamVR's eye tracker and ours, the checks and calibrations, with what
+# looks wrong first. It wakes an idle gaze service for about 20 s, to see the tracker send.
+python3 "$repo/scripts/gaze-report.py" </dev/null 2>&1 || echo "scripts/gaze-report.py failed"
 for f in /tmp/frametop-session.log /tmp/frametop-screens.log "$XDG_RUNTIME_DIR/frametop-layout.log"; do
   section "$f (last 60 lines)"
   tail -n 60 "$f" 2>/dev/null || echo "missing"

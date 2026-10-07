@@ -16,6 +16,7 @@ gaze/tracker/install.sh       # our own eye tracker's frame grabber (asks for su
 gaze/build.sh                 # build ft-gaze and the panel by hand
 gaze/probe/install.sh         # development: build, and add Frametop Gaze Probe to the app menu
 gaze/probe/ft-gazeprobe --screen 1
+scripts/gaze-report.py        # why gaze or its calibration doesn't work, with what looks wrong first
 ```
 
 ## Gaze pointer
