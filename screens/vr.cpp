@@ -478,6 +478,11 @@ vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::v
     if (vr::VROverlay()->CreateOverlay(key, name, &o) != vr::VROverlayError_None) return o;
     vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
+    // SteamVR hit-tests an overlay by its mouse scale's shape, not its texture's: left at the
+    // default 1x1, the bar (256x24) caught the laser in a square as tall as it is wide, ~19 cm
+    // up into the bottom of the panel above it.
+    vr::HmdVector2_t scale = {float(w), float(h)};
+    vr::VROverlay()->SetOverlayMouseScale(o, &scale);
     vr::VROverlay()->SetOverlaySortOrder(o, 10);
     return o;
 }
