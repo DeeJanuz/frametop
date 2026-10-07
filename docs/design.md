@@ -42,6 +42,8 @@ Wherever ft-screens needs to know where a laser points (showing the controls, th
 
 `ComputeOverlayIntersection` ignores `SetOverlayIntersectionMask`, and a control can't be allowed to cover part of its screen, so the resize tab sits entirely outside the corner.
 
+What SteamVR hits isn't the texture's shape but the mouse scale's: an overlay is as tall, for SteamVR's laser and `ComputeOverlayIntersection`, as its width times the mouse scale's height over its width, and the default scale is 1 × 1. With it, the grab bar (a 256 × 24 texture) took hits in a square as tall as the bar is wide, so it caught clicks meant for the bottom tenth or so of the screen above it. Measured with a 0.2 m wide 256 × 24 overlay: a hit area 199 mm tall at the default scale, 18 mm at 256 × 24 (the bar itself is 18.8 mm), and no change from an intersection mask. `MakeChrome` sets each control's mouse scale to its texture size.
+
 ### Pinning
 
 Pinning started as "bring the screen to your wrist", which doesn't work for big screens, because their centre is far from the edge you bring close. It became aiming: while a screen is carried, the line from the carrying device to its bar is tested against the other hand controllers. Crossing a controller's 6 cm ring arms the pin (leaving past 9 cm, so it doesn't flicker), and crossing it again disarms it. The pin happens on release, with the screen's pose at that moment, so you can arm it and then turn the screen. An earlier version pinned the moment the laser touched the wrist, which left the screen at whatever angle the carrying hand had while pointing there.

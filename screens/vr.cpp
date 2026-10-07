@@ -478,6 +478,11 @@ vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::v
     if (vr::VROverlay()->CreateOverlay(key, name, &o) != vr::VROverlayError_None) return o;
     vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
+    // SteamVR's laser and ComputeOverlayIntersection size the hit area from the mouse scale,
+    // not the texture: at the default 1x1 it's a square as tall as the control is wide, so the
+    // grab bar (256x24) caught clicks about a bar's half-width up into the screen above it.
+    const vr::HmdVector2_t scale = {{float(w), float(h)}};
+    vr::VROverlay()->SetOverlayMouseScale(o, &scale);
     vr::VROverlay()->SetOverlaySortOrder(o, 10);
     return o;
 }
