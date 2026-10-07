@@ -37,7 +37,8 @@
 // options override both): HANDS_SWAP_SIDES (auto, 0 or 1), HANDS_CPUS (as --cpus),
 // HANDS_CAMERAS, HANDS_BRIGHT, HANDS_BRIGHT_ON, HANDS_BRIGHT_OFF, HANDS_COLOR_LEFT (which
 // colour camera is passthrough_left: color_video0 or color_video3), HANDS_COLOR_CROP
-// (subtract or none: tools/check_color.py tells both).
+// (subtract or none: tools/check_color.py tells both), HANDS_MISREAD_GUARD (0 or 1: the
+// tracker's guards for fine-tuned landmark models, Tracker::set_misread_guard).
 #include "io.h"
 #include "pinch.h"
 #include "record.h"
@@ -256,6 +257,7 @@ int main(int argc, char **argv) {
     // dim recording), but makes the landmarks jitter, so they get plain crops.
     Contrast palm_contrast, hand_contrast{Contrast::None};
     double keep_presence = 0.5;   // landmark presence a tracked view needs to stay
+    bool misread_guard = setting("HANDS_MISREAD_GUARD") == "1";
     PinchParams pinch_params;
     GripParams grip_params;
     bool gesture_log = false;   // what the pinch and grip detectors measure, 10 times a second
@@ -286,6 +288,7 @@ int main(int argc, char **argv) {
         else if (a == "--record-for" && more) record_for = std::atof(argv[++i]);
         else if (a == "--record-hz" && more) record_hz = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--keep-presence" && more) keep_presence = std::atof(argv[++i]);
+        else if (a == "--misread-guard" && more) misread_guard = std::string(argv[++i]) == "1";
         else if (a == "--cams" && more) cams_arg = argv[++i];
         else if (a == "--bright" && more) bright_arg = argv[++i];
         else if (a == "--bright-on" && more) light.on = std::atof(argv[++i]);
@@ -306,6 +309,7 @@ int main(int argc, char **argv) {
                         "          [--sides auto|0|1] (auto: tell from the hands which side camera is which; 1: exchange them,\n"
                         "          as --swap-sides; 0: as ft-camd names them)\n"
                         "          [--keep-presence P] (0.5) [--ring PATH] (ft-camd's, or ft-ringplay's)\n"
+                        "          [--misread-guard 0|1] (0; 1 for fine-tuned landmark models: see Tracker::set_misread_guard)\n"
                         "          [--cams auto|mono|color|all] (auto) [--bright all|color] (all) [--bright-on L] (40) [--bright-off L] (25)\n"
                         "          [--color-left color_video0|color_video3] [--color-crop subtract|none]\n"
                         "          [--pinch-begin M] (0.020) [--pinch-end M] (0.035) [--pinch-triangulated] [--pinch-palm-down MAX] (1: off)\n"
@@ -318,7 +322,8 @@ int main(int argc, char **argv) {
                         "camera's newest dark frame, as <name>_dk; with --with-color, the color cameras' as color_video<N>.\n"
                         "auto picks the cameras by the light (see the top of track/main.cpp).\n"
                         "Settings in ~/.config/frametop.conf: HANDS_SWAP_SIDES=auto|0|1, HANDS_CPUS=5,6,7, HANDS_CAMERAS, HANDS_BRIGHT,\n"
-                        "HANDS_BRIGHT_ON, HANDS_BRIGHT_OFF, HANDS_COLOR_LEFT, HANDS_COLOR_CROP (FT_<name> overrides).\n",
+                        "HANDS_BRIGHT_ON, HANDS_BRIGHT_OFF, HANDS_COLOR_LEFT, HANDS_COLOR_CROP, HANDS_MISREAD_GUARD=0|1\n"
+                        "(FT_<name> overrides).\n",
                         argv[0]);
             return a == "--help" ? 0 : 1;
         }
@@ -490,6 +495,7 @@ int main(int argc, char **argv) {
     Pool pool(threads, cpus);
     Tracker tracker(used, nets, pool);
     tracker.set_keep_presence(keep_presence);
+    tracker.set_misread_guard(misread_guard);
     std::map<std::string, std::vector<uint8_t>> pixels;
     std::map<std::string, uint64_t> lit_seen;   // per colour camera: the frame last counted for the light
     const uint64_t start = mono_ns();
