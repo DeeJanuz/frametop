@@ -12,11 +12,12 @@ if [ "$FRAME_LOCAL" = 1 ]; then
   exit 0
 fi
 
+dest=${FRAME_REPO#/home/steamos/}  # relative paths start in the home folder over SSH
 # rsync creates only the last component of the destination path, and a fresh Frame
-# has no ~/dev, so the first sync from a PC would fail. Make sure it exists.
-ssh -o BatchMode=yes "$FRAME_HOST" mkdir -p "$(printf %q "$FRAME_REPO")"
-
+# has no ~/dev, so the first sync from a PC would fail. The remote rsync makes it first,
+# in the same SSH connection (--mkdir needs rsync 3.2.3 on the PC too).
 exec rsync -az --delete --info=stats1 \
+  --rsync-path="mkdir -p $(printf %q "$dest") && rsync" \
   --filter=':- .gitignore' \
   --exclude='.git' --exclude='target/' --exclude='build/' --exclude='.env' --exclude='.env.*' \
-  "$@" "$root/" "$FRAME_HOST:${FRAME_REPO#/home/steamos/}/"
+  "$@" "$root/" "$FRAME_HOST:$dest/"
