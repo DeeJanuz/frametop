@@ -1,0 +1,169 @@
+# Build, verify, and publish the Frametop image (pack/Containerfile).
+# Native arm64 runner: the Frame is aarch64, and cross-building would double
+# the build time. Actions are pinned to commit SHAs (the version each SHA
+# corresponds to is in the comment); dependabot-style bumps change the SHA
+# deliberately.
+#
+# One job, steps in order — deliberately NOT parallel jobs: every stage uses
+# the image, and separate runners would each re-pull the ~1.5 GB from GHCR
+# that the build just pushed. The image is built once into the local Docker
+# cache, verified (test → smoke), and only pushed to GHCR after the checks:
+# what lands in the registry is always green. The wrapper artifact (with
+# checksums) follows the push, so its image-digest.txt names a real digest.
+name: image
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths:
+      - "pack/**"
+      - "screens/**"
+      - "pointer/**"
+      - "gaze/**"
+      - "power/**"
+      - "session/**"
+      - "input/**"
+      - "hands/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - "justfile"
+      - "ft"
+      - ".github/workflows/image.yml"
+      - "!**.md"
+      - "!**/DESIGN.md"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "where to run (cloud arm64, or the local ft-arm64 runner via scripts/gh-runner.sh)"
+        type: choice
+        default: cloud
+        options: [cloud, local]
+
+permissions:
+  contents: read
+  packages: write
+
+# A newer push to the same branch supersedes the queued/running one: only
+# the newest commit of a burst gets built.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    runs-on: ${{ inputs.runner == 'local' && fromJSON('["self-hosted", "ft-arm64"]') || fromJSON('["ubuntu-24.04-arm"]') }}
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # docker/setup-buildx-action@v4.4.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      # docker/login-action@v4.6.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # docker/metadata-action@v6.2.0
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      # Build into the local Docker cache only (no push yet): the checks
+      # below run against this image, and nothing lands in GHCR unless they
+      # pass. docker/build-push-action@v7.4.0
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        id: build
+        with:
+          context: .
+          file: pack/Containerfile
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The unit gate: Python (strict), C, and shell — inside the image, so
+      # what passes here is what a user pulls.
+      - name: test (python, c, bash)
+        run: |
+          docker run --rm \
+            -v "$PWD":/src/frametop --workdir /src/frametop \
+            "${IMAGE}:${{ steps.meta.outputs.version }}" \
+            just test-python test-c test-bash
+
+      # Smoke: the artifact itself (binaries, venv) and the wrapper paths.
+      # The wrapper is the counterpart of the image — every device run goes
+      # through it, so it is exercised against exactly this image.
+      - name: smoke (image from the outside)
+        run: |
+          docker run --rm --entrypoint sh \
+            "${IMAGE}:${{ steps.meta.outputs.version }}" -c \
+            'ls /opt/frametop/bin | grep -q ft-screens && /opt/frametop/venv/bin/python -V'
+
+      - name: smoke (the ft wrapper)
+        run: |
+          export FT_IMAGE="${IMAGE}:${{ steps.meta.outputs.version }}"
+          # repo mode: a program runs from the image, with the checkout mounted
+          ./ft python -V
+          # installed mode, in a sandbox: update digest-pins, then runs.
+          # FT_IMAGE must go: it is the explicit user override and would
+          # shadow the pin this section is meant to test. The published
+          # reference is captured BEFORE the unset (an empty $FT_IMAGE
+          # here was podman pull "" — "repository name must have at
+          # least one component").
+          published_ref="$FT_IMAGE"
+          unset FT_IMAGE
+          mkdir -p /tmp/ft-home/.config/frametop /tmp/ft-home/bin
+          echo "$published_ref" > /tmp/ft-home/.config/frametop/published
+          install ./ft /tmp/ft-home/bin/ft
+          FT_IMAGE_PUBLISHED="$published_ref" XDG_CONFIG_HOME=/tmp/ft-home/.config \
+            /tmp/ft-home/bin/ft update
+          pinned=$(cat /tmp/ft-home/.config/frametop/image)
+          grep -q '@sha256:' <<<"$pinned" || { echo "no digest pinned: $pinned"; exit 1; }
+          XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V
+          # :latest is refused for what gets deployed
+          echo "${IMAGE}:latest" > /tmp/ft-home/.config/frametop/image
+          XDG_CONFIG_HOME=/tmp/ft-home/.config /tmp/ft-home/bin/ft python -V && exit 1 || true
+
+      # All checks green: now the push — but only for main and version tags.
+      # Feature branches are validated, not published: the registry holds
+      # only the states a user would actually run.
+      - name: push to ghcr
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/pack/frametop-image'
+        run: |
+          while read -r tag; do docker push "$tag"; done \
+            <<< "${{ steps.meta.outputs.tags }}"
+
+      # The installable wrapper, with checksums — like the push, only for
+      # main and version tags: the artifact belongs to a published state.
+      # Extracted from the image this run built and compared byte-for-byte
+      # with the checkout's copy: the artifact, the image, and the commit
+      # are one thing.
+      - name: artifact (ft + checksums)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/pack/frametop-image'
+        run: |
+          mkdir -p out
+          docker run --rm --entrypoint cat \
+            "${IMAGE}:${{ steps.meta.outputs.version }}" /src/frametop/ft > out/ft
+          cmp out/ft ./ft || { echo "ft in image diverged from the checkout"; exit 1; }
+          chmod +x out/ft
+          docker inspect --format '{{index .RepoDigests 0}}' \
+            "${IMAGE}:${{ steps.meta.outputs.version }}" > out/image-digest.txt
+          ( cd out && sha256sum ft > ft.sha256 )
+          cat out/ft.sha256 out/image-digest.txt
+      # actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/pack/frametop-image'
+        with:
+          name: ft-${{ steps.meta.outputs.version }}
+          path: out/

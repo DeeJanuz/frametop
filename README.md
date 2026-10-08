@@ -213,6 +213,10 @@ A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland com
 | `setup/` | The build container and the Bluetooth fixes. See [setup/README.md](setup/README.md). |
 | `scripts/` | Helpers the installers use. They run commands locally on the Frame, or over SSH from a PC. |
 
+## Packaging
+
+Frametop can also run from a prebuilt OCI image instead of building on the device: GitHub Actions builds an image in which the toolchain, the native binaries, and the locked Python environment (via [uv](https://docs.astral.sh/uv/)) are frozen, pushes it to GHCR, and the `ft` wrapper at the repo root is the single interface to it — build, run programs, update, and shell in. Everything the container integration needs (mounts, names, the image reference) lives in that one script, so the systemd units become one-liners. The rationale — why an image, why not Flatpak or uv alone, what it solves — is in [pack/design.md](pack/design.md), and [pack/README.md](pack/README.md) documents the image itself.
+
 ## Developing from a PC
 
 The scripts also work from a Linux or WSL PC over SSH, which is easier for editing code. On the Frame they use the local checkout; on a PC they sync the repo to `~/dev/frametop` on the Frame and run there.
