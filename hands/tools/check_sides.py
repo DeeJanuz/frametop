@@ -14,9 +14,9 @@ line: {"pair", "verdict": "named"|"swapped"|"unknown", "named", "swapped", "matc
 ft-hands decides the side cameras' naming by itself (HANDS_SWAP_SIDES=auto, track/sides.h);
 this is the independent check, from the scene rather than hands.
 
-ft-camd tells the two side cameras' buffers apart by the order XRService allocated them,
-and after some XRService restarts that order puts each camera's images under the other's
-name. The tracker then sees every hand in one camera only, at the wrong depth. This
+Before 2026-10-05 the side cameras' images often carried each other's names (hands/README.md,
+"Which camera is which"); recordings from then may still. The tracker then sees every hand in
+one camera only, at the wrong depth. This
 matches features between the two images and measures how close each pair's rays pass
 with the factory calibration, once as named and once swapped: true matches meet in
 front of both cameras only under the right naming.
@@ -34,7 +34,7 @@ from tools.show_set import index, read_set  # noqa: E402
 from tools import calib  # noqa: E402
 
 
-PIPES = {'msm_vfe3_video0': 'slam_left', 'msm_vfe4_video0': 'slam_right',    # with the colour module
+PIPES = {'msm_vfe3_video0': 'slam_right', 'msm_vfe4_video0': 'slam_left',    # with the colour module
          'msm_vfe2_video0': 'upper_left', 'msm_vfe2_video1': 'upper_right'}
 
 

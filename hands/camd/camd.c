@@ -264,11 +264,11 @@ static void setup_camera(cam_t *c, xr_camera_t *cam, int pidfd)
     xr_slugify(cam->sensor, sensor, sizeof(sensor));
     snprintf(c->slug, sizeof(c->slug), "%.20s_video%d", sensor, cam->node);
 
-    bool own = false;
+    bool own = false, exact = false;
 
     for (int g = 0; g < xr.ngroups; g++)
         if (xr.groups[g].cam == cam && group_fits(&xr.groups[g], cam, c->need))
-            own = true;
+            own = true, exact = exact || xr.groups[g].exact;
 
     char model[16];
     model_of(cam->sensor, model, sizeof(model));
@@ -318,7 +318,8 @@ static void setup_camera(cam_t *c, xr_camera_t *cam, int pidfd)
     }
 
     printf("  %-24s %-12s %ux%u pitch %u, %d candidate buffers%s\n", c->slug, cam->path,
-           c->lay.width, c->lay.height, c->lay.pitch, c->nslots, own ? "" : " (shared run)");
+           c->lay.width, c->lay.height, c->lay.pitch, c->nslots,
+           !own ? " (shared run)" : exact ? ", bound by VIDIOC_QUERYBUF" : ", bound by open order");
 }
 
 /* ------------------------------------------------------ index -> buffer */

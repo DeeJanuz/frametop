@@ -3,7 +3,7 @@
 ft-hands see them all?
 
 The Frame has four mono IR tracking cameras: the side pair slam_left and slam_right
-(/dev/video9 and /dev/video13) and the upper pair (/dev/video6 and /dev/video7). With the
+(/dev/video13 and /dev/video9) and the upper pair (/dev/video6 and /dev/video7). With the
 Arcturus colour module attached, SteamVR's XRService loads an FPGA image ("VCINT") onto the
 module whenever it opens the cameras (at start and after every wake). When that load fails
 (seen 2026-10-02 17:02, after a sleep), XRService runs only the two side cameras, the IR
@@ -40,7 +40,7 @@ import time
 
 LOG_DIR = os.path.expanduser("~/.local/share/Steam/logs")
 LOG_LINK = os.path.join(LOG_DIR, "xrservice.txt")
-SIDE_NODES = (9, 13)     # slam_left, slam_right (TrackingCameraInit index 0 and 1)
+SIDE_NODES = (9, 13)     # the side pair: slam_right on video9, slam_left on video13 (see camera_map)
 UPPER_NODES = (6, 7)     # the upper pair (index 2 and 3)
 TRACKING = 4
 
@@ -55,15 +55,20 @@ USER_TEXT = ("The headset's upper cameras and IR light are off. SteamVR couldn't
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STAMP = re.compile(r"^\w{3} \w{3} \d{2} \d{4} (\d{2}:\d{2}:\d{2})\.\d+ (\w+): ?(.*)$")
 # Lines worth reading; anything else is skipped before the regexes (the log grows by MBs a day).
-KEYS = ("FPGA", "VCINT", "Created", "TrackingCameraInit", "Closing tracking camera", "Streaming",
+KEYS = ("FPGA", "VCINT", "Created", "TrackingCameraInit", "Found camera", "Closing tracking camera", "Streaming",
         "systemd suspend", "systemd resume", "XRService logging to", "Exiting XRService", "ISP ")
-# XRService's numbering of its tracking cameras (the TrackingCameraInit index): ft-hands names
-# them this way too (track/main.cpp, cameras_from_xrservice_log).
+# The tracking cameras' names. XRService says which sensor subdev each name is ("Found camera
+# 'slam_left': ... v4l_subdev=/dev/v4l-subdev30", once per instance) and which subdev and video
+# device each TrackingCameraInit index opened. The index is only the order it opens them in: on
+# every start logged since 2026-10-04, index 0 was slam_right. A log without the "Found camera"
+# lines falls back to this order. ft-hands names them the same way (track/main.cpp,
+# cameras_from_xrservice_log).
 NAMES = ("slam_left", "slam_right", "upper_left", "upper_right")
+RE_FOUND = re.compile(r"Found camera '(\w+)': interface=\S+ v4l_subdev=(\S+)")
 RE_PASSTHRU = re.compile(r"Passthrough connected but FPGA is (\S+) - loading VCINT")
 RE_INTERLEAVE = re.compile(r"Upper cameras FPGA interleaving support: (\d)")
 RE_TASKS = re.compile(r"Created (\d+) tasks \((\d+) tracking, (\d+) passthrough\)")
-RE_INIT = re.compile(r"TrackingCameraInit: index: (\d+)\. video device: /dev/video(\d+)")
+RE_INIT = re.compile(r"TrackingCameraInit: index: (\d+)\. video device: /dev/video(\d+)(?:\. v4l subdevice: (\S+))?")
 RE_STREAM = re.compile(r"Streaming resumed \(FPGA: (\S+), VC interleaving: (\w+)\)")
 RE_STATE = re.compile(r"FPGA state check: (\S+)")
 # Without the colour module XRService runs the side cameras through the ISP, as NV12 on other
@@ -85,13 +90,15 @@ class LogState:
         self.closed_at = ""
         self.episode = None
         self.nodes = {}           # TrackingCameraInit index -> /dev/videoN, from the whole log
+        self.subdevs = {}         # TrackingCameraInit index -> its sensor subdev, from the whole log
+        self.found = {}           # sensor subdev -> camera name ("Found camera" lines)
         self.failures = []        # [(time, line)]: every VCINT failure in this log
         self.lines = 0
 
     def _new_episode(self, t):
         self.closed = False
         self.episode = {"start": t, "fpga_before": "", "vcint": "", "interleave": None, "tasks": None,
-                        "inits": {}, "stream": "", "isp": None, "failure": "", "evidence": []}
+                        "inits": {}, "init_subdevs": {}, "stream": "", "isp": None, "failure": "", "evidence": []}
         if self.closed_at:
             self.episode["evidence"].append(self.closed_at)
 
@@ -164,12 +171,18 @@ class LogState:
             ep["tasks"] = tuple(int(v) for v in m.groups())
             ep["evidence"].append(short)
             return
+        m = RE_FOUND.search(text)
+        if m:
+            self.found[m.group(2)] = m.group(1)
+            return
         m = RE_INIT.search(text)
         if m:
             ep = self._ep(t)
             idx, node = int(m.group(1)), int(m.group(2))
             ep["inits"][idx] = node
             self.nodes[idx] = node
+            if m.group(3):
+                ep["init_subdevs"][idx] = self.subdevs[idx] = m.group(3)
             ep["evidence"].append(short)
             return
         m = RE_STREAM.search(text)
@@ -198,9 +211,18 @@ class LogState:
 
     def camera_map(self):
         """{calibration name: /dev/videoN's N} from the latest camera start's TrackingCameraInit
-        lines (the whole log's when that start has none yet)."""
-        inits = (self.episode or {}).get("inits") or self.nodes
-        return {NAMES[i]: node for i, node in sorted(inits.items()) if 0 <= i < len(NAMES)}
+        lines (the whole log's when that start has none yet): each one's subdev named by the
+        "Found camera" lines, else by the index (see NAMES)."""
+        ep = self.episode or {}
+        inits, subdevs = (ep.get("inits"), ep.get("init_subdevs")) if ep.get("inits") else (self.nodes, self.subdevs)
+        out = {}
+        for i, node in sorted(inits.items()):
+            name = self.found.get(subdevs.get(i))
+            if name not in NAMES:
+                name = NAMES[i] if 0 <= i < len(NAMES) else None
+            if name:
+                out[name] = node
+        return out
 
     def tracking_nodes(self):
         got = tuple(self.nodes[i] for i in range(TRACKING) if i in self.nodes)

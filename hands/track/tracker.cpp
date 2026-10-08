@@ -223,8 +223,16 @@ bool Tracker::hand_3d(Hand &hand, std::vector<View *> views, int64_t t_ns) {
         if (residual > 0.03 || size_misfit({views.begin(), views.end()}, pts) < 0) {
             View *best = *std::max_element(views.begin(), views.end(),
                                            [](View *a, View *b) { return a->lm.presence < b->lm.presence; });
-            for (View *v : views)
-                if (v != best) v->hand = -1;
+            // a view that disagrees but sits where this hand already is in its camera is this hand
+            // misread: drop it (-2), and the hand-over gives a fresh crop next frame
+            for (View *v : views) {
+                if (v == best) continue;
+                v->hand = -1;
+                if (!misread_guard_ || !hand.has_pts) continue;
+                double z;
+                const V2 at = v->cam->project(hand.pts[9], &z);
+                if (z > 0 && norm(at - palm_centre(v->lm)) < 0.5 * hand_size(v->lm)) v->hand = -2;
+            }
             ++stats.splits;
             return hand_3d(hand, {best}, t_ns);
         }
@@ -416,7 +424,14 @@ std::vector<const Hand *> Tracker::step(const std::map<std::string, Image> &imag
     if (int(chosen.size()) > hand_budget_) chosen.resize(hand_budget_);
     run_landmarks(images, chosen);
     std::vector<View *> kept;
-    for (View *v : chosen)
+    for (View *v : chosen) {
+        if (misread_guard_ && v->has_lm) {   // see set_misread_guard
+            const auto h = hands_.find(v->hand);
+            if (h != hands_.end() && h->second.frames >= 5 && std::fabs(v->lm.right - h->second.right_score) > 0.7) {
+                ++stats.lost;
+                continue;
+            }
+        }
         if (v->lm.presence >= (v->frames > 0 ? keep_presence_ : min_presence_)) {
             v->roi = v->lm.next_roi();
             ++v->frames;
@@ -424,6 +439,7 @@ std::vector<const Hand *> Tracker::step(const std::map<std::string, Image> &imag
         } else {
             ++(v->frames > 0 ? stats.lost : stats.handoff_miss);
         }
+    }
     // the same hand twice in one camera: keep the more confident
     std::sort(kept.begin(), kept.end(), [](View *a, View *b) { return a->lm.presence > b->lm.presence; });
     std::vector<View> next;
@@ -537,7 +553,11 @@ std::vector<const Hand *> Tracker::step(const std::map<std::string, Image> &imag
             ++it;
         }
     }
-    // views split off by a failed triangulation start over as new hands next frame
+    // views split off by a failed triangulation start over as new hands next frame, unless they
+    // were this hand misread (-2, the misread guard: dropped)
+    const size_t before = views_.size();
+    views_.erase(std::remove_if(views_.begin(), views_.end(), [](const View &v) { return v.hand == -2; }), views_.end());
+    stats.lost += int(before - views_.size());
     for (View &v : views_)
         if (v.hand <= 0) {
             v.hand = next_id_++;

@@ -1,8 +1,9 @@
 """Which side camera is which, in recordings: the rules every reader shares.
 
-ft-camd tells slam_left's buffers from slam_right's by the order XRService allocated them, and
-some XRService starts reverse it: then each side camera's images carry the other's name. A
-tracking ft-hands tells from the hands (hands/track/sides.h, HANDS_SWAP_SIDES=auto) and publishes
+Before 2026-10-05, ft-hands named the side cameras by XRService's start-up order and ft-camd bound
+their buffers by XRService's descriptor order, so on most starts each side camera's images carried
+the other's name (hands/README.md, "Which camera is which"). Both are exact now, and a
+tracking ft-hands still tells from the hands (hands/track/sides.h, HANDS_SWAP_SIDES=auto) and publishes
 what it found in /run/user/UID/frametop-hands/sides.json (read_live). Two things are recorded:
 
   swapped         whether ft-camd's naming was backwards during the recording (the truth);

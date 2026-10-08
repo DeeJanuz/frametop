@@ -148,6 +148,24 @@ class SyntheticLogs(unittest.TestCase):
         st = state(START + GOOD_OPEN)
         self.assertEqual(st.camera_map(), {"slam_left": 9, "slam_right": 13, "upper_left": 6, "upper_right": 7})
 
+    def test_camera_map_by_found_camera(self):
+        """XRService's own naming (2026-10-05's log): index 0 is slam_right, by its subdev."""
+        found = [L("10:00:00", "DeckardCaptureSource: Found camera '%s': interface=msm_csiphy%d v4l_subdev=/dev/v4l-subdev%d "
+                   "driver=/sys/bus/i2c/drivers/%s" % f) for f in (
+            ("slam_left", 0, 30, "og01a1b/4-0060"), ("slam_right", 1, 31, "og01a1b/4-0036"),
+            ("upper_left", 0, 32, "og0ve10/5-0060"), ("upper_right", 1, 33, "og0ve10/5-003e"))]
+        inits = [L("10:00:03", "TrackingCameraInit: index: %d. video device: /dev/video%d. v4l subdevice: /dev/v4l-subdev%d"
+                   % f) for f in ((0, 9, 31), (1, 13, 30), (2, 6, 32), (3, 7, 33))]
+        st = state(START + found + GOOD_OPEN[:-4] + inits)
+        self.assertEqual(st.camera_map(), {"slam_right": 9, "slam_left": 13, "upper_left": 6, "upper_right": 7})
+        # without the colour module the sides are on video0 and video3, named the same way
+        unplug = [L("10:30:00", "TrackingCameraInit: index: %d. video device: /dev/video%d. v4l subdevice: /dev/v4l-subdev%d"
+                    % f) for f in ((0, 0, 31), (1, 3, 30))]
+        st = state(START + found + GOOD_OPEN[:-4] + inits + CLOSE + unplug)
+        self.assertEqual(st.camera_map(), {"slam_right": 0, "slam_left": 3})
+        # a new instance forgets the old one's names: back to the index order
+        self.assertEqual(state(START + found + START + GOOD_OPEN).camera_map()["slam_left"], 9)
+
     def test_module_unplugged(self):
         st = state(START + GOOD_OPEN + UNPLUG)
         self.assertEqual(st.verdict()[0], "ok")

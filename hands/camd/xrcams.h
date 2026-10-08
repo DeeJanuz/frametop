@@ -32,6 +32,8 @@ typedef struct {
     uint32_t    pixfmt;
     char        sensor[XR_SENSOR_LEN];  /* media entity name of the sensor   */
     const char *role;
+    int         nqbuf;                  /* V4L2 indices VIDIOC_QUERYBUF named */
+    int         qbuf_xfd[XR_MAX_RUNBUFS]; /* index -> its plane 0 fd in XRService */
 } xr_camera_t;
 
 typedef struct {
@@ -48,6 +50,7 @@ typedef struct {
     xr_bufref_t  buf[XR_MAX_RUNBUFS];
     char         sensor[XR_SENSOR_LEN]; /* from the preceding sensor subdev  */
     xr_camera_t *cam;
+    bool         exact;                 /* cam is from VIDIOC_QUERYBUF, not the order */
 } xr_group_t;
 
 typedef struct {
