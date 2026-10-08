@@ -36,7 +36,22 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
                                                       visibility mode (ft-layout hide N)
                 "pos": [x, y, z], "face": [yaw, pitch], "roll": 0,   custom layout
                 "rotation": "normal" | "left" | "right"}, ...],      gamescope only
-   "panel_size": [w, h]}              gamescope: last measured panel size
+   "panel_size": [w, h],              gamescope: last measured panel size
+   "hosts": [{"name": "desk-pc", "address": "192.168.1.20", ft-screens: other machines' displays
+              "direct": ["10.35.78.20"],          its Steam Link dongle on the Frame's hotspot
+              "route": "auto",                    auto (the dongle when it answers) | network |
+                                                          dongle (only; ft-stream reads both)
+              "displays": [{"id": "desk-pc-oled",         (docs/remote-displays.md), each a panel
+                            "client": "frametop-1",       streamed by ft-stream: its paired client,
+                            "app": "display:{GUID}",      what it streams (display:DEVICE, monitor:
+                                                          a Vibepollo Remote Monitor, primary),
+                            "label": "OLED", "size": [5120, 1440], "fps": 60, "bitrate": 50000,
+                            "metres": 1.8, "curve": 0, "pin": ..., "hidden": true,
+                            "off": true,                  disconnected: no stream, no panel
+                            "pos": ..., "face": ..., "roll": 0}]}]}   as a screen's
+Remote displays are screens 101 and up, in the order they're listed. Without a place of their
+own they go in a row above the screens. A profile keeps their places and hidden state by id
+(profiles[NAME]["remote"]).
 Custom positions: x right, y up, -z forward from the head, in metres; face = the
 direction you look to see the screen's front straight on, in degrees, relative to your
 heading; roll = the panel turned about its front, counterclockwise as you see it.
@@ -70,6 +85,17 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout hidden                   the screens hidden on their own
   ft-layout pin all|N left|right|head  pin screens to a wrist or your head as they are;
                                      unpin all|N
+  ft-layout remote list              the remote displays, their numbers and their streams' state
+  ft-layout remote monitors ADDRESS  the host's displays (Vibepollo's /api/display-devices, JSON)
+  ft-layout remote add HOST ADDRESS APP [--size WxH] [--fps F] [--bitrate KBPS] [--label TEXT]
+                                     a display of a host (pairs its client with the host's token
+                                     first) -> its id
+  ft-layout remote set ID size=WxH|fps=F|bitrate=KBPS|label=TEXT|app=APP|metres=M ...
+  ft-layout remote host NAME route=auto|network|dongle direct=ADDRESS[,ADDRESS]|none
+                                     how a host's streams reach it; its running streams start over
+  ft-layout remote connect ID...     start their streams again (and keep them on)
+  ft-layout remote disconnect ID...  stop their streams and panels until connected again
+  ft-layout remote remove ID         stops it and unpairs its client (the host stays)
 """
 import fcntl
 import json
@@ -100,7 +126,11 @@ VISIBILITY = {"mode": "always", "wrist_angle": 60, "gesture_hand": "left", "gest
 SPATIAL = ("pos", "face", "roll", "metres", "curve", "pin")  # what a named layout keeps of a screen
 DEFAULTS = {"auto": True, "mode": "preset",
             "preset": {"kind": "arc", "rows": 1, "distance": 2.0, "gap": 0.05, "height": 0.0},
-            "screens": [], "panel_size": list(DEFAULT_PANEL)}
+            "screens": [], "panel_size": list(DEFAULT_PANEL), "hosts": []}
+REMOTE_FIRST = 101  # ft-screens' remote screens (screens/remote.h)
+REMOTE_MAX = 16
+REMOTE_PIXELS_PER_METRE = 2400  # a new remote display's width in VR (5120 px: 2.1 m), at least 1 m
+STREAM = os.path.join(REPO, "stream", "build", "ft-stream")
 
 
 def log(*args):
@@ -432,9 +462,20 @@ def set_hidden(which, hidden):
     desktop runs."""
     layout = load_layout()
     n = screen_count(layout)
-    picked = range(n) if which == "all" else [int(which) - 1] if which.isdigit() else []
-    if not picked or not all(0 <= i < n for i in picked):
-        raise RuntimeError(f"no screen {which} (1 to {n})")
+    remotes = {num: d for num, _, d in remote_displays(layout)}
+    if which == "all":
+        picked, picked_remote = range(n), list(remotes)
+    elif which.isdigit() and int(which) in remotes:
+        picked, picked_remote = [], [int(which)]
+    else:
+        picked, picked_remote = ([int(which) - 1] if which.isdigit() else []), []
+    if not (picked or picked_remote) or not all(0 <= i < n for i in picked):
+        raise RuntimeError(f"no screen {which} (1 to {n}, or a remote display's number)")
+    for num in picked_remote:
+        if hidden:
+            remotes[num]["hidden"] = True
+        else:
+            remotes[num].pop("hidden", None)
     screens = layout.setdefault("screens", [])
     while len(screens) < n:
         screens.append({})
@@ -446,8 +487,8 @@ def set_hidden(which, hidden):
     save_layout(layout)
     try:
         sock = screens_socket()
-        for i in picked:
-            sock.ask(f"{'conceal' if hidden else 'reveal'} {i + 1}")
+        for num in [i + 1 for i in picked] + picked_remote:
+            sock.ask(f"{'conceal' if hidden else 'reveal'} {num}")
     except RuntimeError as e:
         log(f"saved; not applied now: {e}")
 
@@ -482,6 +523,8 @@ def apply_screens(wait=0):
             if time.time() >= deadline:
                 raise
         time.sleep(1)
+    start_remotes(sock, layout)
+    save_layout(layout)  # screen numbers given to new remote displays
     f = sock.ask("head").split()
     eye, heading = tuple(map(float, f[1:4])), float(f[4])
     send_visibility(sock, layout)
@@ -501,6 +544,7 @@ def apply_screens(wait=0):
             except RuntimeError as e:
                 log(f"screen {i + 1}: {e}")  # that controller isn't on
     send_hidden(sock, layout)
+    place_remotes(sock, layout, count, eye, heading)
     try:
         sock.ask("vrkeyboard close")  # the keyboard, if open, goes too: a reset starts over
     except RuntimeError:
@@ -527,6 +571,7 @@ def capture_screens():
         screens.append(entry)
     layout["screens"] = screens + layout.get("screens", [])[len(screens):]
     layout["mode"] = "custom"
+    capture_remotes(sock, layout, eye, heading)
     save_layout(layout)
     return screens
 
@@ -645,6 +690,384 @@ def capture_gamescope():
     return screens
 
 
+
+# ---------------------------------------------------------------- remote displays (docs/remote-displays.md)
+
+def remote_displays(layout):
+    """[(number, host, display)]: each display's screen number (its "screen", kept so it
+    doesn't move when another is removed; or the first free one)."""
+    entries = [(h, d) for h in layout.get("hosts", []) for d in h.get("displays", [])]
+    used, out = set(), []
+    for h, d in entries:
+        n = d.get("screen")
+        if isinstance(n, int) and REMOTE_FIRST <= n < REMOTE_FIRST + REMOTE_MAX and n not in used:
+            used.add(n)
+            d["_kept"] = True
+    for h, d in entries:
+        if not d.pop("_kept", False):
+            free = [k for k in range(REMOTE_FIRST, REMOTE_FIRST + REMOTE_MAX) if k not in used]
+            if not free:
+                continue
+            d["screen"] = free[0]
+            used.add(free[0])
+        out.append((d["screen"], h, d))
+    return out
+
+
+def find_display(layout, display_id):
+    for n, host, d in remote_displays(layout):
+        if d.get("id") == display_id:
+            return n, host, d
+    raise RuntimeError(f"no remote display {display_id!r}")
+
+
+def remote_size(d):
+    """A remote display's size in VR (width, height) in metres."""
+    w, h = d.get("size", [2560, 1440])
+    m = float(d.get("metres", max(1.0, w / REMOTE_PIXELS_PER_METRE)))
+    return m, m * h / w
+
+
+def plan_remotes(layout, count, displays):
+    """The remote displays' poses in the head frame (as plan()): their own place, or else a
+    row above the screens, hinged like the arc preset."""
+    out = [None] * len(displays)
+    for k, (_, _, d) in enumerate(displays):
+        if "pos" in d:
+            out[k] = {"pos": tuple(d["pos"]), "face": tuple(d.get("face", yaw_pitch(d["pos"]))),
+                      "roll": float(d.get("roll", 0))}
+    free = [k for k in range(len(displays)) if out[k] is None and not displays[k][2].get("off")]
+    if not free:
+        return out
+    p = layout["preset"]
+    dist = max(0.3, float(p.get("distance", 2.0)))
+    gap = max(0.0, float(p.get("gap", 0.05)))
+    span = lambda m, at: 2 * math.degrees(math.atan(m / 2 / at))
+    top = 0.0
+    for i, t in enumerate(plan(layout, count)):
+        x, y, z = t["pos"]
+        at = max(0.3, math.sqrt(x * x + y * y + z * z))
+        top = max(top, math.degrees(math.atan2(y, math.hypot(x, z))) + span(screen_size(layout, i)[1], at) / 2)
+    sizes = [remote_size(displays[k][2]) for k in free]
+    pitch = top + span(gap, dist) + max(span(h, dist) for _, h in sizes) / 2
+    cp, sp = math.cos(math.radians(pitch)), math.sin(math.radians(pitch))
+    for k, (x, z, yaw) in zip(free, _chain([w for w, _ in sizes], dist, gap)):
+        out[k] = {"pos": (x * cp, math.hypot(x, z) * sp, z * cp), "face": (yaw, pitch), "roll": 0.0}
+    return out
+
+
+def remotes_running(sock):
+    """ft-screens' remote screens, {number: state}; None from an ft-screens without them."""
+    try:
+        fields = sock.ask("remotes").split()[2:]
+    except RuntimeError:
+        return None
+    return {int(e.split(":")[0]): e.split(":")[2] for e in fields}
+
+
+def start_remote(sock, n, host, d):
+    """Its stream (ft-screens starts it over only if the settings changed). ft-screens'
+    reply: "ok restored" when its panel is back where it was before a disconnect."""
+    w, h = d.get("size", [2560, 1440])
+    label = f"{host.get('name') or host['address']}: {d.get('label') or d['id']}"
+    return sock.ask(f"remote {n} start {d['client']} {host['address']} {d['app']} {int(w)}x{int(h)} "
+                    f"{int(d.get('fps', 60))} {int(d.get('bitrate', 0))} {remote_size(d)[0]:.3f} {label}")
+
+
+def place_remote(sock, n, d, t, eye, heading):
+    center = tuple(e + v for e, v in zip(eye, turn_yaw(t["pos"], heading)))
+    sock.ask(f"width {n} {remote_size(d)[0]:.4f}")
+    sock.ask(f"curve {n} {float(d.get('curve', 0)):.3f}")
+    sock.ask("place %d %.4f %.4f %.4f %.3f %.3f %.3f" % (n, *center, t["face"][0] + heading, t["face"][1], t["roll"]))
+    pin = d.get("pin")
+    if pin and len(pin.get("rel", [])) == 12:
+        try:
+            sock.ask(f"pin {n} {pin['hand']} " + " ".join(f"{v:.5f}" for v in pin["rel"]))
+        except RuntimeError as e:
+            log(f"remote display {d['id']}: {e}")  # that controller isn't on
+    sock.ask(f"{'conceal' if d.get('hidden') else 'reveal'} {n}")
+
+
+def start_remotes(sock, layout, only=None):
+    """Start the remote displays' streams (or just the ids in `only`; ft-screens leaves one
+    running with the same settings alone), and stop the streams of ones no longer listed or
+    disconnected ("off"). They start without a head pose too: placing them waits for one
+    (place_remotes)."""
+    displays = remote_displays(layout)
+    running = remotes_running(sock)
+    if running is None:
+        if displays:
+            log("remote displays: this ft-screens can't show them (build it again)")
+        return False
+    if only is None:
+        for n in set(running) - {n for n, _, d in displays if not d.get("off")}:
+            sock.ask(f"remote {n} stop")
+    for n, host, d in displays:
+        if d.get("off"):
+            continue
+        if only is None or d.get("id") in only:
+            try:
+                start_remote(sock, n, host, d)
+            except RuntimeError as e:
+                log(f"remote display {d.get('id')}: {e}")
+    return True
+
+
+def place_remotes(sock, layout, count, eye, heading, only=None):
+    displays = remote_displays(layout)
+    for (n, host, d), t in zip(displays, plan_remotes(layout, count, displays)):
+        if d.get("off"):
+            continue  # disconnected: no panel
+        if only is None or d.get("id") in only:
+            try:
+                place_remote(sock, n, d, t, eye, heading)
+            except RuntimeError as e:
+                log(f"remote display {d.get('id')}: {e}")
+    on = [d for _, _, d in displays if not d.get("off") and (only is None or d.get("id") in only)]
+    if on:
+        log(f"arranged {len(on)} remote display(s)")
+
+
+def capture_remotes(sock, layout, eye, heading):
+    """Where the remote displays are now (each one running) into their entries."""
+    for n, _, d in remote_displays(layout):
+        try:
+            g = parse_get(sock.ask(f"get {n}"))
+        except RuntimeError:
+            continue  # not running
+        d.update(relative_pose(g["center"], g["x"], g["z"], eye, heading))
+        d["metres"] = round(g["metres"], 4)
+        d["curve"] = round(g["curve"], 3)
+        d.pop("pin", None)
+        if "rel" in g:
+            d["pin"] = {"hand": g["hand"], "rel": g["rel"]}
+
+
+def in_container():
+    return os.path.exists("/run/.containerenv")
+
+
+def run_stream(*args, timeout=60):
+    """ft-stream (it runs in the dev container, as ft-screens does)."""
+    cmd = [STREAM, *args]
+    if not in_container():
+        cmd = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--", *cmd]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout, r.stderr
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "display"
+
+
+def remote_anchor(sock, layout):
+    """(eye, heading) to place remote displays from: the head, or with no head pose (the
+    headset off), where the last arrangement was made from, worked out from where screen 1
+    is and where the layout puts it."""
+    try:
+        f = sock.ask("head").split()
+        return tuple(map(float, f[1:4])), float(f[4])
+    except RuntimeError:
+        g = parse_get(sock.ask("get 1"))
+        if g["hand"] != "none":
+            raise RuntimeError("no head pose, and screen 1 is pinned")
+        t = plan(layout, screen_count(layout))[0]
+        heading = yaw_pitch(tuple(-c for c in g["z"]))[0] - t["face"][0]
+        return tuple(c - v for c, v in zip(g["center"], turn_yaw(t["pos"], heading))), heading
+
+
+def start_remotes_now(layout, only):
+    """Start and place remote displays now, if the desktop runs."""
+    try:
+        sock = screens_socket()
+        if not start_remotes(sock, layout, only):
+            return
+        eye, heading = remote_anchor(sock, layout)
+        place_remotes(sock, layout, screen_count(layout), eye, heading, only=only)
+    except RuntimeError as e:
+        log(f"not placed now: {e}")
+
+
+def remote_command(args):
+    """ft-layout remote list|monitors|add|set|connect|disconnect|remove (see the usage)."""
+    what = args[0] if args else ""
+    if what == "list" and len(args) == 1:
+        layout = load_layout()
+        try:
+            running = remotes_running(screens_socket()) or {}
+        except RuntimeError:
+            running = {}
+        for n, host, d in remote_displays(layout):
+            w, h = d.get("size", [2560, 1440])
+            state = "disconnected" if d.get("off") else running.get(n, "off")
+            state += f" route {host.get('route', 'auto')}"
+            print(f"{n} {d['id']} {host.get('name')} {host['address']} {d['app']} {w}x{h}@{d.get('fps', 60)} "
+                  f"{state}{' hidden' if d.get('hidden') else ''}  {d.get('label', '')}")
+        return
+    if what == "host" and len(args) >= 3:
+        layout = load_layout()
+        host = next((h for h in layout.get("hosts", []) if h.get("name") == args[1]), None)
+        if host is None:
+            raise RuntimeError(f"no host called {args[1]!r}")
+        for kv in args[2:]:
+            k, _, v = kv.partition("=")
+            if k == "route" and v in ("auto", "network", "dongle"):
+                host["route"] = v
+            elif k == "direct" and (v == "none" or re.fullmatch(r"[A-Za-z0-9.:-]+(,[A-Za-z0-9.:-]+)*", v)):
+                host["direct"] = [] if v == "none" else v.split(",")
+            else:
+                raise RuntimeError(f"remote host: {kv!r}? (route=auto|network|dongle direct=ADDRESS[,ADDRESS]|none)")
+        save_layout(layout)
+        # Its streams start over the new way, their panels where they are (ft-screens keeps
+        # their places across a stop in the same run).
+        try:
+            sock = screens_socket()
+            running = remotes_running(sock) or {}
+            for n, h, d in remote_displays(layout):
+                if h is host and n in running and not d.get("off"):
+                    sock.ask(f"remote {n} stop")
+                    start_remote(sock, n, h, d)
+                    log(f"{d['id']}: starting over")
+        except RuntimeError as e:
+            log(f"saved; not applied now: {e}")
+        return
+    if what in ("connect", "disconnect") and len(args) >= 2:
+        layout = load_layout()
+        found = [find_display(layout, i) for i in args[1:]]
+        for _, _, d in found:
+            if what == "connect":
+                d.pop("off", None)
+            else:
+                d["off"] = True
+        save_layout(layout)
+        if what == "connect":
+            # Back where it was if ft-screens still knows (this run); else placed like the
+            # others, from where you look now.
+            try:
+                sock = screens_socket()
+                unplaced = {d["id"] for n, host, d in found if start_remote(sock, n, host, d) != "ok restored"}
+            except RuntimeError as e:
+                log(f"saved; not started now: {e}")
+                return
+            for _, _, d in found:
+                log(f"connected {d['id']}" + ("" if d["id"] in unplaced else " (where it was)"))
+            if unplaced:
+                try:
+                    eye, heading = remote_anchor(sock, layout)
+                    place_remotes(sock, layout, screen_count(layout), eye, heading, only=unplaced)
+                except RuntimeError as e:
+                    log(f"not placed now: {e}")
+            return
+        try:
+            sock = screens_socket()
+            for n, _, d in found:
+                sock.ask(f"remote {n} stop")
+                log(f"disconnected {d['id']}")
+        except RuntimeError as e:
+            log(f"saved; not stopped now: {e}")
+        return
+    if what == "monitors" and len(args) == 2:
+        code, out, err = run_stream("monitors", args[1])
+        if code:
+            raise RuntimeError(err.strip() or out.strip() or "ft-stream monitors failed")
+        print(out.strip())
+        return
+    if what == "add" and len(args) >= 4:
+        host_name, address, app = args[1], args[2], args[3]
+        opts = dict(zip(args[4::2], args[5::2]))
+        unknown = set(opts) - {"--size", "--fps", "--bitrate", "--label", "--client"}
+        if unknown or len(args[4:]) % 2:
+            raise RuntimeError("remote add: options are --size WxH --fps F --bitrate KBPS --label TEXT --client NAME")
+        if not re.fullmatch(r"[A-Za-z0-9.:-]+", address) or not re.fullmatch(r"[A-Za-z0-9{}._:-]+", app):
+            raise RuntimeError("remote add: the address or app has other characters")
+        layout = load_layout()
+        displays = remote_displays(layout)
+        if len(displays) >= REMOTE_MAX:
+            raise RuntimeError(f"at most {REMOTE_MAX} remote displays")
+        label = opts.get("--label") or ("Virtual" if app == "monitor" else app.split(":", 1)[-1])
+        ids = {d["id"] for _, _, d in displays}
+        display_id = base = slug(f"{host_name}-{label}")
+        for k in range(2, 100):
+            if display_id not in ids:
+                break
+            display_id = f"{base}-{k}"
+        client = opts.get("--client") or f"frametop-{display_id}"
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", client):
+            raise RuntimeError("remote add: the client name has other characters")
+        size = [2560, 1440]
+        if "--size" in opts:
+            size = [int(v) for v in opts["--size"].lower().split("x")]
+        elif app.startswith("display:"):  # the monitor's own resolution
+            code, out, _ = run_stream("monitors", address)
+            try:
+                for m in (json.loads(out[out.index("["):]) if code == 0 else []):
+                    if m.get("device_id") == app[8:]:
+                        res = m["info"]["resolution"]
+                        size = [int(res["width"]), int(res["height"])]
+            except (ValueError, KeyError, TypeError):
+                pass
+        code, out, err = run_stream("pair", address, "--id", client, timeout=30)
+        if code:
+            raise RuntimeError(f"pairing {client} with {address} failed: {(err or out).strip()}")
+        log(out.strip().splitlines()[-1] if out.strip() else f"paired {client}")
+        host = next((h for h in layout.setdefault("hosts", []) if h.get("name") == host_name), None)
+        if host is None:
+            host = {"name": host_name, "address": address, "displays": []}
+            layout["hosts"].append(host)
+        host["address"] = address
+        host["displays"].append({"id": display_id, "client": client, "app": app, "label": label, "size": size,
+                                 "fps": int(opts.get("--fps", 60)), "bitrate": int(opts.get("--bitrate", 0)),
+                                 "metres": round(max(1.0, size[0] / REMOTE_PIXELS_PER_METRE), 3)})
+        remote_displays(layout)  # gives it a screen number
+        save_layout(layout)
+        print(display_id)
+        start_remotes_now(layout, {display_id})
+        return
+    if what == "set" and len(args) >= 3:
+        layout = load_layout()
+        n, host, d = find_display(layout, args[1])
+        for kv in args[2:]:
+            k, _, v = kv.partition("=")
+            if k == "size" and re.fullmatch(r"\d+x\d+", v.lower()):
+                d["size"] = [int(x) for x in v.lower().split("x")]
+            elif k in ("fps", "bitrate") and v.isdigit():
+                d[k] = int(v)
+            elif k == "label" and v:
+                d["label"] = v
+            elif k == "metres" and re.fullmatch(r"\d+(\.\d+)?", v) and 0.15 <= float(v) <= 12:
+                d["metres"] = float(v)
+            elif k == "app" and re.fullmatch(r"[A-Za-z0-9{}._:-]+", v):
+                d["app"] = v
+            else:
+                raise RuntimeError(f"remote set: {kv!r}? (size=WxH fps=F bitrate=KBPS label=TEXT app=APP metres=M)")
+        save_layout(layout)
+        if d.get("off"):
+            return  # disconnected: the new settings are for its next connection
+        try:
+            start_remote(screens_socket(), n, host, d)  # starts over with the new settings
+        except RuntimeError as e:
+            log(f"saved; not applied now: {e}")
+        return
+    if what == "remove" and len(args) == 2:
+        layout = load_layout()
+        n, host, d = find_display(layout, args[1])
+        try:
+            screens_socket().ask(f"remote {n} stop")
+            time.sleep(2)  # its stream releases a Remote Monitor on the way out
+        except RuntimeError:
+            pass
+        host["displays"].remove(d)  # the host stays (Remote Displays removes hosts)
+        for profile in layout.get("profiles", {}).values():
+            profile.get("remote", {}).pop(d["id"], None)
+        save_layout(layout)
+        code, out, err = run_stream("unpair", host["address"], "--id", d["client"], timeout=30)
+        said = (out or err).strip().splitlines()
+        log(f"removed {d['id']}; {said[-1] if said else f'unpair exited {code}'}")
+        return
+    raise RuntimeError("remote list | monitors ADDRESS | add HOST ADDRESS APP [options] | set ID KEY=VALUE... | "
+                       "host NAME route=...|direct=... | connect ID... | disconnect ID... | remove ID")
+
+
 def apply(wait=0):
     return apply_screens(wait) if backend() == "screens" else apply_gamescope(wait)
 
@@ -680,6 +1103,12 @@ def save_named(layout, name):
     if not screens:
         raise RuntimeError("nothing to save: no arrangement captured")
     layout.setdefault("layouts", {})[name] = [{k: s[k] for k in SPATIAL if k in s} for s in screens]
+    remote = {d["id"]: {k: d[k] for k in SPATIAL if k in d} for _, _, d in remote_displays(layout) if "pos" in d}
+    profile = layout.setdefault("profiles", {}).setdefault(name, {})
+    if remote:
+        profile["remote"] = remote
+    else:
+        profile.pop("remote", None)
     layout["mode"], layout["active"] = "custom", name
     return name
 
@@ -704,6 +1133,13 @@ def use_named(layout, name):
         elif "pos" not in screens[i]:
             screens[i].update({"pos": list(preset[i]["pos"]), "face": list(preset[i]["face"]),
                                "roll": preset[i]["roll"]})
+    # Remote displays the profile has a place for go there; the others stay where they are.
+    remote = layout.get("profiles", {}).get(name, {}).get("remote", {})
+    for _, _, d in remote_displays(layout):
+        if d.get("id") in remote:
+            for k in SPATIAL:
+                d.pop(k, None)
+            d.update(json.loads(json.dumps({k: v for k, v in remote[d["id"]].items() if k in SPATIAL})))
     layout["mode"], layout["active"] = "custom", name
 
 
@@ -758,6 +1194,8 @@ def capture_profile(layout, name):
     hidden = [i + 1 for i in range(screen_count(layout)) if screen_entry(layout, i).get("hidden")]
     profile = layout.setdefault("profiles", {}).setdefault(name, {})
     profile["hidden"] = hidden
+    for _, _, d in remote_displays(layout):
+        profile.setdefault("remote", {}).setdefault(d["id"], {})["hidden"] = bool(d.get("hidden"))
     reply = ask_float("windows")
     if reply and reply.startswith("ok "):
         profile["windows"] = json.loads(reply[3:])
@@ -780,6 +1218,13 @@ def use_hidden(layout, name):
             screens[i]["hidden"] = True
         else:
             screens[i].pop("hidden", None)
+    remote = profile.get("remote", {})
+    for _, _, d in remote_displays(layout):
+        if "hidden" in remote.get(d.get("id"), {}):
+            if remote[d["id"]]["hidden"]:
+                d["hidden"] = True
+            else:
+                d.pop("hidden", None)
 
 
 def open_apps(name, wait=0):
@@ -1102,6 +1547,8 @@ def main(argv):
                 else:
                     log(f"kwin: {last}")
             open_apps(name, wait=90)  # ft-floatd starts with Plasma
+        elif cmd == "remote":
+            remote_command(argv[2:])
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
             log(screens_socket().ask(" ".join(argv[1:])))
             kwin_follow()  # pinned screens go last
@@ -1124,6 +1571,9 @@ def main(argv):
                                     time.sleep(1)
                                 send_visibility(sock, load_layout())
                                 send_hidden(sock, load_layout())
+                                layout = load_layout()
+                                if start_remotes(sock, layout):  # streams start, arranged or not
+                                    save_layout(layout)
                             except RuntimeError as e:
                                 log(f"visibility: {e}")
                     else:

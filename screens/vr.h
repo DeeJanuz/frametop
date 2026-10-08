@@ -52,6 +52,14 @@ bool ft_vr_vsync(double *since, double *hz);
 // A panel for screen `index`, width in metres, placed in a row in front of the head.
 void ft_vr_screen_create(int index, double metres, int count);
 void ft_vr_screen_destroy(int index);
+// A remote screen's panel (remote.c): another machine's display, streamed by ft-stream. It
+// has a screen's controls and takes the same commands; its frames come through
+// ft_vr_screen_present, and its input arrives as events for its index. *restored: it's back
+// where it was when its stream last stopped in this run (Remote Displays' Disconnect).
+bool ft_vr_remote_create(int index, const char *label, double metres, bool *restored);
+// A second ft-screens next to the running desktop (--beside): nothing goes to ft-floatd or
+// ft-layout.
+void ft_vr_beside(void);
 // A spare output's panel, for floating windows (slot numbers from 1): hidden until
 // ft-floatd floats a window on it and KWin has the output turned on.
 void ft_vr_float_create(int index, int slot);
