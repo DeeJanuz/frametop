@@ -61,8 +61,13 @@ jobs:
             /src/frametop/gaze/tracker/build/venv/bin/python -c "import numpy, cv2"
             python3 -c "import PySide6"'
 
+      # The FrameDrop manifest names the zip's URL in this repo's release (a fork's, in a fork).
       - name: Frametop.zip
-        run: framedrop/build.sh --image "$FT_IMAGE" --version "$VERSION" --commit "$GITHUB_SHA"
+        run: |
+          url=()
+          [ "$GITHUB_REF_TYPE" = tag ] &&
+            url=("https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/Frametop.zip")
+          framedrop/build.sh --image "$FT_IMAGE" --version "$VERSION" --commit "$GITHUB_SHA" "${url[@]}"
 
       - name: keep the zip (manual runs)
         if: github.ref_type != 'tag'

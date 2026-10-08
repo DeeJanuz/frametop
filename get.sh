@@ -38,7 +38,7 @@ piped: curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- [optio
 EOF
 }
 
-SLUG=DeeJanuz/frametop
+SLUG=${FRAMETOP_REPO:-DeeJanuz/frametop}  # FRAMETOP_REPO: another repo's releases, such as a fork's
 
 # release_zip CHANNEL VERSION: the URL of a release's Frametop.zip on GitHub.
 release_zip() {
