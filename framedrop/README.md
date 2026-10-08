@@ -1,8 +1,8 @@
 # Install with FrameDrop (proof of concept)
 
-[FrameDrop](https://framedropvr.com) is a Windows app that sideloads onto a Steam Frame: it copies a build to the headset and adds it to the Steam library. Issue #25 asks for an "Install with FrameDrop" button. Frametop isn't an app FrameDrop can copy over as is: it installs user services, a SteamVR driver, and a container, and two optional parts need sudo. So FrameDrop installs a small installer instead. Playing "Frametop" from the library opens a window that asks what to install, and your password for the parts that need it, then runs the one-line installer (`get.sh --yes`) and shows its progress. A download built with a release list installs that release, built, from its image (`get.sh --release`, see [pack/README.md](../pack/README.md)): nothing compiles on the headset.
+[FrameDrop](https://framedropvr.com) is a Windows app that sideloads onto a Steam Frame: it copies a build to the headset and adds it to the Steam library. Issue #25 asks for an "Install with FrameDrop" button. Frametop isn't an app FrameDrop can copy over as is: it installs user services, a SteamVR driver, and a container, and two optional parts need sudo. So FrameDrop installs a small installer instead. Playing "Frametop" from the library opens a window that asks what to install, and your password for the parts that need it, then installs and shows its progress. A release's Frametop.zip (about 1.1 GB, built by CI on a tag, see [pack/README.md](../pack/README.md), Releases) carries Frametop built, as an image, and installs it with `install-release.sh`: nothing compiles on the headset and nothing else downloads. The same zip works unpacked on the headset. A test zip (a few KB) clones Frametop with `get.sh` instead.
 
-Nothing here is published yet: no release asset, no manifest on Pages, no button.
+Nothing here is published yet: no release, no button.
 
 ## How FrameDrop installs a Linux zip
 
@@ -27,7 +27,7 @@ It uses Valve's SteamOS Devkit path: pair once with the headset's devkit service
 1. In the container, it starts itself again on the host with `flatpak-spawn --host`.
 2. It clears Steam's preload and library paths, and opens `installer/progress.py` (GTK 4 and libadwaita).
 3. The window asks which optional parts to install: our own eye tracker (on by default) and the Bluetooth fixes. Both need sudo, so it asks for your SteamOS password and checks it with `sudo -v`. If your user has no password (SteamOS starts without one), it says how to set one and leaves both out.
-4. It runs the zip's own `get.sh --yes` in a transient user service, `frametop-framedrop-install`, with `--release --manifest frametop-releases.json` when the zip has a release list. The service is used because Steam ends the title's whole process tree when it's quit, and starts it with an OOM score of 900.
+4. It runs the zip's `install-release.sh --yes` (a test zip: `get.sh --yes`) in a transient user service, `frametop-framedrop-install`. The service is used because Steam ends the title's whole process tree when it's quit, and starts it with an OOM score of 900. Opened from a VR desktop (the zip unpacked by hand), it still uses the user's real bus and runtime folder for the service.
 5. It follows the service's log, shows the steps as a progress bar, and reports the result. Closing it leaves the install running. Playing the title again reattaches.
 
 `--yes` keeps the version that's installed, or installs stable, and skips the SteamVR restart. The window says to restart SteamVR.
@@ -40,12 +40,14 @@ FrameDrop has no way to pass a password along, and the zip is the same file for 
 - The password is never written to a file, a log, the service's environment, or a command line. The window wipes its copy when the install ends or the window closes. Strings Python and GTK made from it along the way can't be wiped; they go with the process.
 - With the window closed there's nobody to answer: sudo fails, install.sh says which parts it skipped, and playing Frametop again finishes them.
 
-`--dry-run` gets the files into `~/.cache/frametop-framedrop/dry-run` and stops there (`get.sh --clone-only`).
+`--dry-run` unpacks into `~/.cache/frametop-framedrop/dry-run` and stops there without installing (`install-release.sh --unpack-only`, or `get.sh --clone-only`).
 
 ## Try it on the Frame
 
 ```
-framedrop/devkit.sh add FrametopTest framedrop/installer "./frametop-install.sh --dry-run"
+framedrop/build.sh                           # a test zip; or --image localhost/frametop:local --version 0.3.0-dev.1
+unzip -q framedrop/build/Frametop.zip -d /tmp/fd
+framedrop/devkit.sh add FrametopTest /tmp/fd/Frametop "./frametop-install.sh --dry-run"
 framedrop/devkit.sh run FrametopTest        # or Play it from the Steam library
 framedrop/devkit.sh remove FrametopTest
 framedrop/devkit.sh add FrametopProbe framedrop/probe "./probe.sh native"   # the probe
@@ -56,10 +58,11 @@ The probe writes `~/.cache/frametop-framedrop/probe-native.log`, and the install
 ## Build the download
 
 ```
-framedrop/build.sh [--releases FILE] [ZIP_URL]
+framedrop/build.sh --image REF --version V [--commit SHA] [--channel C] [ZIP_URL]   # a release
+framedrop/build.sh [ZIP_URL]                                                        # a test zip
 ```
 
-This writes `framedrop/build/Frametop.zip` (reproducible: the installer, this checkout's `get.sh`, and with `--releases`, a release list from `pack/release-manifest.py`) and `frametop.framedrop.json`, FrameDrop's manifest with the zip's sha256. By default, `ZIP_URL` points at a `framedrop-installer` release asset. The button's link would be `https://framedropvr.com/install?manifest=https://deejanuz.github.io/frametop/frametop.framedrop.json`, with the manifest committed to main for Pages.
+This writes `framedrop/build/Frametop.zip` (reproducible), `frametop.framedrop.json` (FrameDrop's manifest with the zip's sha256), and `SHA256SUMS`. A release's zip has the image REF (`podman save`) with its `frametop-release.json` (`pack/release-info.py`) and `install-release.sh`; CI builds it on a tag (`.github/workflows/release.yml`). A test zip has `get.sh` instead. By default, `ZIP_URL` is the release's asset (`releases/download/vV/Frametop.zip`; for a test zip, a `framedrop-installer` release's). Each release carries its manifest, so the button's link can point at the newest stable one: `https://framedropvr.com/install?manifest=https://github.com/DeeJanuz/frametop/releases/latest/download/frametop.framedrop.json` (the exact URL format is FrameDrop's to confirm).
 
 ## Open questions, for a test with FrameDrop on a Windows PC
 

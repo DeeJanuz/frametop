@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Frametop's FrameDrop installer: the start command of the "Frametop" title that FrameDrop
-# puts in the Steam library. Playing it opens the install window (progress.py): it asks what
-# to install, and your password for the parts that need sudo, then installs Frametop (or
-# updates it) with get.sh --yes in a service of its own, and shows its progress. With a
-# release list next to it (frametop-releases.json), it installs that release, built, from its
-# image (get.sh --release); without one, it clones Frametop from GitHub.
+# Frametop's installer, in a release's Frametop.zip: the start command of the "Frametop" title
+# FrameDrop puts in the Steam library, or what you run after unpacking the zip on the headset.
+# It opens the install window (progress.py), which asks what to install, and your password
+# for the parts that need sudo, then installs Frametop (or updates it) in a service of its own
+# and shows its progress. A release's zip installs its own image, built
+# (install-release.sh); a test zip clones Frametop from GitHub (get.sh).
 #
 # Usage: frametop-install.sh [--dry-run]
-#   --dry-run  get the files into ~/.cache/frametop-framedrop/dry-run and stop there
-#              (get.sh --clone-only), for testing this flow
+#   --dry-run  unpack into ~/.cache/frametop-framedrop/dry-run and stop there, without
+#              installing, for testing this flow
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)

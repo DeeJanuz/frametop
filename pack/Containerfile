@@ -86,7 +86,7 @@ RUN stream/build.sh \
 RUN gaze/tracker/build.sh \
  && install -t /opt/frametop/bin gaze/tracker/build/ft-eyegrab
 
-# A release installs from this image (get.sh --release): it copies
+# A release installs from this image (pack/install-release.sh): it copies
 # /src/frametop, built, to the Frame for its host side (services, the driver,
 # the desktop's scripts), and its install.sh installs this distrobox (1.8.2.5,
 # as a source install clones it, here by commit) to run the image as the

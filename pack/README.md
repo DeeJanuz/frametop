@@ -82,10 +82,9 @@ How pinning works:
   `~/.config/frametop/image`. The old image is still in the local store
   (remove it with `ft clean` when you are done with it).
 
-Releases (below) pin the same way, by digest, but through the release list
-and each release's `.frametop-release`, not `~/.config/frametop/published`
-and `image`, and roll back by running the previous release's `install.sh`.
-The two should become one before this ships.
+Releases (below) don't use these: a release is a file, its image is pinned
+by ID in `.frametop-release`, and you roll back by running the previous
+release's `install.sh`.
 
 ## The shared podman store
 
@@ -136,48 +135,64 @@ its own container in `.frametop-release`.
 
 ## Releases
 
-`get.sh --release` installs a release instead of cloning the repo:
+A release is one file, **Frametop.zip** (about 1.1 GB), attached to a GitHub
+release: the image as an OCI archive (`frametop-image.tar`, from `podman save`),
+`frametop-release.json` (version, commit, the archive's sha256, the image's
+ID, and the SteamOS table), the installer `install-release.sh`, and the
+install window from `framedrop/installer`. No container registry. It installs
+three ways, all through the same installer:
 
-1. It reads a release list (`frametop.release/v1`, written by
-   `release-manifest.py`): `releases/stable.json` or `experimental.json` on
-   Frametop's page, or `--manifest`. Each release names its version, commit,
-   and image by digest.
-2. It picks a release for this SteamOS build (`BUILD_ID` in
-   `/etc/os-release`) from the SteamOS table, `steamos.json`, which every
-   release in the list carries: the newest release tested on this build; else
-   the newest not known to break on it, after a warning; and none if every
-   release breaks on it (`--any-steamos` overrides). A broken build names the
-   release that fixes it (`fixed_in`), or the first one that needs something
-   it lacks (`from`), so an older SteamOS keeps getting the last release that
-   works there.
-3. It pulls the image by digest, copies its `/src/frametop` (the repo at that
-   commit, built) to `~/.local/share/frametop/releases/VERSION`, writes
-   `.frametop-release` there (version, image, commit, channel, and the
-   container's name, `frametop-` and the digest's start), and runs that
-   copy's `install.sh`.
+- FrameDrop on a PC copies the zip's folder to the headset and adds "Frametop"
+  to the library; Play opens the install window (`framedrop/README.md`).
+- Unpacked on the headset, `Frametop/frametop-install.sh` opens the same
+  window.
+- `get.sh --release` downloads the zip from GitHub (the newest stable release,
+  or `--experimental`, `--version V`, `--zip FILE`) and runs
+  `install-release.sh` in the terminal.
+
+`install-release.sh`:
+
+1. Checks this SteamOS build (`BUILD_ID` in `/etc/os-release`) against the
+   SteamOS table, `steamos.json`: the newest one, from main on GitHub, when it
+   can fetch it, else the copy in the release. Tested: on. Not tested yet: a
+   warning, and a question (`--yes` goes on). Broken for this release: it stops
+   and names the release that fixes it (`--any-steamos` goes on). A broken build
+   counts from its `from` release up to its `fixed_in`, so a release that needs
+   a newer SteamOS refuses an older one, and the other way round.
+2. Checks the archive's sha256 (a damaged copy stops it, exit status 3, and
+   `get.sh` downloads again), loads it into podman, checks the image's ID, and
+   tags it `localhost/frametop:VERSION`.
+3. Copies the image's `/src/frametop` (the repo at that commit, built) to
+   `~/.local/share/frametop/releases/VERSION` with a `.frametop-release`
+   (version, commit, channel, image, ID, and the container's name, `frametop-`
+   and the ID's start), and runs that copy's `install.sh`.
 4. In a release, `install.sh` builds nothing: it installs the distrobox the
    image brings, makes the release's container from the image
-   (`release-box.sh`), and installs the services from the release's folder.
-   Each release has its own container, so installing one doesn't stop the one
-   running.
+   (`release-box.sh`, which checks the ID again), and installs the services
+   from the release's folder. Each release has its own container, so
+   installing one doesn't stop the one running.
 5. The release installed before stays; running its `install.sh` goes back to
    it. Older ones are removed, with their containers and images.
    `uninstall.sh` removes them all.
 
-The FrameDrop download carries a release list too
-([../framedrop/README.md](../framedrop/README.md)). Nothing publishes a release
-list yet: that's step 3 below.
+Every update is a full 1.1 GB download, since the zip holds the whole image
+(user decision, 2026-10-07: one file, no registry). The `ft` wrapper's
+installed mode (`ft update`, `~/.config/frametop/published` and `image`) pulls
+from a registry, so releases don't use it.
 
 ## CI
 
-`.github/workflows/image.yml` builds the image on a native arm64 runner on
-every push that touches it (and on `v*` tags), then, inside the built image,
-runs the test gate (`just test-python test-c test-bash`) and a smoke test of
-the image and the `ft` wrapper. Only `main` and `v*` tags push the image to
-`ghcr.io/<owner>/frametop` (lowercase) and publish the wrapper with its
-checksums; other branches are built and checked, not published. A new GHCR
-package may start out private: check its visibility in the package settings
-after the first push.
+`.github/workflows/release.yml` runs on Depot's arm64 runners
+(`depot-ubuntu-24.04-arm-4`), only for a `v*` tag or by hand: no pushes or pull
+requests, since the runners are paid and a fork's pull request would run on
+them. It builds the image with podman (`ft dev build`, as on the Frame), runs
+the test gate inside it (`ft dev test`: Python, C, and shell), checks what a
+release installs from the image, and builds Frametop.zip with
+`framedrop/build.sh --image`. A tag makes a draft GitHub release with the zip,
+its FrameDrop manifest, `frametop-release.json`, and `SHA256SUMS`, as a
+prerelease when the tag has a `-` (`v0.3.0-exp.1`); someone publishes it. A
+manual run keeps the zip as an artifact for a week. The repo needs Depot's
+GitHub app for the runner label to work.
 
 ## The longer arc
 
@@ -188,10 +203,8 @@ this ships until the whole path works:
 2. A headset trial: Frametop's services run from the image (the runtime
    question above), next to an install time measured against today's
    on-device build. Go or no-go here.
-3. A release pipeline: one tag (and each green experimental commit) builds
-   the image, pushes it, and publishes the release list with
-   `release-manifest.py`. The image carries the host side too (its
-   `/src/frametop`), so there's no separate tarball: one digest is the whole
-   release.
-4. `get.sh --release` and the FrameDrop package install a release (built:
-   see Releases above). The source install stays for development.
+3. A release pipeline: a tag builds the image, tests it, and attaches
+   Frametop.zip to a draft GitHub release (CI above). The image carries the
+   host side too (its `/src/frametop`), so there's no separate tarball.
+4. FrameDrop, the unpacked zip, and `get.sh --release` install a release
+   (Releases above). The source install stays for development.

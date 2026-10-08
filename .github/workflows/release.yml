@@ -1,0 +1,86 @@
+# Build Frametop's release on Depot's arm64 runners (the Frame is aarch64): the image from
+# pack/Containerfile, the test gate inside it, then Frametop.zip (framedrop/build.sh), the
+# image with its installer: FrameDrop installs it from a PC, or you unpack it on the headset
+# and run Frametop/frametop-install.sh, or get.sh --release downloads it (pack/README.md,
+# Releases). It's about 1.1 GB, under GitHub's 2 GB a file.
+#
+# A v* tag makes a draft GitHub release with the zip, its FrameDrop manifest, its
+# frametop-release.json, and SHA256SUMS (a prerelease when the tag has a "-", like
+# v0.3.0-exp.1). Nothing is public until someone publishes the draft. A manual run keeps the
+# zip as the run's artifact for a week.
+#
+# podman, as on the Frame: the zip holds podman save's archive, which the headset loads with
+# podman. Not on pushes or pull requests: Depot's runners are paid, and a fork's pull request
+# would run on them. Actions are pinned to commit SHAs (the version in the comment).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # the draft release
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: depot-ubuntu-24.04-arm-4
+    timeout-minutes: 90
+    env:
+      FT_ENGINE: podman
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v=${GITHUB_REF_NAME#v}; else v=0.0.0-ci.${GITHUB_SHA::7}; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "FT_IMAGE=localhost/frametop:$v" >> "$GITHUB_ENV"
+
+      - name: build the image
+        run: ./ft dev build
+
+      # The unit gate: Python (strict), C, and shell, inside the image, so what passes here is
+      # what the zip installs.
+      - name: test (python, c, bash)
+        run: ./ft dev test
+
+      - name: smoke (what a release installs from the image)
+        run: |
+          podman run --rm --entrypoint sh "$FT_IMAGE" -c '
+            set -e
+            for p in ft-screens ft-pointer ft-powerd ft-gaze ft-gazepanel ft-stream ft-eyegrab; do
+              test -x /opt/frametop/bin/$p
+            done
+            test -f /src/frametop/pointer/driver/build/driver_ft_pointer.so
+            test -x /src/frametop/pack/build/distrobox/install
+            /src/frametop/gaze/tracker/build/venv/bin/python -c "import numpy, cv2"
+            python3 -c "import PySide6"'
+
+      - name: Frametop.zip
+        run: framedrop/build.sh --image "$FT_IMAGE" --version "$VERSION" --commit "$GITHUB_SHA"
+
+      - name: keep the zip (manual runs)
+        if: github.ref_type != 'tag'
+        # actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: Frametop-${{ env.VERSION }}
+          path: framedrop/build/
+          retention-days: 7
+
+      - name: draft release (tags)
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=()
+          [[ $VERSION == *-* ]] && pre=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag "${pre[@]}" \
+            --title "Frametop $VERSION" --notes-file pack/release-notes.md --generate-notes \
+            framedrop/build/Frametop.zip framedrop/build/frametop.framedrop.json \
+            framedrop/build/frametop-release.json framedrop/build/SHA256SUMS

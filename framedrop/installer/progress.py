@@ -3,10 +3,11 @@
 then the install's progress.
 
 Usage: progress.py DIR [--dry-run]
-  DIR        the installer's folder: get.sh, askpass, and, in a release download, the release
-             list frametop-releases.json (then it installs a release: get.sh --release)
-  --dry-run  get the files into ~/.cache/frametop-framedrop/dry-run and stop there
-             (get.sh --clone-only), for testing this flow
+  DIR        the installer's folder. A release's Frametop.zip has install-release.sh, the
+             image (frametop-image.tar), and frametop-release.json: it installs that, built.
+             A test zip has get.sh instead, which clones Frametop from GitHub.
+  --dry-run  unpack into ~/.cache/frametop-framedrop/dry-run and stop there, without
+             installing, for testing this flow
 
 The install runs in a user service of its own (UNIT): Steam ends the title's whole process
 tree when it's quit, and starts it with a high OOM score. Closing the window doesn't stop the
@@ -18,6 +19,7 @@ sudo in the install gets it through askpass (SUDO_ASKPASS), from a socket in a f
 can open, and the window answers only programs in the install's service. It's never written to
 a file, a log, the service's environment, or a command line.
 """
+import json
 import os
 import pwd
 import re
@@ -40,7 +42,7 @@ UNIT = "frametop-framedrop-install"
 HOME = Path.home()
 STATE = HOME / ".cache" / "frametop-framedrop"
 LOG = STATE / "install.log"
-RELEASES = HERE / "frametop-releases.json"
+RELEASE = (HERE / "install-release.sh").exists() and (HERE / "frametop-image.tar").exists()
 SOCK_DIR = Path(f"/run/user/{os.getuid()}/frametop-install")
 SOCK = SOCK_DIR / "askpass"
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -50,10 +52,26 @@ DONE_TEXT = ("Frametop is installed. Restart SteamVR once, or reboot the headset
              "Frametop's driver. Then open Launch a program, then Desktop.")
 
 
+def host_env():
+    """The user's real runtime folder and bus, for systemctl and systemd-run: a window opened
+    from a VR desktop's Dolphin or Konsole has that session's own. GTK keeps the session's."""
+    env = dict(os.environ)
+    env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{os.getuid()}/bus"
+    return env
+
+
 def unit_state():
     out = subprocess.run(["systemctl", "--user", "show", "-P", "ActiveState", UNIT],
-                         capture_output=True, text=True).stdout.strip()
+                         capture_output=True, text=True, env=host_env()).stdout.strip()
     return out or "inactive"
+
+
+def release_version():
+    try:
+        return json.loads((HERE / "frametop-release.json").read_text())["version"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
 
 
 def password_set():
@@ -83,12 +101,15 @@ def in_unit(pid):
         return False
 
 
-def get_args(eye_tracker, bluetooth):
-    args = ["--yes"]
-    if RELEASES.exists():
-        args = ["--release", "--manifest", str(RELEASES)] + args
-    if DRY_RUN:
-        args += ["--clone-only", "--dir", str(STATE / "dry-run")]
+def install_command(eye_tracker, bluetooth):
+    if RELEASE:
+        args = [str(HERE / "install-release.sh"), "--yes"]
+        if DRY_RUN:
+            args += ["--unpack-only", "--dir", str(STATE / "dry-run")]
+    else:
+        args = [str(HERE / "get.sh"), "--yes"]
+        if DRY_RUN:
+            args += ["--clone-only", "--dir", str(STATE / "dry-run")]
     if not eye_tracker:
         args.append("--no-eye-tracker")
     if bluetooth:
@@ -97,8 +118,9 @@ def get_args(eye_tracker, bluetooth):
 
 
 def start_unit(args, askpass):
-    subprocess.run(["systemctl", "--user", "stop", UNIT], stderr=subprocess.DEVNULL)
-    subprocess.run(["systemctl", "--user", "reset-failed", UNIT], stderr=subprocess.DEVNULL)
+    env = host_env()
+    subprocess.run(["systemctl", "--user", "stop", UNIT], stderr=subprocess.DEVNULL, env=env)
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIT], stderr=subprocess.DEVNULL, env=env)
     STATE.mkdir(parents=True, exist_ok=True)
     LOG.write_bytes(b"")
     cmd = ["systemd-run", "--user", f"--unit={UNIT}", "--description=Frametop install (FrameDrop)",
@@ -108,8 +130,8 @@ def start_unit(args, askpass):
            "--setenv=TERM=dumb", f"--working-directory={HOME}", "--quiet", "--no-block"]
     if askpass:
         cmd += [f"--setenv=SUDO_ASKPASS={HERE / 'askpass'}", f"--setenv=FRAMETOP_ASKPASS_SOCKET={SOCK}"]
-    cmd += ["/usr/bin/bash", str(HERE / "get.sh")] + args
-    return subprocess.run(cmd).returncode == 0
+    cmd += ["/usr/bin/bash"] + args
+    return subprocess.run(cmd, env=env).returncode == 0
 
 
 class Askpass:
@@ -206,7 +228,7 @@ class Window(Adw.ApplicationWindow):
     # --- what to install, and the password
 
     def show_choices(self):
-        what = "the newest release that fits this SteamOS" if RELEASES.exists() else "Frametop from GitHub"
+        what = f"Frametop {release_version()}, built," if RELEASE else "Frametop from GitHub"
         self.detail.set_label(f"This installs {what}: the multi-screen desktop, the 3D mouse, gaze "
                               "mode, and Frametop's settings apps. Two optional parts need your "
                               "SteamOS password (sudo):")
@@ -275,7 +297,7 @@ class Window(Adw.ApplicationWindow):
         self.error.set_visible(True)
 
     def begin(self, pw):
-        args = get_args(self.eye.get_active(), self.bt.get_active())
+        args = install_command(self.eye.get_active(), self.bt.get_active())
         if pw is not None:
             try:
                 self.askpass = Askpass(self.ask_again)

@@ -38,7 +38,7 @@ override=$apps/deckard-nested-desktop.desktop
 native_copy=$apps/native-deckard-nested-desktop.desktop
 relay_unit=$HOME/.config/systemd/user/frametop-input-relay.service
 driver=$HOME/.local/share/frametop/ft_pointer
-releases=$HOME/.local/share/frametop/releases  # get.sh --release
+releases=$HOME/.local/share/frametop/releases  # pack/install-release.sh
 vrpathreg=/opt/steamvr/bin/linuxarm64/vrpathreg
 handsctl=$HOME/.local/bin/ft-handsctl
 eyegrab_files=(/etc/systemd/system/frametop-eyegrab.service /etc/frametop/ft-eyegrab)
@@ -204,13 +204,13 @@ main() {
       images+=("$(sed -n 's/^IMAGE=//p' "$f")")
     done
     echo "Frametop's releases: their files in $releases ($(size "$releases")), and the container and"
-    echo "image of each (${#boxes[@]}; an image is about 3 GB)."
+    echo "image of each (${#boxes[@]}; an image is about 3 GB). A downloaded Frametop.zip stays where it is."
     if ask "Delete the releases, their containers, and their images?" y; then
       for b in "${boxes[@]}"; do
         [[ $b =~ ^frametop-[A-Za-z0-9_.-]+$ ]] && { run podman rm -f "$b" 2>/dev/null || true; }
       done
       for b in "${images[@]}"; do
-        [[ $b == *frametop*@sha256:* ]] && { run podman rmi "$b" 2>/dev/null || true; }
+        [[ $b == localhost/frametop:* ]] && { run podman rmi "$b" 2>/dev/null || true; }
       done
       run rm -rf "$releases"
     fi

@@ -4,7 +4,7 @@
 # eye tracker for it, and the Bluetooth fixes. Run it on the headset in a terminal, from this repo. It's safe to re-run,
 # for example after `git pull`. (Hand tracking, hands/, is deferred: it isn't offered here.)
 # (It also works from a PC over SSH; see "Developing from a PC" in the README.)
-# In a release (get.sh --release), the programs come built from its image: this installs the
+# In a release (pack/install-release.sh), the programs come built from its image: this installs the
 # distrobox the release brings, makes the release's container from its image, and builds nothing.
 #
 # Usage: ./install.sh [--yes] [--no-eye-tracker] [--no-bluetooth | --bluetooth]
