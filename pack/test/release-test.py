@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.join(HERE, "..", "..")
@@ -80,7 +81,7 @@ code, out = pick(both, NEW)
 check("a build in no list: the newest release, untested", (code, out[:2]), (0, ["untested", "0.3.1-exp.89abcde"]))
 check("which says where it was tested", out[5], "tested on SteamOS 0.3.0 (build 20260922.6101926)")
 
-only_old = write("only-old.json", open(old).read())
+only_old = write("only-old.json", Path(old).read_text())
 code, out = pick(only_old, BAD)
 check("a build that breaks the only release: broken", (code, out[0]), (0, "broken"))
 check("with the reason on one line, and the fix", out[5], "the 3D mouse has no laser (fixed in Frametop 0.3.1)")
