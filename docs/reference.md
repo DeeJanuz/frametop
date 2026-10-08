@@ -179,6 +179,18 @@ display-settings/install.sh # menu entries and the Meta+Shift+R and Meta+Shift+H
 
 The layout is stored relative to your head when it's applied. `/run/user/<uid>/frametop-layout.log`, in the host's runtime directory (not the nested desktop's `/run/user/<uid>/frametop`), has the run from the last desktop start and ft-screens' layout runs after it.
 
+## Frametop Remote Displays
+
+Other computers' monitors as Frametop screens (ft-screens only), streamed from Vibepollo with Moonlight's protocol. Frametop Remote Displays (`remote-displays/`, also opened by the Remote displays button on Display Settings' Screens page) finds Vibepollo computers on the network, signs in to one with its Web UI login (it keeps a narrow API token, not the password, and pins the host's certificate), shows whether it answers, and adds its displays: its monitors, or a virtual one at any size. A computer with a Steam Link dongle on the Frame's hotspot streams over it (Connection: auto, network or dongle only); the others use the network. Each display has a Connected switch (and the host one for all of its displays), Shown, its stream's resolution, frame rate and bitrate, and its width in VR. A disconnected display keeps its settings, and within the same desktop run, its place. In VR each one is a panel with a screen's controls, and profiles keep where they are. See [remote-displays.md](remote-displays.md).
+
+```
+layout/ft-layout remote list                 # the remote displays and their streams' state
+layout/ft-layout remote connect|disconnect ID...
+remote-displays/install.sh                   # its menu entry
+```
+
+On the PC, `host/windows/Setup Frametop host.cmd` sets it up for Frametop: Vibepollo 2.0.0 (installed if missing), Frametop's build of its `sunshine.exe`, the settings Frametop needs, the Web UI login you sign in with from the Frame, and a firewall check (`-Check` to see what it would change, `-Undo` to put things back).
+
 ## Floating windows
 
 A desktop window can float in VR as a panel of its own, away from the screens. Meta+Shift+F floats the window under the pointer (or the active one, over the wallpaper), or puts it back on its screen if it floats. So do Float in VR in every window's menu (Alt+F3; Back to Desktop on a floating one), the button left of Close in its title bar, and a mouse button, controller button, or key combination mapped to Float window in VR in Frametop Input Settings; Put all floating windows back is mappable too. Launch as Standalone, in an app's right-click menu in the Application Launcher or the taskbar, starts the app with its first window floating, where that app last floated or in front of you. [floating-windows.md](floating-windows.md) explains how it works.

@@ -97,6 +97,7 @@ extern char **environ;  // for posix_spawn
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -293,6 +294,8 @@ struct Screen {
     // A floating window's panel (see the top): the window's rectangle in the buffer, its
     // title bar's height there, and the density.
     bool floating = false;        // a spare output's panel
+    int slot = 0;                 // ...its number, from 1 (its overlays exist only while a window floats)
+    bool remote = false;          // a remote display: another machine's monitor, streamed (remote.c)
     bool floatOn = false;         // ft-floatd has a window on it ("float" .. "unfloat")
     bool outputOn = false;        // KWin has the spare output turned on
     bool minimized = false;
@@ -475,9 +478,17 @@ std::vector<uint8_t> ResetTexture(int n) {
 
 vr::VROverlayHandle_t MakeChrome(const char *key, const char *name, const std::vector<uint8_t> &px, int w, int h) {
     vr::VROverlayHandle_t o = vr::k_ulOverlayHandleInvalid;
-    if (vr::VROverlay()->CreateOverlay(key, name, &o) != vr::VROverlayError_None) return o;
+    if (const auto err = vr::VROverlay()->CreateOverlay(key, name, &o); err != vr::VROverlayError_None) {
+        std::fprintf(stderr, "openvr: can't create overlay %s: %s\n", key, vr::VROverlay()->GetOverlayErrorNameFromEnum(err));
+        return o;
+    }
     vr::VROverlay()->SetOverlayRaw(o, const_cast<uint8_t *>(px.data()), uint32_t(w), uint32_t(h), 4);
     vr::VROverlay()->SetOverlayInputMethod(o, vr::VROverlayInputMethod_Mouse);
+    // SteamVR's laser and ComputeOverlayIntersection size the hit area from the mouse scale,
+    // not the texture: at the default 1x1 it's a square as tall as the control is wide, so the
+    // grab bar (256x24) caught clicks about a bar's half-width up into the screen above it.
+    const vr::HmdVector2_t scale = {{float(w), float(h)}};
+    vr::VROverlay()->SetOverlayMouseScale(o, &scale);
     vr::VROverlay()->SetOverlaySortOrder(o, 10);
     return o;
 }
@@ -996,7 +1007,10 @@ void UpdateControls() {
 
 // To ft-floatd (@frametop_float), for floating windows: dock, close, resize. From an unbound
 // socket, so its replies go nowhere.
+bool g_beside = false;  // a second ft-screens next to the desktop (ft_vr_beside)
+
 void SendFloat(const std::string &msg) {
+    if (g_beside) return;
     static const int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
@@ -1150,6 +1164,7 @@ void EndDrag(Screen &s) {
 // (XDG_RUNTIME_DIR, not the nested desktop's; else /tmp with O_NOFOLLOW: a symlink there
 // must not be followed). The desktop start truncates the same log.
 void RunLayout(const char *cmd) {
+    if (g_beside) return;
     char exe[PATH_MAX];
     if (!realpath("/proc/self/exe", exe)) return;
     const char *runtime = std::getenv("XDG_RUNTIME_DIR");
@@ -1191,7 +1206,7 @@ void FinishDrag(Screen &s, int index) {
     EndDrag(s);
     Mat c, p;
     if (!moved) return;
-    if (!s.floating) ArrangeDesktopSoon();
+    if (!s.floating && !s.remote) ArrangeDesktopSoon();
     if (target != kNone && DevicePose(target, &c) && ScreenPose(s, &p)) {
         Pin(s, target, Mul(Inverse(c), p));
         if (target == vr::k_unTrackedDeviceIndex_Hmd) std::printf("screen %d: pinned to the head\n", index + 1);
@@ -1332,7 +1347,41 @@ void ApplyCrop(Screen &s) {
 
 // ft-floatd's "float": the window's rectangle, its title bar, and the density. The panel's
 // top left corner stays where it is when the window changes size.
+// A floating window's panel and its controls exist only while a window floats on it: SteamVR
+// allows k_unMaxOverlayCount (128) overlays in all, SteamVR's own included, and each panel
+// with its controls takes seven, so eight idle slots held 56 (2026-10-07: with three screens,
+// a third remote screen didn't fit). Everything the overlays show is kept in the Screen, so
+// a new panel picks up where the old one was.
+bool MakePanel(Screen &s, const char *prefix, const char *label);
+void SetScreenTexture(const Screen &s, vr::SharedTextureHandle_t handle);
+
+bool EnsureFloatPanel(Screen &s) {
+    if (s.overlay != vr::k_ulOverlayHandleInvalid) return true;
+    char prefix[64], label[64];
+    std::snprintf(prefix, sizeof prefix, "frametop.float.%d", s.slot);
+    std::snprintf(label, sizeof label, "Floating window %d", s.slot);
+    if (!MakePanel(s, prefix, label)) return false;
+    AnnounceOverlay(prefix);
+    vr::VROverlay()->SetOverlayFlag(s.overlay, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, s.lasers);
+    if (s.key) SetScreenTexture(s, s.plain);
+    ApplyCurve(s);
+    if (s.pinned != kNone) Pin(s, s.pinned, s.pinRel);
+    else SetAbsolute(s, s.pose);
+    return true;
+}
+
+void DropFloatPanel(Screen &s) {
+    for (auto o : s.All())
+        if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(o);
+    s.overlay = s.bar = s.handle = s.curveButton = s.rollButton = s.dockButton = s.closeButton = s.resetButton =
+        vr::k_ulOverlayHandleInvalid;
+    s.visible = s.controlsUp = s.barLit = false;
+    s.controls = 0;
+    std::fill(std::begin(s.hover), std::end(s.hover), false);
+}
+
 void SetFloat(Screen &s, double mpp, int x, int y, int w, int h, int title) {
+    if (!EnsureFloatPanel(s)) return;
     const bool first = !s.floatOn || s.cropW <= 0;
     const double oldW = s.metres, oldH = s.heightMetres();
     s.floatOn = true;
@@ -1358,6 +1407,7 @@ void Unfloat(Screen &s) {
     s.floatOn = s.minimized = s.titleCarry = false;
     s.cropW = s.cropH = 0;
     s.resizeW = s.resizeH = 0;
+    DropFloatPanel(s);
 }
 
 // A popup or dialog (number k) at x, y, w, h in the buffer; w = 0 takes it away.
@@ -1412,6 +1462,8 @@ struct Press {
     uint32_t buttons = 0;                     // held, as bits (1 << (BTN_* - BTN_LEFT))
     vr::TrackedDeviceIndex_t device = kNone;  // the laser that pressed them
     int screen = -1;                          // where KWin's pointer is: the last screen the laser was on
+    int origin = -1;                          // the screen the first button went down on
+    int remoteOn = -1;                        // pressed on a remote screen: the remote screen nearest along its laser
     double x = 0, y = 0;                      // ...and where on it, in buffer pixels
     double distance = 1;                      // from the laser's start to the last panel it met
     long upAt = -1;                           // the pointer helper saw left come up: release it at this tick
@@ -1424,7 +1476,7 @@ bool g_catcherShown = false;
 uint32_t ButtonBit(uint32_t linuxButton) { return 1u << (linuxButton - BTN_LEFT); }
 
 void PressDown(vr::TrackedDeviceIndex_t dev, uint32_t button, int screen, double x, double y) {
-    if (!g_press.buttons) g_press.device = dev;
+    if (!g_press.buttons) g_press.device = dev, g_press.origin = screen, g_press.remoteOn = screen;
     g_press.buttons |= ButtonBit(button);
     g_press.screen = screen, g_press.x = x, g_press.y = y;
 }
@@ -1532,6 +1584,8 @@ void UpdateCatcher() {
     vr::VROverlay()->SetOverlayWidthInMeters(g_catcher, float(std::max(0.5, 2 * d)));
     ShowCatcher(true);
 }
+
+bool OnBuffer(const Screen &s, double x, double y) { return x >= 0 && y >= 0 && x < s.width && y < s.height; }
 
 Screen *Find(int one_based) {
     auto it = g_screens.find(one_based - 1);
@@ -1686,7 +1740,7 @@ void ReleaseAwayBy(vr::TrackedDeviceIndex_t dev, uint32_t vrButton, void (*handl
 // Where a laser meets a panel's surface, in the panel's u (metres along it from the centre,
 // along the arc when curved) and v (up). OpenVR curves a screen into a cylinder toward its
 // front, centred `curve` metres in front of it (see OnSurface).
-bool RayOnSurface(const Screen &s, const Mat &p, const Mat &laser, double *u, double *v) {
+bool RayOnSurface(const Screen &s, const Mat &p, const Mat &laser, double *u, double *v, double *dist = nullptr) {
     const Mat inv = Inverse(p);
     const double o[3] = {inv.m[0][0] * laser.m[0][3] + inv.m[0][1] * laser.m[1][3] + inv.m[0][2] * laser.m[2][3] + inv.m[0][3],
                          inv.m[1][0] * laser.m[0][3] + inv.m[1][1] * laser.m[1][3] + inv.m[1][2] * laser.m[2][3] + inv.m[1][3],
@@ -1698,6 +1752,7 @@ bool RayOnSurface(const Screen &s, const Mat &p, const Mat &laser, double *u, do
         const double t = -o[2] / d[2];
         if (t <= 0) return false;
         *u = o[0] + d[0] * t, *v = o[1] + d[1] * t;
+        if (dist) *dist = t;
         return true;
     }
     // x^2 + (z - r)^2 = r^2, on the screen's side of the axis (z < r).
@@ -1709,9 +1764,52 @@ bool RayOnSurface(const Screen &s, const Mat &p, const Mat &laser, double *u, do
         const double x = o[0] + d[0] * t, z = oz + d[2] * t;
         if (t <= 0 || z >= 0) continue;
         *u = r * std::atan2(x, -z), *v = o[1] + d[1] * t;
+        if (dist) *dist = t;
         return true;
     }
     return false;
+}
+
+// A press on a remote screen, dragged onto another remote screen (a window carried from one of
+// the host's displays to another): SteamVR keeps sending the moves to the panel the press
+// began on, as if its surface went on past its edges, and nothing to the one under the laser.
+// Each remote screen is its own stream to one of the host's displays, so the host's pointer
+// goes there only through that screen: the pressing laser is hit-tested against all the remote
+// screens here, and the nearest it meets takes the moves. On the one the press began on,
+// SteamVR's own moves do (panelEvent drops them while the laser is elsewhere: that panel's
+// surface, carried on, can pass behind or in front of another one, and its moves pulled the
+// host's pointer back, 2026-10-07). The release follows (see panelEvent).
+void UpdateRemoteDrag(void (*handle)(const struct ft_event *, void *), void *data) {
+    if (!g_press.buttons) return;
+    const auto origin = g_screens.find(g_press.origin);
+    Mat l;
+    if (origin == g_screens.end() || !origin->second.remote || !LaserPose(g_press.device, &l)) return;
+    int on = -1;
+    double best = 1e9, bx = 0, by = 0;
+    for (auto &[i, s] : g_screens) {
+        Mat p;
+        double u, v, t;
+        if (!s.remote || !s.visible || s.width <= 0 || !ScreenPose(s, &p) || !RayOnSurface(s, p, l, &u, &v, &t) ||
+            t >= best)
+            continue;
+        const double x = (u / s.metres + 0.5) * s.width, y = (0.5 - v / s.heightMetres()) * s.height;
+        if (!OnBuffer(s, x, y)) continue;
+        on = i, best = t, bx = x, by = y;
+    }
+    if (on != g_press.remoteOn)
+        std::printf("drag from remote screen %d: on %d (laser of device %u at %.2f %.2f %.2f toward %.2f %.2f %.2f)\n",
+                    g_press.origin + 1, on < 0 ? 0 : on + 1, g_press.device, l.m[0][3], l.m[1][3], l.m[2][3],
+                    -l.m[0][2], -l.m[1][2], -l.m[2][2]);
+    g_press.remoteOn = on;
+    if (on < 0 || on == g_press.origin) return;
+    if (g_press.screen == on && std::fabs(g_press.x - bx) < 0.5 && std::fabs(g_press.y - by) < 0.5) return;
+    g_press.screen = on, g_press.x = bx, g_press.y = by;
+    g_screens[on].inputMs = NowMs();
+    ft_event e{};
+    e.type = FT_MOTION;
+    e.screen = on;
+    e.x = bx, e.y = by;
+    handle(&e, data);
 }
 
 // Where the mode leaves the controllers to a VR game (see the top): a hand controller
@@ -1930,20 +2028,30 @@ bool ft_vr_init(void) {
 
 void ft_vr_shutdown(void) {
     if (!g_vr) return;
+    // The panels go first, their textures cleared, and the imports only after SteamVR has had
+    // a moment to take them down (see the shutdown in compositor.c).
+    for (auto &[i, s] : g_screens) {
+        vr::VROverlay()->ClearOverlayTexture(s.overlay);
+        for (const auto &[k, sub] : s.subs) vr::VROverlay()->ClearOverlayTexture(sub.overlay);
+    }
     if (g_cutterState == 1)
         for (auto &[i, s] : g_screens) g_cutter.DropPanel(i);  // drops their imports while SteamVR is up
     if (g_catcher != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(g_catcher);
     g_catcher = vr::k_ulOverlayHandleInvalid;
-    for (auto &[i, s] : g_screens)
+    for (auto &[i, s] : g_screens) {
         for (auto o : s.All()) vr::VROverlay()->DestroyOverlay(o);
+        for (auto &[k, sub] : s.subs) vr::VROverlay()->DestroyOverlay(sub.overlay);
+    }
     for (auto &[dev, g] : g_guides)
         for (auto o : {g.ring.overlay, g.dot.overlay}) vr::VROverlay()->DestroyOverlay(o);
-    for (auto &[k, h] : g_imports) vr::VRIPCResourceManager()->UnrefResource(h);
     keyboard::Destroy();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    for (auto &[k, h] : g_imports) vr::VRIPCResourceManager()->UnrefResource(h);
     g_guides.clear();
     g_screens.clear();
     g_imports.clear();
     vr::VR_Shutdown();
+    g_vr = false;  // the buffers that go after this (KWin's, the streams') have nothing to tell SteamVR
 }
 
 int ft_vr_modifiers(uint32_t format, uint64_t *out, int max) {
@@ -1993,8 +2101,8 @@ bool MakePanel(Screen &s, const char *prefix, const char *label) {
     char key[64], name[64];
     std::snprintf(key, sizeof key, "%s", prefix);
     std::snprintf(name, sizeof name, "%s", label);
-    if (vr::VROverlay()->CreateOverlay(key, name, &s.overlay) != vr::VROverlayError_None) {
-        std::fprintf(stderr, "openvr: can't create overlay %s\n", key);
+    if (const auto err = vr::VROverlay()->CreateOverlay(key, name, &s.overlay); err != vr::VROverlayError_None) {
+        std::fprintf(stderr, "openvr: can't create overlay %s: %s\n", key, vr::VROverlay()->GetOverlayErrorNameFromEnum(err));
         return false;
     }
     vr::VROverlay()->SetOverlayWidthInMeters(s.overlay, float(s.metres));
@@ -2051,15 +2159,66 @@ void ft_vr_screen_create(int index, double metres, int count) {
     SetAbsolute(s, PanelPose(head.m[0][3] + dx * 2, head.m[1][3], head.m[2][3] + dz * 2, yaw, 0, 0));
 }
 
-// A spare output's panel (number `slot` from 1): hidden until a window floats on it.
+// A remote screen's panel (remote.c): like a screen's, with its own overlay keys. False if
+// SteamVR made no panel (it allows k_unMaxOverlayCount overlays in all, and each panel with
+// its controls takes six).
+// A remote screen's place while its stream is stopped (Remote Displays' Disconnect): its next
+// start puts it back there. Only for this run: the room's coordinates may not be the same in
+// the next one, and ft-layout places it then.
+struct Parked {
+    Mat pose;  // where it was (pinned: where the pin had it then)
+    double metres, curve;
+    vr::TrackedDeviceIndex_t pinned;
+    Mat pinRel;
+    bool alone;
+};
+std::map<int, Parked> g_parked;
+
+bool ft_vr_remote_create(int index, const char *label, double metres, bool *restored) {
+    *restored = false;
+    if (!g_vr) return false;
+    Screen &s = g_screens[index];
+    s.remote = true;
+    s.metres = metres;
+    char prefix[64];
+    std::snprintf(prefix, sizeof prefix, "frametop.remote.%d", index + 1);
+    if (!MakePanel(s, prefix, label)) {
+        g_screens.erase(index);
+        return false;
+    }
+    AnnounceOverlay(prefix);
+    // Until the layout places it: 2 m ahead of the head.
+    RefreshPoses();
+    Mat head;
+    if (!DevicePose(vr::k_unTrackedDeviceIndex_Hmd, &head)) head = Identity();
+    const double yaw = std::atan2(head.m[0][2], head.m[2][2]) * 180 / M_PI;
+    const double dx = -std::sin(yaw * M_PI / 180), dz = -std::cos(yaw * M_PI / 180);
+    SetAbsolute(s, PanelPose(head.m[0][3] + dx * 2, head.m[1][3], head.m[2][3] + dz * 2, yaw, 0, 0));
+    const auto pk = g_parked.find(index);
+    if (pk != g_parked.end()) {
+        const Parked &k = pk->second;
+        SetWidth(s, k.metres);
+        s.curve = k.curve;
+        ApplyCurve(s);
+        Mat d;
+        if (k.pinned != kNone && DevicePose(k.pinned, &d)) Pin(s, k.pinned, k.pinRel);
+        else SetAbsolute(s, k.pose);
+        s.alone = k.alone;
+        g_parked.erase(pk);
+        UpdateVisibility();
+        *restored = true;
+    }
+    return true;
+}
+
+void ft_vr_beside(void) { g_beside = true; }
+
+// A spare output's panel (number `slot` from 1): made when a window floats on it (SetFloat).
 void ft_vr_float_create(int index, int slot) {
     if (!g_vr) return;
     Screen &s = g_screens[index];
     s.floating = true;
-    char prefix[64], label[64];
-    std::snprintf(prefix, sizeof prefix, "frametop.float.%d", slot);
-    std::snprintf(label, sizeof label, "Floating window %d", slot);
-    MakePanel(s, prefix, label);
+    s.slot = slot;
 }
 
 void ft_vr_float_output(int index, bool on) {
@@ -2071,6 +2230,9 @@ void ft_vr_screen_destroy(int index) {
     auto it = g_screens.find(index);
     if (it == g_screens.end()) return;
     if (g_cutterState == 1) g_cutter.DropPanel(index);
+    Mat p;
+    const Screen &s = it->second;
+    if (s.remote && ScreenPose(s, &p)) g_parked[index] = {p, s.metres, s.curve, s.pinned, s.pinRel, s.alone};
     for (auto o : it->second.All())
         if (o != vr::k_ulOverlayHandleInvalid) vr::VROverlay()->DestroyOverlay(o);
     for (auto &[k, sub] : it->second.subs) vr::VROverlay()->DestroyOverlay(sub.overlay);
@@ -2126,10 +2288,22 @@ bool ft_vr_screen_present(int index, const void *key, const struct ft_dmabuf *b)
 }
 
 void ft_vr_forget(const void *key) {
+    if (!g_vr) return;
     if (g_cutterState == 1) g_cutter.Forget(key);
-    for (auto &[i, s] : g_screens)
-        if (s.key == key) s.key = nullptr;
     auto it = g_imports.find(key);
+    for (auto &[i, s] : g_screens) {
+        if (s.key == key) s.key = nullptr;
+        // Still on the panel (a remote screen's buffers go while it shows one: its stream
+        // stopped or started over): the panel lets go of it first. vrcompositor crashed
+        // drawing a texture whose import was gone (2026-10-07, ft-screens quitting with
+        // remote screens up, as the headset left standby).
+        if (it != g_imports.end() && s.plain == it->second) {
+            if (!s.cutting) vr::VROverlay()->ClearOverlayTexture(s.overlay);
+            for (const auto &[k, sub] : s.subs) vr::VROverlay()->ClearOverlayTexture(sub.overlay);
+            s.plain = 0;
+            s.shown = nullptr;  // hidden until a new picture comes
+        }
+    }
     if (it == g_imports.end()) return;
     vr::VRIPCResourceManager()->UnrefResource(it->second);
     g_imports.erase(it);
@@ -2151,6 +2325,9 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                     if (s.titleCarry) return;  // KWin's pointer stays where the title bar was pressed
                     e.type = FT_MOTION;
                     at();
+                    // A press on a remote screen with the laser on another one, or off its
+                    // edge: the moves belong to the remote screen under it (UpdateRemoteDrag).
+                    if (s.remote && g_press.buttons && (g_press.remoteOn != index || !OnBuffer(s, e.x, e.y))) return;
                     if (g_press.buttons) g_press.screen = index, g_press.x = e.x, g_press.y = e.y;
                     break;
                 case vr::VREvent_MouseButtonDown:
@@ -2162,6 +2339,11 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                     e.controller = IsHandController(ev.trackedDeviceIndex);
                     at();
                     if (!e.pressed && s.titleCarry) e.x = s.carryX, e.y = s.carryY, s.titleCarry = false;
+                    // The release of a drag that went onto another remote screen, or off this
+                    // one: it comes up where the host's pointer is.
+                    if (!e.pressed && s.remote && (g_press.remoteOn != index || !OnBuffer(s, e.x, e.y)) &&
+                        g_press.screen >= 0)
+                        e.screen = g_press.screen, e.x = g_press.x, e.y = g_press.y;
                     if (e.pressed) {
                         PressDown(ev.trackedDeviceIndex, e.button, index, e.x, e.y);
                         // A floating window's title bar: carry the panel, and KWin (which starts
@@ -2286,6 +2468,7 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
             ReleaseAwayBy(ev.trackedDeviceIndex, ev.data.mouse.button, handle, data);
     if (g_press.upAt >= 0 && g_tick >= g_press.upAt) ReleaseAway(BTN_LEFT, handle, data);
     ReleaseStuck(handle, data);
+    UpdateRemoteDrag(handle, data);
     RefreshChrome();
     while (vr::VRSystem()->PollNextEvent(&ev, sizeof ev)) {
         if (ev.eventType == vr::VREvent_Quit) {
@@ -2505,10 +2688,13 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
             for (int k = 0; k < 12 && len < size; ++k)
                 len += std::snprintf(reply + len, size - len, " %.5f", s->pinRel.m[k / 4][k % 4]);
     } else if (std::strncmp(cmd, "screens", 7) == 0) {
-        const size_t count = std::count_if(g_screens.begin(), g_screens.end(), [](auto &e) { return !e.second.floating; });
+        // KWin's screens only: ft-layout, Display Settings and ft-floatd count KWin's outputs
+        // by it. Remote screens are listed by "remotes" (remote.c).
+        const auto kwin = [](const Screen &s) { return !s.floating && !s.remote; };
+        const size_t count = std::count_if(g_screens.begin(), g_screens.end(), [&](auto &e) { return kwin(e.second); });
         int len = std::snprintf(reply, size, "ok %zu", count);
         for (auto &[i, s] : g_screens)
-            if (len < size && !s.floating)
+            if (len < size && kwin(s))
                 len += std::snprintf(reply + len, size - len, " %d:%dx%d:%.3f", i + 1, s.width, s.height, s.metres);
     } else if (std::strncmp(cmd, "head", 4) == 0) {
         Mat m;

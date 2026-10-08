@@ -56,8 +56,8 @@
 // The mmap samples are in head space, 17 ms or so old when they appear, so each is turned
 // into the room with the head pose at its own timestamp, from a short pose history.
 //
-// Screens come from ft-screens (@ft_screens: "screens", "get N"), refreshed 4 times a
-// second in the background. A curved screen is a cylinder toward its front (see OnSurface
+// Screens come from ft-screens (@ft_screens: "screens", "remotes" for other machines'
+// displays, "get N"), refreshed 4 times a second in the background. A curved screen is a cylinder toward its front (see OnSurface
 // in screens/vr.cpp).
 #include <openvr.h>
 
@@ -367,18 +367,32 @@ private:
             Screen s;
             if (std::sscanf(p, " %d:%dx%d:%lf%n", &s.index, &s.wpx, &s.hpx, &s.metres, &used) != 4) break;
             p += used;
-            // "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve hand"
-            const std::string g = Ask(fd, "get " + std::to_string(s.index));
-            double v[15];
-            if (std::sscanf(g.c_str(), "ok %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", &v[0], &v[1],
-                            &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13],
-                            &v[14]) != 15)
-                continue;
-            s.c = {v[0], v[1], v[2]};
-            s.b = {{v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {v[9], v[10], v[11]}};
-            s.metres = v[12], s.height = v[13], s.curve = v[14];
-            out.push_back(s);
+            if (Place(fd, s)) out.push_back(s);
         }
+        // Other machines' displays (remote.c): "ok <count> <index>:<client>:<state>:<w>x<h> ..."
+        const std::string remotes = Ask(fd, "remotes");
+        if (remotes.rfind("ok ", 0) != 0) return;
+        p = remotes.c_str() + 3;
+        if (std::sscanf(p, "%d%n", &count, &used) != 1) return;
+        p += used;
+        for (int k = 0; k < count; ++k) {
+            Screen s;
+            if (std::sscanf(p, " %d:%*[^:]:%*[^:]:%dx%d%n", &s.index, &s.wpx, &s.hpx, &used) != 3) break;
+            p += used;
+            if (s.wpx > 0 && s.hpx > 0 && Place(fd, s)) out.push_back(s);
+        }
+    }
+    static bool Place(int fd, Screen &s) {
+        // "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve hand"
+        const std::string g = Ask(fd, "get " + std::to_string(s.index));
+        double v[15];
+        if (std::sscanf(g.c_str(), "ok %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", &v[0], &v[1], &v[2],
+                        &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14]) != 15)
+            return false;
+        s.c = {v[0], v[1], v[2]};
+        s.b = {{v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {v[9], v[10], v[11]}};
+        s.metres = v[12], s.height = v[13], s.curve = v[14];
+        return true;
     }
 
     std::thread thread_;

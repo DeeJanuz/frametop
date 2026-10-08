@@ -85,11 +85,13 @@ step "6/10 power service (turns the displays off while the headset isn't used, e
 "$root/power/build.sh"
 "$root/power/run.sh" install
 
-step "7/10 multi-screen desktop (ft-screens), Frametop Input Settings, and Frametop Display Settings"
+step "7/10 multi-screen desktop (ft-screens), Frametop Input Settings, Display Settings, and Remote Displays"
 "$root/screens/build.sh"
+"$root/stream/build.sh"  # ft-stream: remote displays (Frametop Remote Displays)
 "$root/desktops.sh" install >/dev/null
 "$root/input-settings/install.sh"
 "$root/display-settings/install.sh"
+"$root/remote-displays/install.sh"
 "$root/remote/install.sh"
 on_frame "sed -i 's/^POINTER=0/POINTER=1/' ~/.config/frametop.conf; grep -q '^POINTER=' ~/.config/frametop.conf || echo 'POINTER=1' >> ~/.config/frametop.conf"
 echo "the launcher's Desktop entry now opens the multi-screen desktop; 3D mouse on (POINTER=1 in ~/.config/frametop.conf)"
