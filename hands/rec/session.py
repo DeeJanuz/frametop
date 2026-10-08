@@ -310,8 +310,9 @@ def classify_lighting(ring):
     Nor does a sunlit room reliably: the first daylight round (dataset PR #5, big sunlit windows)
     read 2.38, since the windows are a small part of each picture and the mean barely moves. So
     "indoor" means "no strong daylight on the cameras", and the window asks people to pick
-    daylight themselves. What did show it there: hands only ~1.15x as bright as their surroundings
-    (1.5-1.7x in lamp-lit rooms), which needs hands in view, so it's measured on the dataset side."""
+    daylight themselves. Review corrects a missed one from the pictures (sunlit windows, the time
+    of day): hands standing out little from the room goes with daylight but also with pale rooms
+    at night, so it isn't a test either."""
     ir = ambient_ir(ring)
     if ir is None:
         return ""
