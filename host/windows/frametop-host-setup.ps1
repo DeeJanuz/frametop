@@ -33,9 +33,13 @@ $VibepolloVersion = "2.0.0"
 $SetupUrl = "https://github.com/Nonary/Vibepollo/releases/download/2.0.0/VibepolloSetup-v2.0.0.exe"
 $SetupSha = "7B3500EC0C774644CE5A435A48F61C046C48494D0F18B67AFA0B3561931794B7"
 $OriginalSha = "2CC018FD92DDB4D3748D91D8DA25316909ED45DB3710D1FF278BD73D51EB00C1"  # its sunshine.exe
-# Frametop's build: frametop-vibepollo branch frametop/2.0.0-remote-monitor-fix at 2f032252.
-$BuildSha = "B5B7D2E7353454AEA6D895D0B68DE235E4CC581684C9DD44F8EFAF2E872F517F"
+# Frametop's build: Frametop/frametop-vibepollo branch frametop/2.0.0 at a84b6cfc (its CI).
+$BuildSha = "6AF4F34503C7F6F84D1F6967D9FCEFAF2BD8145B34044C992B5E26A614E37A91"
 $BuildUrl = ""  # not published yet
+# Earlier Frametop builds, replaced by this one like the original is.
+$OlderBuildShas = @(
+    "B5B7D2E7353454AEA6D895D0B68DE235E4CC581684C9DD44F8EFAF2E872F517F"  # 2f032252, built by hand without WebRTC
+)
 $Settings = [ordered]@{
     "remote_monitor_mute_audio"                      = "disabled"
     "remote_monitor_disconnect_on_client_disconnect" = "enabled"
@@ -194,6 +198,9 @@ function Main {
         if (-not $swap) {
             Say "Frametop's build of Vibepollo isn't available here, so this PC can't stream its own monitors yet (virtual displays work)."
         }
+    } elseif ($OlderBuildShas -contains $now) {
+        $swap = Get-Build
+        if (-not $swap) { Say "An older Frametop build of Vibepollo is installed, and the new one isn't available here; keeping it." }
     } else {
         $v = (Get-Item $exe).VersionInfo.ProductVersion
         throw "This is Vibepollo $v, and Frametop's build is for $VibepolloVersion. Install Vibepollo $VibepolloVersion ($SetupUrl), then run this again."
@@ -243,7 +250,7 @@ function Main {
         Stop-Vibepollo
         try {
             if ($swap) {
-                if (-not (Test-Path $orig)) { Copy-Item $exe $orig }
+                if (-not (Test-Path $orig) -and $now -eq $OriginalSha) { Copy-Item $exe $orig }
                 Copy-Item $swap $exe -Force
                 Say "Installed Frametop's build of Vibepollo (the original is $orig)."
             }
