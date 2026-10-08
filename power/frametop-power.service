@@ -7,12 +7,10 @@ After=steamvr.service
 PartOf=steamvr.service
 
 [Service]
-# Runs in the dev container (built there against its libraries). Start the container in a
-# scope of its own first (see scripts/container-up.sh), and clean up the process explicitly
-# around distrobox enter.
-ExecStartPre=-@REPO@/scripts/container-up.sh
+# Runs in the container it was built in (the dev container, or a release's: scripts/in-box,
+# which starts it in a scope of its own). Clean up the process explicitly around it.
 ExecStartPre=-/usr/bin/pkill -x ft-powerd
-ExecStart=%h/.local/bin/distrobox enter dev -- @REPO@/power/build/ft-powerd
+ExecStart=@REPO@/scripts/in-box @REPO@/power/build/ft-powerd
 # SIGTERM makes ft-powerd turn the displays back on before it exits.
 ExecStopPost=-/usr/bin/pkill -x ft-powerd
 Restart=on-failure

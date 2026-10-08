@@ -3,8 +3,9 @@
 # of its own. Whoever starts a podman container owns its monitor (conmon): started from one
 # of our services (distrobox enter starts it on demand), the container, and everything in it
 # like the desktop's compositor, would be killed when that service stops. Call this before
-# `distrobox enter`.
-box=${FRAME_BOX:-dev}
+# `distrobox enter` (scripts/in-box does).
+# Usage: scripts/container-up.sh [BOX]   (default: FRAME_BOX, else "dev")
+box=${1:-${FRAME_BOX:-dev}}
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 running() { [ "$(podman container inspect -f '{{.State.Running}}' "$box" 2>/dev/null)" = true ]; }
 running && exit 0

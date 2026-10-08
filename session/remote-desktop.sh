@@ -28,7 +28,7 @@ done
 
 # podman needs the real runtime dir. The nested one is passed only to krdpserver.
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-exec ~/.local/bin/distrobox enter dev -- env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland \
+exec "$(dirname "$(readlink -f "$0")")/../scripts/in-box" env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland \
   krdpserver --plasma --address 127.0.0.1 --port "$port" \
   -u "$(id -un)" -p "$(cat "$creds/password")" \
   --certificate "$creds/cert.pem" --certificate-key "$creds/key.pem"
