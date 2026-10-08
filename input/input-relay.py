@@ -27,7 +27,7 @@ look; held, the pointer stops there and your head steers it (it stays put in you
 the release clicks; held still for half a second, it's a real press that your head drags
 ("gazekey left|right 1|0" to the helper; by default Meta+J and Meta+K, DEFAULT_KEY_BINDINGS),
 gaze_quickcal = the gaze service's one-dot check ("quickcal" to @ft_gazed), sens_up, sens_down,
-layout_reset = put the desktop screens back in their saved layout, screens_toggle = hide or show the desktop screens,
+layout_reset = open the profile in use again, or put the desktop screens back in their layout (ft-layout reset), screens_toggle = hide or show the desktop screens,
 keyboard_toggle = open or close Frametop's keyboard, float_toggle = float the desktop window under the
 pointer (else the active one) in VR, or put it back if it floats, dock_all = put every floating
 window back (both to ft-floatd, @frametop_float), spin_next and spin_prev = turn every panel in the
@@ -91,7 +91,7 @@ default: only while no pass-through keyboard is connected; a program's uinput ke
 doesn't count), "button" (only the keyboard_toggle action opens it), or "never"
 (keyboard_toggle does nothing either). With "vr_keyboard_persist" (the default), it stays
 open when the text field loses focus, until its Close key, keyboard_toggle, or a layout reset
-(ft-layout apply) closes it.
+(ft-layout reset) closes it.
 
 Volume keys, from every device that has them (the headset's own buttons included),
 are handled here: wpctl steps the default output. Nothing else may see a volume key,
@@ -658,7 +658,7 @@ class Pointer:
                 pass  # ft-screens not running
         elif name == "layout_reset":
             # Runs a few seconds and borrows the pointer; ft-layout refuses a second copy.
-            subprocess.Popen([FT_LAYOUT, "apply"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            subprocess.Popen([FT_LAYOUT, "reset"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
             log("layout reset")
         elif name in ("sens_up", "sens_down"):

@@ -64,6 +64,9 @@ is top left, then left to right.
 Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout apply [--wait SECONDS]   arrange every screen; --wait is for desktop start:
                                      wait for the screens, skip if "auto" is off
+  ft-layout reset                    a quick reset (Meta+Shift+R, a screen's reset button, a mapped
+                                     button): open the profile in use again, as use NAME does, or
+                                     else apply
   ft-layout capture                  save the current arrangement as the custom layout
   ft-layout save NAME                save it as a named layout too, and use that; with the
                                      desktop's apps and hidden screens, as a profile
@@ -1594,6 +1597,10 @@ def main(argv):
                 else:
                     log(f"kwin: {last}")
             open_apps(name, wait=90)  # ft-floatd starts with Plasma
+        elif cmd == "reset":
+            layout = load_layout()
+            name = layout.get("active") if layout.get("mode") == "custom" else None
+            return main([argv[0], "use", name] if name in layout.get("layouts", {}) else [argv[0], "apply"])
         elif cmd == "remote":
             remote_command(argv[2:])
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
