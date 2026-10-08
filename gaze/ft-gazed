@@ -86,6 +86,8 @@ Control socket: abstract unix datagram "@ft_gazed":
   quickcal                         the one-dot check now (the calibration if there's none)
   calibrate                        the full calibration in the panel
   fitcheck                         the headset fit check in the panel
+  fivecheck                        the five-dot check now (it otherwise follows a quick check
+                                   that didn't fix the tracker)
   calaccept | calquit              from the pointer helper while the panel is up: take this dot
                                    now (a left click, Meta+J) | close it (a right click, Meta+K)
 
@@ -691,7 +693,8 @@ class Service:
             elif words[:1] == ["forget"]:
                 self.forget_lessons()
                 reply = "ok"
-            elif words[:1] and words[0] in ("quickcal", "calibrate", "fitcheck", "calaccept", "calquit", "recheck"):
+            elif words[:1] and words[0] in ("quickcal", "calibrate", "fitcheck", "fivecheck", "calaccept", "calquit",
+                                            "recheck"):
                 reply = self.checks.command(words)
             elif words[:1] == ["eyes"] and len(words) == 2:
                 try:

@@ -7,14 +7,17 @@
 //
 // The panel sits POINTER-like at --distance (1.5 m, about where Frametop's screens are, so
 // the eyes converge as they do in use). "quick" is a small square, QUICK_DEG across, for the
-// one-dot check; "full" is FULL_DEG across (4:3), with a solid background whose brightness the
-// service sets per round (pupil size changes with it, and the tracker's error with it); "fit"
-// is FIT_DEG across (4:3), see-through like quick, for the headset fit check: a card per eye
-// (tracked or lost, the tracker's signal, how much of the last 10 s it was seen) and hints.
+// one-dot check; "five" is FIVE_DEG across (4:3), see-through like quick, for the five-dot
+// check, whose dots are 12 degrees left and right and 9 up and down; "full" is FULL_DEG
+// across (4:3), with a solid background whose brightness the service sets per round (pupil
+// size changes with it, and the tracker's error with it); "fit" is FIT_DEG across (4:3),
+// see-through like quick, for the headset fit check: a card per eye (tracked or lost, the
+// tracker's signal, how much of the last 10 s it was seen) and hints. Every dot a check shows
+// must fit its panel: gazecheck.py's PANEL_DEG mirrors these sizes and checks it.
 //
 // Control socket: abstract unix datagram "@ft_gazepanel" (--socket NAME); a sender with an
 // address gets "ok" or "error ...":
-//   show quick|full|fit          the panel, empty, in front of you
+//   show quick|five|full|fit     the panel, empty, in front of you
 //   hide
 //   bg <0..1>                    the background's brightness (full)
 //   dot <yaw> <pitch> <state> [<progress 0..1>]
@@ -70,7 +73,8 @@ using Clock = std::chrono::steady_clock;
 constexpr double kQuickDeg = 16;      // QUICK_DEG: the one-dot check's square
 constexpr double kFullDeg = 64;       // FULL_DEG: the full calibration's width (4:3)
 constexpr double kFitDeg = 40;        // FIT_DEG: the headset fit check's width (4:3)
-constexpr int kQuickPx = 320, kFullW = 1024, kFullH = 768, kFitW = 800, kFitH = 600;
+constexpr double kFiveDeg = 40;       // FIVE_DEG: the five-dot check's width (4:3), past its dots
+constexpr int kQuickPx = 320, kFullW = 1024, kFullH = 768, kFitW = 800, kFitH = 600, kFiveW = 800, kFiveH = 600;
 std::atomic<bool> g_stop{false};
 
 // ---------------------------------------------------------------- text (as screens/keyboard.cpp)
@@ -470,9 +474,10 @@ int main(int argc, char **argv) {
             if (!std::strncmp(buf, "show ", 5)) {
                 p.full = !std::strcmp(buf + 5, "full");
                 p.fit = !std::strcmp(buf + 5, "fit");
-                p.w = p.full ? kFullW : p.fit ? kFitW : kQuickPx;
-                p.h = p.full ? kFullH : p.fit ? kFitH : kQuickPx;
-                p.wDeg = p.full ? kFullDeg : p.fit ? kFitDeg : kQuickDeg;
+                const bool five = !std::strcmp(buf + 5, "five");
+                p.w = p.full ? kFullW : p.fit ? kFitW : five ? kFiveW : kQuickPx;
+                p.h = p.full ? kFullH : p.fit ? kFitH : five ? kFiveH : kQuickPx;
+                p.wDeg = p.full ? kFullDeg : p.fit ? kFitDeg : five ? kFiveDeg : kQuickDeg;
                 p.title.clear(), p.text.clear(), p.note.clear(), p.dotOn = false, p.state = "off";
                 p.eyes[0] = p.eyes[1] = EyeCard{}, p.hints.clear();
                 place();
