@@ -82,6 +82,11 @@ How pinning works:
   `~/.config/frametop/image`. The old image is still in the local store
   (remove it with `ft clean` when you are done with it).
 
+Releases (below) pin the same way, by digest, but through the release list
+and each release's `.frametop-release`, not `~/.config/frametop/published`
+and `image`, and roll back by running the previous release's `install.sh`.
+The two should become one before this ships.
+
 ## The shared podman store
 
 On SteamOS, rootless podman has **one container/image store**, and Frametop
@@ -117,9 +122,51 @@ images.
 
 ## Running on the Frame
 
-Not decided yet. The programs need much more of the host than a plain
-`podman run` gives them; [design.md](design.md#the-runtime-on-the-frame) lists
-what, the device findings so far, and the options.
+The programs need much more of the host than a plain `podman run` gives them;
+[design.md](design.md#the-runtime-on-the-frame) lists what, the device
+findings so far, and the options. What's built so far is option A, a
+distrobox made from the image, the same kind of container as the dev
+container. The headset trial (step 2 below) decides.
+
+Every program an installed Frametop runs in its container goes through
+`scripts/in-box`: the pointer and power services, the gaze service's ft-gaze,
+ft-eyes and calibration panel, the desktop's ft-screens, the remote desktop,
+and the settings apps. A source install runs them in `dev`; a release names
+its own container in `.frametop-release`.
+
+## Releases
+
+`get.sh --release` installs a release instead of cloning the repo:
+
+1. It reads a release list (`frametop.release/v1`, written by
+   `release-manifest.py`): `releases/stable.json` or `experimental.json` on
+   Frametop's page, or `--manifest`. Each release names its version, commit,
+   and image by digest.
+2. It picks a release for this SteamOS build (`BUILD_ID` in
+   `/etc/os-release`) from the SteamOS table, `steamos.json`, which every
+   release in the list carries: the newest release tested on this build; else
+   the newest not known to break on it, after a warning; and none if every
+   release breaks on it (`--any-steamos` overrides). A broken build names the
+   release that fixes it (`fixed_in`), or the first one that needs something
+   it lacks (`from`), so an older SteamOS keeps getting the last release that
+   works there.
+3. It pulls the image by digest, copies its `/src/frametop` (the repo at that
+   commit, built) to `~/.local/share/frametop/releases/VERSION`, writes
+   `.frametop-release` there (version, image, commit, channel, and the
+   container's name, `frametop-` and the digest's start), and runs that
+   copy's `install.sh`.
+4. In a release, `install.sh` builds nothing: it installs the distrobox the
+   image brings, makes the release's container from the image
+   (`release-box.sh`), and installs the services from the release's folder.
+   Each release has its own container, so installing one doesn't stop the one
+   running.
+5. The release installed before stays; running its `install.sh` goes back to
+   it. Older ones are removed, with their containers and images.
+   `uninstall.sh` removes them all.
+
+The FrameDrop download carries a release list too
+([../framedrop/README.md](../framedrop/README.md)). Nothing publishes a release
+list yet: that's step 3 below.
 
 ## CI
 
@@ -141,9 +188,10 @@ this ships until the whole path works:
 2. A headset trial: Frametop's services run from the image (the runtime
    question above), next to an install time measured against today's
    on-device build. Go or no-go here.
-3. A release pipeline: one tag builds the image and a checksummed tarball of
-   the host payload (units, desktop files, the KWin script, the driver) from
-   the same commit.
-4. `get.sh` and the FrameDrop package install a release: download, verify,
-   install the host payload, pull the image. The source install stays for
-   development.
+3. A release pipeline: one tag (and each green experimental commit) builds
+   the image, pushes it, and publishes the release list with
+   `release-manifest.py`. The image carries the host side too (its
+   `/src/frametop`), so there's no separate tarball: one digest is the whole
+   release.
+4. `get.sh --release` and the FrameDrop package install a release (built:
+   see Releases above). The source install stays for development.

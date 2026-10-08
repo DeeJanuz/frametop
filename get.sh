@@ -22,16 +22,17 @@
 #   --manifest FILE|URL   with --release: the release list to use instead
 #   --version V     with --release: this release from the list, not the newest that fits
 #   --any-steamos   with --release: install even on a SteamOS build the release lists as broken
-#   --yes, --no-bluetooth, --bluetooth   passed to install.sh (--yes also answers this
-#                   script's questions: the version already there, or stable)
+#   --yes, --no-eye-tracker, --no-bluetooth, --bluetooth   passed to install.sh (--yes also
+#                   answers this script's questions: the version already there, or stable)
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
 usage: get.sh [--stable | --experimental | --branch NAME] [--dir DIR] [--clone-only] [--yes]
-              [--no-bluetooth | --bluetooth]
+              [--no-eye-tracker] [--no-bluetooth | --bluetooth]
        get.sh --release [--stable | --experimental | --manifest FILE|URL] [--version V]
-              [--any-steamos] [--dir DIR] [--clone-only] [--yes] [--no-bluetooth | --bluetooth]
+              [--any-steamos] [--dir DIR] [--clone-only] [--yes] [--no-eye-tracker]
+              [--no-bluetooth | --bluetooth]
 piped: curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- [options]
 EOF
 }
@@ -233,7 +234,7 @@ main() {
       --version) want=${2:?--version needs a version}; shift ;;
       --any-steamos) any=1 ;;
       --yes) yes=1; pass+=("$1") ;;
-      --no-bluetooth|--bluetooth) pass+=("$1") ;;
+      --no-bluetooth|--bluetooth|--no-eye-tracker) pass+=("$1") ;;
       -h|--help) usage; return 0 ;;
       *) echo "unknown option: $1" >&2; usage >&2; return 2 ;;
     esac

@@ -7,9 +7,10 @@
 # In a release (get.sh --release), the programs come built from its image: this installs the
 # distrobox the release brings, makes the release's container from its image, and builds nothing.
 #
-# Usage: ./install.sh [--yes] [--no-bluetooth | --bluetooth]
+# Usage: ./install.sh [--yes] [--no-eye-tracker] [--no-bluetooth | --bluetooth]
 #   --yes           don't ask; installs gaze mode, and our eye tracker if sudo can run without
 #                   a password prompt; skips the Bluetooth fixes and the SteamVR restart
+#   --no-eye-tracker  don't offer our own eye tracker
 #   --no-bluetooth  don't offer the Bluetooth fixes
 #   --bluetooth     install the Bluetooth fixes without asking (with --yes: if sudo can run
 #                   without a password prompt)
@@ -18,13 +19,14 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$root/scripts/_env.sh"
 
-assume_yes=0 bluetooth=1
+assume_yes=0 bluetooth=1 eye_tracker=1
 for arg in "$@"; do
   case $arg in
     --yes) assume_yes=1 ;;
     --no-bluetooth) bluetooth=0 ;;
     --bluetooth) bluetooth=2 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    --no-eye-tracker) eye_tracker=0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -128,6 +130,8 @@ fi
 step "9/10 our own eye tracker for gaze mode (recommended: more accurate than SteamVR's)"
 if [ "$gaze" = 0 ]; then
   echo "skipped: gaze mode isn't installed. Install it later with: gaze/tracker/install.sh"
+elif [ "$eye_tracker" = 0 ]; then
+  echo "skipped. Install it later with: gaze/tracker/install.sh"
 elif [ "$assume_yes" = 1 ] && ! sudo_quiet; then
   echo "skipped: it needs your password (sudo), and --yes doesn't ask. Install it later with: gaze/tracker/install.sh"
 elif ask "Install our own eye tracker? Gaze mode then uses it instead of SteamVR's. Its frame grabber is a small system service, so it needs your password (sudo)$([ "$FRAME_RELEASE" = 1 ] || echo ", and it downloads about 165 MB (numpy, OpenCV)")." y; then

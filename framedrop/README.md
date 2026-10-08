@@ -1,6 +1,6 @@
 # Install with FrameDrop (proof of concept)
 
-[FrameDrop](https://framedropvr.com) is a Windows app that sideloads onto a Steam Frame: it copies a build to the headset and adds it to the Steam library. Issue #25 asks for an "Install with FrameDrop" button. Frametop isn't an app FrameDrop can copy over as is: it builds in a container, installs user services and a SteamVR driver, and asks questions in a terminal. So FrameDrop installs a small installer instead. Playing "Frametop" from the library runs the one-line installer (`get.sh --yes`) and shows its progress.
+[FrameDrop](https://framedropvr.com) is a Windows app that sideloads onto a Steam Frame: it copies a build to the headset and adds it to the Steam library. Issue #25 asks for an "Install with FrameDrop" button. Frametop isn't an app FrameDrop can copy over as is: it installs user services, a SteamVR driver, and a container, and two optional parts need sudo. So FrameDrop installs a small installer instead. Playing "Frametop" from the library opens a window that asks what to install, and your password for the parts that need it, then runs the one-line installer (`get.sh --yes`) and shows its progress. A download built with a release list installs that release, built, from its image (`get.sh --release`, see [pack/README.md](../pack/README.md)): nothing compiles on the headset.
 
 Nothing here is published yet: no release asset, no manifest on Pages, no button.
 
@@ -25,13 +25,22 @@ It uses Valve's SteamOS Devkit path: pair once with the headset's devkit service
 `installer/frametop-install.sh` is the start command.
 
 1. In the container, it starts itself again on the host with `flatpak-spawn --host`.
-2. It clears Steam's preload and library paths.
-3. It runs `curl get.sh | bash -s -- --yes` in a transient user service, `frametop-framedrop-install`, unless one is already running. The service is used because Steam ends the title's whole process tree when it's quit, and starts it with an OOM score of 900.
-4. `installer/progress.py` (GTK 4 and libadwaita) follows the service's log, shows `install.sh`'s steps as a progress bar, and reports the result. Closing it leaves the install running. Playing the title again reattaches.
+2. It clears Steam's preload and library paths, and opens `installer/progress.py` (GTK 4 and libadwaita).
+3. The window asks which optional parts to install: our own eye tracker (on by default) and the Bluetooth fixes. Both need sudo, so it asks for your SteamOS password and checks it with `sudo -v`. If your user has no password (SteamOS starts without one), it says how to set one and leaves both out.
+4. It runs the zip's own `get.sh --yes` in a transient user service, `frametop-framedrop-install`, with `--release --manifest frametop-releases.json` when the zip has a release list. The service is used because Steam ends the title's whole process tree when it's quit, and starts it with an OOM score of 900.
+5. It follows the service's log, shows the steps as a progress bar, and reports the result. Closing it leaves the install running. Playing the title again reattaches.
 
-`--yes` keeps the version that's installed, or installs stable. It skips the parts that need sudo (our eye tracker and the Bluetooth fixes) and the SteamVR restart. The window says to restart SteamVR.
+`--yes` keeps the version that's installed, or installs stable, and skips the SteamVR restart. The window says to restart SteamVR.
 
-`--dry-run` clones into `~/.cache/frametop-framedrop/dry-run` and stops there (`get.sh --clone-only`).
+### The password
+
+FrameDrop has no way to pass a password along, and the zip is the same file for everyone, so the password is typed on the headset, in the window. It stays in the window's memory until the install ends:
+
+- The service gets `SUDO_ASKPASS=installer/askpass`. When install.sh's sudo asks, askpass connects to a socket the window keeps in `/run/user/UID/frametop-install` (mode 0700), and the window answers only a process in the install's own service (checked by its peer credentials and cgroup). If it doesn't have the password yet (the window was opened again), it asks you for it, or you skip that part.
+- The password is never written to a file, a log, the service's environment, or a command line. The window wipes its copy when the install ends or the window closes. Strings Python and GTK made from it along the way can't be wiped; they go with the process.
+- With the window closed there's nobody to answer: sudo fails, install.sh says which parts it skipped, and playing Frametop again finishes them.
+
+`--dry-run` gets the files into `~/.cache/frametop-framedrop/dry-run` and stops there (`get.sh --clone-only`).
 
 ## Try it on the Frame
 
@@ -47,13 +56,14 @@ The probe writes `~/.cache/frametop-framedrop/probe-native.log`, and the install
 ## Build the download
 
 ```
-framedrop/build.sh [ZIP_URL]
+framedrop/build.sh [--releases FILE] [ZIP_URL]
 ```
 
-This writes `framedrop/build/Frametop.zip` (reproducible) and `frametop.framedrop.json`, FrameDrop's manifest with the zip's sha256. By default, `ZIP_URL` points at a `framedrop-installer` release asset. The button's link would be `https://framedropvr.com/install?manifest=https://deejanuz.github.io/frametop/frametop.framedrop.json`, with the manifest committed to main for Pages.
+This writes `framedrop/build/Frametop.zip` (reproducible: the installer, this checkout's `get.sh`, and with `--releases`, a release list from `pack/release-manifest.py`) and `frametop.framedrop.json`, FrameDrop's manifest with the zip's sha256. By default, `ZIP_URL` points at a `framedrop-installer` release asset. The button's link would be `https://framedropvr.com/install?manifest=https://deejanuz.github.io/frametop/frametop.framedrop.json`, with the manifest committed to main for Pages.
 
 ## Open questions, for a test with FrameDrop on a Windows PC
 
 - Does FrameDrop keep or set the exec bit on `frametop-install.sh`? A zip unpacked on Windows loses it, and without it nothing runs.
 - What start command does FrameDrop pick for this zip, and which runtime?
 - Does the manifest's `name` become the Devkit Game name? It has to stay free of `-`.
+- Can you type the password in the window in VR: does the SteamVR keyboard come up for its password field?
