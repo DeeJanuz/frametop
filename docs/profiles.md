@@ -6,7 +6,8 @@ A profile is a named layout that also opens apps. It holds:
 
 - where each screen goes, with its size in metres, curve, roll, and pin (what a named layout held before profiles);
 - which screens show and which are hidden;
-- the apps, one entry per window: on a screen at a place and size, or floating at a pose, size, and scale.
+- the apps, one entry per window: on a screen at a place and size, or floating at a pose, size, and scale;
+- the remote displays connected when it was saved, each with its place and whether it's hidden ([remote-displays.md](remote-displays.md)). Opening the profile connects them, if their computer answers, and puts them back. Like its apps, it leaves other displays connected.
 
 So a "Work" profile can put three screens around you with a browser, two terminals, and an editor on them, and a "Couch" profile can hide every screen and float one video player in front of you.
 
