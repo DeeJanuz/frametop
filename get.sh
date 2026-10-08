@@ -6,7 +6,7 @@
 #
 # It asks which version to install, clones the repo into ~/frametop (or updates the clone
 # that's there), and runs its install.sh. Run it again to update, or to switch versions.
-# With --release it installs a release instead: Frametop built, in one file. It downloads the
+# Its third choice, or --release, installs a release instead: Frametop built, in one file. It downloads the
 # release's Frametop.zip from GitHub (about 1.1 GB: the newest stable release, or with
 # --experimental the newest of any), unpacks it in ~/.cache/frametop/release, and runs its
 # install-release.sh, which checks this SteamOS build against the releases' SteamOS table and
@@ -38,7 +38,9 @@ piped: curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- [optio
 EOF
 }
 
-SLUG=${FRAMETOP_REPO:-DeeJanuz/frametop}  # FRAMETOP_REPO: another repo's releases, such as a fork's
+# Releases are built in the Frametop organization's repo: its CI runners (Depot) need an
+# organization. The branches still clone from DeeJanuz/frametop.
+SLUG=${FRAMETOP_REPO:-Frametop/frametop}  # FRAMETOP_REPO: another repo's releases, such as a fork's
 
 # release_zip CHANNEL VERSION: the URL of a release's Frametop.zip on GitHub.
 release_zip() {
@@ -140,6 +142,7 @@ main() {
     echo "releases come from the stable or experimental list, not a branch" >&2
     return 2
   fi
+  local dir_arg=$dir  # the menu's release choice puts releases in their own default place
   if [ -z "$dir" ] && [ "$release" = 0 ]; then
     dir=$HOME/frametop
   fi
@@ -176,12 +179,16 @@ main() {
       echo "Which version of Frametop?"
       echo "  1) stable: the main branch, tested releases"
       echo "  2) experimental: the newest features, less tested"
+      [ "$release" = 0 ] && echo "  3) experimental release: built, nothing to compile (a 1.1 GB download)"
       [ -n "$current" ] && echo "(installed now: $current)"
-      read -r -p "Choose 1 or 2 [$([ "$def" = main ] && echo 1 || echo 2)]: " answer </dev/tty || answer=
+      read -r -p "Choose 1$([ "$release" = 0 ] && echo ", 2, or 3" || echo " or 2") [$([ "$def" = main ] && echo 1 || echo 2)]: " \
+        answer </dev/tty || answer=
       case ${answer:-$def} in
         1|main|s*) branch=main ;;
         2|experimental|e*) branch=experimental ;;
-        *) echo "not 1 or 2: $answer" >&2; return 2 ;;
+        3) [ "$release" = 0 ] || { echo "not 1 or 2: $answer" >&2; return 2; }
+           release=1 branch=experimental dir=$dir_arg ;;
+        *) echo "not one of the choices: $answer" >&2; return 2 ;;
       esac
     fi
   fi
