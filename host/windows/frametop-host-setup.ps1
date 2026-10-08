@@ -4,7 +4,7 @@
 #
 #  1. Vibepollo 2.0.0 (github.com/Nonary/Vibepollo), installed with its own installer if it
 #     isn't here (checked against its SHA-256 first).
-#  2. Frametop's build of Vibepollo's sunshine.exe (github.com/DeeJanuz/frametop-vibepollo):
+#  2. Frametop's build of Vibepollo's sunshine.exe (github.com/Frametop/frametop-vibepollo):
 #     it can stream any of your monitors (not only the main one), keeps your monitor layout
 #     when a virtual display goes away, and doesn't stall the Web UI. Checked against its
 #     SHA-256; the original is kept as sunshine.exe.2.0.0-original.
