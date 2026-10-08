@@ -899,10 +899,12 @@ def in_container():
 
 
 def run_stream(*args, timeout=60):
-    """ft-stream (it runs in the dev container, as ft-screens does)."""
+    """ft-stream, in the container ft-screens runs in: "dev" for a clone, the release's own for a
+    release (scripts/in-box). A missing "dev" made distrobox ask whether to create it, and the
+    question hung until the timeout."""
     cmd = [STREAM, *args]
     if not in_container():
-        cmd = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--", *cmd]
+        cmd = [os.path.join(REPO, "scripts", "in-box"), *cmd]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return r.returncode, r.stdout, r.stderr
 
