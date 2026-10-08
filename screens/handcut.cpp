@@ -88,7 +88,7 @@ bool Hands::Read() {
     const Mat head = HeadAt(captureNs_);
 
     // each hand's palm in the room, and its velocity from the last time it was seen
-    ids_.clear();
+    ids_.clear(), basePts_.clear();
     std::vector<int> owners;   // the hand each capsule belongs to, in file order
     for (uint32_t k = 0; k < nhands; ++k) {
         const fh_hand_t &h = copy.hands[k];
@@ -97,6 +97,13 @@ bool Hands::Read() {
         const int idx = int(ids_.size());
         ids_.push_back(id);
         owners.insert(owners.end(), std::min<uint32_t>(h.ncapsules, kMaxCapsules), idx);
+        HandPoints hp{id, (h.flags & FH_HAND_RIGHT) != 0, {}};
+        bool finite = true;
+        for (int j = 0; j < 21; ++j) {
+            for (float v : pts[j]) finite = finite && std::isfinite(v) && std::fabs(v) < 10;
+            Apply(head, pts[j], hp.p[j]);
+        }
+        if (finite) basePts_.push_back(hp);
         double palm[3] = {0, 0, 0};
         bool ok = true;
         for (int j : {0, 5, 9, 13, 17}) {
@@ -162,7 +169,7 @@ bool Hands::Update(const Mat &head, int64_t nowNs) {
     history_.push_back({nowNs, head});
     while (!history_.empty() && nowNs - history_.front().ns > kHistoryNs) history_.erase(history_.begin());
     Read();
-    if (nowNs - publishNs_ > kStaleNs) base_.clear(), owner_.clear();
+    if (nowNs - publishNs_ > kStaleNs) base_.clear(), owner_.clear(), basePts_.clear();
     // move each hand ahead to when this frame will be on the displays; a slow hand's
     // velocity is mostly tracking noise, so it fades out below kStillSpeed
     const double ahead = std::clamp((nowNs + leadNs_ - captureNs_) / 1e9, 0.0, kMaxAhead);
@@ -180,6 +187,21 @@ bool Hands::Update(const Mat &head, int64_t nowNs) {
         }
     }
     return !world_.empty();
+}
+
+void Hands::Points(int64_t nowNs, bool predict, double leadMs, std::vector<HandPoints> &out) const {
+    out = basePts_;
+    if (!predict) return;
+    const double ahead = std::clamp((nowNs + leadMs * 1e6 - captureNs_) / 1e9, 0.0, kMaxAhead);
+    for (HandPoints &hp : out) {
+        const auto m = motion_.find(hp.id);
+        if (m == motion_.end()) continue;
+        const double *v = m->second.v;
+        const double speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        const double gain = std::clamp((speed - kStillSpeed) / kStillSpeed, 0.0, 1.0);   // as Update
+        for (auto &p : hp.p)
+            for (int i = 0; i < 3; ++i) p[i] += float(v[i] * gain * ahead);
+    }
 }
 
 void EyePositions(const Mat &head, double out[2][3]) {
@@ -279,6 +301,9 @@ PFNEGLCREATEIMAGEKHRPROC pCreateImage;
 PFNEGLDESTROYIMAGEKHRPROC pDestroyImage;
 PFNGLEGLIMAGETARGETTEXTURE2DOESPROC pImageTargetTexture;
 PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC pImageTargetRenderbuffer;
+PFNEGLCREATESYNCKHRPROC pCreateSync;
+PFNEGLDESTROYSYNCKHRPROC pDestroySync;
+PFNEGLCLIENTWAITSYNCKHRPROC pClientWaitSync;
 
 const char *kVertex = R"(
 attribute vec2 pos;          // the unit square
@@ -312,6 +337,20 @@ void main() {
     float d = length(px - (a + t * ab));
     float rad = mix(r.x, r.y, t);
     gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(rad - feather, rad + feather, d));
+})";
+
+// A probe dot: the colour inside, a dark ring around it so it reads on any background.
+const char *kMark = R"(
+precision highp float;
+uniform vec2 c;
+uniform float r;
+uniform vec3 color;
+varying vec2 px;
+void main() {
+    float d = length(px - c);
+    float a = 1.0 - smoothstep(r - 0.75, r + 0.75, d);
+    if (a <= 0.0) discard;
+    gl_FragColor = vec4(d > r - 2.0 ? vec3(0.0) : color, a);
 })";
 
 unsigned Shader(GLenum type, const char *src) {
@@ -400,7 +439,11 @@ bool Renderer::Init(const std::vector<uint64_t> &modifiers, std::function<void(c
     pImageTargetTexture = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(eglGetProcAddress("glEGLImageTargetTexture2DOES"));
     pImageTargetRenderbuffer = reinterpret_cast<PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC>(
         eglGetProcAddress("glEGLImageTargetRenderbufferStorageOES"));
-    if (!gbm_ || !pGetPlatformDisplay || !pCreateImage || !pImageTargetTexture || !pImageTargetRenderbuffer) {
+    pCreateSync = reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
+    pDestroySync = reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
+    pClientWaitSync = reinterpret_cast<PFNEGLCLIENTWAITSYNCKHRPROC>(eglGetProcAddress("eglClientWaitSyncKHR"));
+    if (!gbm_ || !pGetPlatformDisplay || !pCreateImage || !pImageTargetTexture || !pImageTargetRenderbuffer ||
+        !pCreateSync || !pDestroySync || !pClientWaitSync) {
         std::fprintf(stderr, "handcut: GBM or EGL extensions missing\n");
         return false;
     }
@@ -415,7 +458,8 @@ bool Renderer::Init(const std::vector<uint64_t> &modifiers, std::function<void(c
     ctx_ = ctx;
     copyProg_ = Program(kCopy);
     cutProg_ = Program(kCut);
-    if (!copyProg_ || !cutProg_) return false;
+    markProg_ = Program(kMark);
+    if (!copyProg_ || !cutProg_ || !markProg_) return false;
     const float quad[] = {0, 0, 1, 0, 0, 1, 1, 1};
     glGenBuffers(1, &vbo_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
@@ -451,6 +495,9 @@ void Renderer::Forget(const void *key) {
     glDeleteTextures(1, &it->second.tex);
     pDestroyImage(EGLDisplay(dpy_), EGLImageKHR(it->second.image));
     imported_.erase(it);
+    for (auto &[k, r] : rings_)   // a new buffer at the same address isn't this one
+        for (Output &o : r.out)
+            if (o.key == key) o.drawn = false;
 }
 
 bool Renderer::MakeOutput(Output &o, int w, int h) {
@@ -489,6 +536,7 @@ bool Renderer::MakeOutput(Output &o, int w, int h) {
 
 void Renderer::FreeOutput(Output &o) {
     if (o.bo && released_) released_(&o);
+    if (o.fence) pDestroySync(EGLDisplay(dpy_), EGLSyncKHR(o.fence));
     if (o.fbo) glDeleteFramebuffers(1, &o.fbo);
     if (o.rb) glDeleteRenderbuffers(1, &o.rb);
     if (o.image) pDestroyImage(EGLDisplay(dpy_), EGLImageKHR(o.image));
@@ -505,26 +553,68 @@ void Renderer::DropPanel(int panel) {
     rings_.erase(it);
 }
 
-const Output *Renderer::Composite(int panel, const void *key, const ft_dmabuf &src, const std::vector<Capsule2D> eyes[2]) {
-    if (!ready_) return nullptr;
-    const auto t0 = std::chrono::steady_clock::now();
-    const int w = src.width, h = src.height;
-    Ring &ring = rings_[panel];
-    if (ring.w != w || ring.h != h) {
-        for (Output &old : ring.out) FreeOutput(old);
-        ring.w = w, ring.h = h, ring.next = 0;
-    }
-    Output &o = ring.out[ring.next];
-    if (!o.bo && !MakeOutput(o, 2 * w, h)) return nullptr;
-    const GLuint tex = Texture(key, src);
-    if (!tex) return nullptr;
-    ring.next = (ring.next + 1) % 3;
+namespace {
 
+// The pixels a cutout's quad covers (see Draw), as x0 y0 x1 y1 in the eye's half.
+void Bounds(const Capsule2D &c, float b[4]) {
+    const float feather = std::max(1.5f, 0.15f * std::min(c.ra, c.rb));
+    const float r = std::max(c.ra, c.rb) + feather;
+    b[0] = std::min(c.ax, c.bx) - r, b[1] = std::min(c.ay, c.by) - r;
+    b[2] = std::max(c.ax, c.bx) + r, b[3] = std::max(c.ay, c.by) + r;
+}
+
+// Within a quarter pixel: the same picture.
+bool SameSpots(const std::vector<Capsule2D> a[2], const std::vector<Capsule2D> b[2]) {
+    for (int e = 0; e < 2; ++e) {
+        if (a[e].size() != b[e].size()) return false;
+        for (size_t i = 0; i < a[e].size(); ++i) {
+            const Capsule2D &p = a[e][i], &q = b[e][i];
+            for (float d : {p.ax - q.ax, p.ay - q.ay, p.bx - q.bx, p.by - q.by, p.ra - q.ra, p.rb - q.rb})
+                if (std::fabs(d) > 0.25f) return false;
+        }
+    }
+    return true;
+}
+
+int64_t SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+}  // namespace
+
+bool Renderer::Passed(Output &o, int64_t timeoutNs) {
+    if (!o.fence) return true;
+    const EGLint r = pClientWaitSync(EGLDisplay(dpy_), EGLSyncKHR(o.fence), 0, EGLTimeKHR(timeoutNs));
+    if (r == EGL_TIMEOUT_EXPIRED_KHR) return false;
+    pDestroySync(EGLDisplay(dpy_), EGLSyncKHR(o.fence));   // passed, or failed: don't wait on it again
+    o.fence = nullptr;
+    return true;
+}
+
+// Draws one buffer. Partial: the buffer holds this client frame already, with o.spots cut
+// out, so each eye is drawn again only inside the box around those and the new cutouts.
+void Renderer::Draw(Output &o, unsigned tex, int w, int h, const std::vector<Capsule2D> eyes[2], bool partial) {
     glBindFramebuffer(GL_FRAMEBUFFER, o.fbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
     for (int e = 0; e < 2; ++e) {
+        if (partial) {
+            float box[4] = {1e9f, 1e9f, -1e9f, -1e9f}, b[4];
+            const std::vector<Capsule2D> *lists[2] = {&o.spots[e], &eyes[e]};
+            for (const std::vector<Capsule2D> *list : lists)
+                for (const Capsule2D &c : *list) {
+                    Bounds(c, b);
+                    box[0] = std::min(box[0], b[0]), box[1] = std::min(box[1], b[1]);
+                    box[2] = std::max(box[2], b[2]), box[3] = std::max(box[3], b[3]);
+                }
+            // Window y is the buffer's row, the same way down as the cutouts' y (see kVertex).
+            const int x0 = std::clamp(int(std::floor(box[0])) - 1, 0, w), y0 = std::clamp(int(std::floor(box[1])) - 1, 0, h);
+            const int x1 = std::clamp(int(std::ceil(box[2])) + 1, 0, w), y1 = std::clamp(int(std::ceil(box[3])) + 1, 0, h);
+            if (x1 <= x0 || y1 <= y0) continue;   // no cutout in this eye, then or now
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(e * w + x0, y0, x1 - x0, y1 - y0);
+        }
         glViewport(e * w, 0, w, h);
         glDisable(GL_BLEND);
         glUseProgram(copyProg_);
@@ -543,22 +633,117 @@ const Output *Renderer::Composite(int panel, const void *key, const ft_dmabuf &s
                     uB = glGetUniformLocation(cutProg_, "b"), uR = glGetUniformLocation(cutProg_, "r"),
                     uF = glGetUniformLocation(cutProg_, "feather");
         for (const Capsule2D &c : eyes[e]) {
-            const float feather = std::max(1.5f, 0.15f * std::min(c.ra, c.rb));
-            const float r = std::max(c.ra, c.rb) + feather;
-            glUniform4f(uRect, std::min(c.ax, c.bx) - r, std::min(c.ay, c.by) - r, std::max(c.ax, c.bx) + r,
-                        std::max(c.ay, c.by) + r);
+            float b[4];
+            Bounds(c, b);
+            glUniform4f(uRect, b[0], b[1], b[2], b[3]);
             glUniform2f(uA, c.ax, c.ay);
             glUniform2f(uB, c.bx, c.by);
             glUniform2f(uR, c.ra, c.rb);
-            glUniform1f(uF, feather);
+            glUniform1f(uF, std::max(1.5f, 0.15f * std::min(c.ra, c.rb)));
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
+        glDisable(GL_SCISSOR_TEST);
     }
     glDisable(GL_BLEND);
-    // SteamVR reads the buffer from another process and GPU queue; make sure it's done.
-    glFinish();
-    lastMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    return &o;
+}
+
+const Output *Renderer::Composite(int panel, const void *key, uint64_t serial, const ft_dmabuf &src,
+                                  const std::vector<Capsule2D> eyes[2]) {
+    if (!ready_) return nullptr;
+    const int64_t t0 = SteadyNs();
+    const int w = src.width, h = src.height;
+    Ring &ring = rings_[panel];
+    if (ring.w != w || ring.h != h) {
+        for (Output &old : ring.out) FreeOutput(old);
+        ring.w = w, ring.h = h, ring.shown = ring.before = ring.drawing = -1;
+    }
+    // After a pause the panel showed its client buffer, so nothing of ours is on it.
+    if (t0 - ring.lastCall > 30'000'000) ring.shown = ring.before = -1;
+    ring.lastCall = t0;
+    auto promote = [&ring] {
+        ring.before = ring.shown, ring.shown = ring.drawing, ring.drawing = -1;
+    };
+    if (ring.drawing >= 0 && Passed(ring.out[ring.drawing], 0)) promote();
+
+    const int newest = ring.drawing >= 0 ? ring.drawing : ring.shown;
+    const Output *n = newest >= 0 ? &ring.out[newest] : nullptr;
+    if (n && n->key == key && n->serial == serial && SameSpots(n->spots, eyes)) {
+        ++stats_.same;
+    } else if (ring.drawing >= 0) {
+        ++stats_.busy;   // drawn on a later tick, from what's current then
+    } else {
+        int i = 0;
+        while (i == ring.shown || i == ring.before) ++i;
+        Output &o = ring.out[i];
+        if (!o.bo && !MakeOutput(o, 2 * w, h)) return nullptr;
+        const GLuint tex = Texture(key, src);
+        if (!tex) return nullptr;
+        const bool partial = o.drawn && o.key == key && o.serial == serial;
+        Draw(o, tex, w, h, eyes, partial);
+        o.fence = pCreateSync(EGLDisplay(dpy_), EGL_SYNC_FENCE_KHR, nullptr);
+        glFlush();
+        if (!o.fence) glFinish();   // no fence: wait here, as before
+        o.key = key, o.serial = serial, o.drawn = true;
+        for (int e = 0; e < 2; ++e) o.spots[e] = eyes[e];
+        ring.drawing = i;
+        ++stats_.draws, stats_.partial += partial;
+    }
+    // Nothing of ours to show yet: wait for this one rather than show none.
+    if (ring.shown < 0 && ring.drawing >= 0) {
+        ++stats_.waits;
+        if (Passed(ring.out[ring.drawing], 50'000'000)) promote();
+    }
+    lastMs_ = (SteadyNs() - t0) / 1e6;
+    stats_.cpuMs += lastMs_, stats_.worstMs = std::max(stats_.worstMs, lastMs_);
+    return ring.shown >= 0 ? &ring.out[ring.shown] : nullptr;
+}
+
+const Output *Renderer::Marks(int panel, int w, int h, const std::vector<Mark> eyes[2]) {
+    if (!ready_) return nullptr;
+    Ring &ring = rings_[panel];
+    if (ring.w != w || ring.h != h) {
+        for (Output &old : ring.out) FreeOutput(old);
+        ring.w = w, ring.h = h, ring.shown = ring.before = ring.drawing = -1;
+    }
+    auto promote = [&ring] {
+        ring.before = ring.shown, ring.shown = ring.drawing, ring.drawing = -1;
+    };
+    if (ring.drawing >= 0 && Passed(ring.out[ring.drawing], 0)) promote();
+    if (ring.drawing < 0) {
+        int i = 0;
+        while (i == ring.shown || i == ring.before) ++i;
+        Output &o = ring.out[i];
+        if (!o.bo && !MakeOutput(o, 2 * w, h)) return nullptr;
+        glBindFramebuffer(GL_FRAMEBUFFER, o.fbo);
+        glViewport(0, 0, 2 * w, h);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glDisable(GL_BLEND);
+        glUseProgram(markProg_);
+        glUniform2f(glGetUniformLocation(markProg_, "size"), float(w), float(h));
+        const GLint uRect = glGetUniformLocation(markProg_, "rect"), uC = glGetUniformLocation(markProg_, "c"),
+                    uR = glGetUniformLocation(markProg_, "r"), uColor = glGetUniformLocation(markProg_, "color");
+        for (int e = 0; e < 2; ++e) {
+            glViewport(e * w, 0, w, h);
+            for (const Mark &m : eyes[e]) {
+                glUniform4f(uRect, m.x - m.r - 1, m.y - m.r - 1, m.x + m.r + 1, m.y + m.r + 1);
+                glUniform2f(uC, m.x, m.y);
+                glUniform1f(uR, m.r);
+                glUniform3f(uColor, m.rgb[0], m.rgb[1], m.rgb[2]);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            }
+        }
+        o.fence = pCreateSync(EGLDisplay(dpy_), EGL_SYNC_FENCE_KHR, nullptr);
+        glFlush();
+        if (!o.fence) glFinish();
+        o.key = nullptr, o.drawn = false;   // holds no client frame
+        ring.drawing = i;
+    }
+    if (ring.shown < 0 && ring.drawing >= 0 && Passed(ring.out[ring.drawing], 50'000'000)) promote();
+    return ring.shown >= 0 ? &ring.out[ring.shown] : nullptr;
 }
 
 }  // namespace handcut
