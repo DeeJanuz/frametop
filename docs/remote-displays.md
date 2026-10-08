@@ -341,7 +341,7 @@ So far, Vibepollo 2.0.0's Remote Monitors aren't reliable on the test PC: a stal
 - the release rolls back, so the virtual display stays attached and "Disconnect Monitor" does nothing;
 - for a normal game (the Mac's session), the per-client identity stays held, and every later composition fails on it.
 
-Removing the virtual display alone, as a Vibepollo restart does, left the layout intact. The fork [DeeJanuz/frametop-vibepollo](https://github.com/DeeJanuz/frametop-vibepollo) (GPL-3.0, like Vibepollo), on branch `fix/windows-remote-monitor-release`, changes two things on Windows:
+Removing the virtual display alone, as a Vibepollo restart does, left the layout intact. The fork [Frametop/frametop-vibepollo](https://github.com/Frametop/frametop-vibepollo) (GPL-3.0, like Vibepollo), on branch `fix/windows-remote-monitor-release`, changes two things on Windows:
 - The coordinator removes the departing display first and recomposes only if another owned display remains (`retire_before_recompose`, set by the Windows runtime). A normal game's identity is released even when its display is already gone. Linux keeps the old order, which exists so KWin never has zero outputs.
 - Composed layout applies run with display recovery off, so a refused layout can't reset the host's arrangement.
 
