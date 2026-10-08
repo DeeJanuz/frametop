@@ -11,8 +11,8 @@
 //     its centre (it snaps level within kRollSnap), or scroll on it for kRollStep steps.
 //   - a resize tab on the bottom right corner: drag it to set the width (the height
 //     follows the screen's resolution).
-//   - a reset button left of the bar: every screen back in its layout, around where you
-//     are now (`ft-layout apply`, like Meta+Shift+R).
+//   - a reset button left of the bar: the profile in use opened again, or every screen back
+//     in its layout, around where you are now (`ft-layout reset`, like Meta+Shift+R).
 //   The controls are translucent, like SteamVR's own, and brighten under a laser. They
 //   are invisible until a laser (a controller's, or the 3D mouse's) lands on or passes very close to
 //   one of them (UpdateControls).
@@ -2429,14 +2429,14 @@ void ft_vr_poll(void (*handle)(const struct ft_event *, void *), void *data) {
                 }
             }
         }
-        // The reset button: every screen back in the layout, around where you are now
-        // (`ft-layout apply`, like Meta+Shift+R; it refuses a second copy).
+        // The reset button: the profile in use opened again, or every screen back in the layout,
+        // around where you are now (`ft-layout reset`, like Meta+Shift+R; it refuses a second copy).
         while (s.resetButton != vr::k_ulOverlayHandleInvalid &&
                vr::VROverlay()->PollNextOverlayEvent(s.resetButton, &ev, sizeof ev)) {
             hover(6);
             if (ev.eventType == vr::VREvent_MouseButtonDown && ev.data.mouse.button == vr::VRMouseButton_Left) {
                 std::printf("screen %d: reset the layout\n", index + 1);
-                RunLayout("apply");
+                RunLayout("reset");
             } else if (ev.eventType == vr::VREvent_MouseButtonUp) {
                 EndDragsBy(ev.trackedDeviceIndex);
                 ReleaseAwayBy(ev.trackedDeviceIndex, ev.data.mouse.button, handle, data);

@@ -401,7 +401,7 @@ The user decided remote displays are Frametop displays, with the same controls a
 - `frametop-layout.json` has a `hosts` list. Each host has its displays: id, paired client, what it streams, label, stream size, fps, bitrate, and a screen's place, width, curve, pin and hidden flag. Each display keeps its screen number (101 and up), so the numbers don't shift when one is removed.
 - ft-layout starts the remote displays' streams on every apply and at desktop start, even without a head pose, and places them when there is one. Displays without a place go in a row above the screens.
   - `capture` and `save` record their places.
-  - A profile keeps their places and hidden state by id (`profiles[NAME]["remote"]`), and `use` puts them back.
+  - A profile keeps the displays connected when it's saved, like the apps open then: their places and hidden state by id (`profiles[NAME]["remote"]`). Opening it (`use`, `open`, desktop start), or arranging (`apply`, Reset Screen Layout) while it's the profile in use, connects each of them whose host answers on Vibepollo's Web UI port, at its address or its dongle's as its route allows, and puts it back where it was saved. A host that doesn't answer is skipped, and its displays stay disconnected. Displays the profile doesn't have stay as they are: a profile connects, but never disconnects (user decision, 2026-10-08).
   - `hide`/`show N` take their numbers.
   - `ft-layout remote list|monitors|add|set|connect|disconnect|remove`: `add` pairs the display's client with the host's token, and `remove` unpairs it (the host stays). `disconnect` sets the display's `off` flag and stops its stream; apply, profiles and desktop start skip it until `connect`.
 - ft-screens starts a host's streams one after another. Three started at once made Vibepollo refuse some ("Another stream operation is still running"), and the captures that started while the Remote Monitor appeared got no picture.
@@ -477,5 +477,4 @@ The user decided remote displays are Frametop displays, with the same controls a
 - Which of the test PC's two desk monitors is the real one (the main session)?
 - The Mac's chip (Max chips have two video encode engines) and BetterDisplay Pro matter only once the Mac goes past one display.
 - Audio: none, the focused display's host, or a fixed one?
-- Does a remote display belong to a profile, so switching profiles connects and disconnects streams?
 - Remote displays outside the desktop: should they also show over games, where the decoder is shared with Steam Link VR?

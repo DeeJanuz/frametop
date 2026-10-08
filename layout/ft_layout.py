@@ -50,8 +50,10 @@ you face (yaw only), like a recenter. It lives in ~/.config/frametop-layout.json
                             "off": true,                  disconnected: no stream, no panel
                             "pos": ..., "face": ..., "roll": 0}]}]}   as a screen's
 Remote displays are screens 101 and up, in the order they're listed. Without a place of their
-own they go in a row above the screens. A profile keeps their places and hidden state by id
-(profiles[NAME]["remote"]).
+own they go in a row above the screens. A profile keeps the ones connected when it was saved,
+like its apps: their places and hidden state by id (profiles[NAME]["remote"]). Opening it, or
+arranging while it's the one in use, connects each whose host answers and puts it there; the
+others stay as they are.
 Custom positions: x right, y up, -z forward from the head, in metres; face = the
 direction you look to see the screen's front straight on, in degrees, relative to your
 heading; roll = the panel turned about its front, counterclockwise as you see it.
@@ -62,6 +64,9 @@ is top left, then left to right.
 Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout apply [--wait SECONDS]   arrange every screen; --wait is for desktop start:
                                      wait for the screens, skip if "auto" is off
+  ft-layout reset                    a quick reset (Meta+Shift+R, a screen's reset button, a mapped
+                                     button): open the profile in use again, as use NAME does, or
+                                     else apply
   ft-layout capture                  save the current arrangement as the custom layout
   ft-layout save NAME                save it as a named layout too, and use that; with the
                                      desktop's apps and hidden screens, as a profile
@@ -97,6 +102,7 @@ Usage (on the Frame host; Frametop Display Settings calls it too):
   ft-layout remote disconnect ID...  stop their streams and panels until connected again
   ft-layout remote remove ID         stops it and unpairs its client (the host stays)
 """
+import concurrent.futures
 import fcntl
 import json
 import math
@@ -130,6 +136,7 @@ DEFAULTS = {"auto": True, "mode": "preset",
 REMOTE_FIRST = 101  # ft-screens' remote screens (screens/remote.h)
 REMOTE_MAX = 16
 REMOTE_PIXELS_PER_METRE = 2400  # a new remote display's width in VR (5120 px: 2.1 m), at least 1 m
+WEB_UI_PORT = 47990  # Vibepollo's Web UI: a host answers there when it's up
 STREAM = os.path.join(REPO, "stream", "build", "ft-stream")
 
 
@@ -788,6 +795,50 @@ def place_remote(sock, n, d, t, eye, heading):
     sock.ask(f"{'conceal' if d.get('hidden') else 'reveal'} {n}")
 
 
+def host_answers(host, timeout=1.5):
+    """Whether a host's Vibepollo answers, at its address or its Steam Link dongle's (as its
+    route allows)."""
+    route = host.get("route", "auto")
+    addresses = ([] if route == "dongle" else [host.get("address")]) + \
+        ([] if route == "network" else list(host.get("direct", [])))
+    for address in filter(None, addresses):
+        try:
+            with socket.create_connection((address, WEB_UI_PORT), timeout=timeout):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def profile_remotes(layout, name):
+    """Remote displays the profile has a place for go there; the others stay where they are."""
+    remote = layout.get("profiles", {}).get(name, {}).get("remote", {})
+    for _, _, d in remote_displays(layout):
+        if d.get("id") in remote:
+            for k in SPATIAL:
+                d.pop(k, None)
+            d.update(json.loads(json.dumps({k: v for k, v in remote[d["id"]].items() if k in SPATIAL})))
+
+
+def open_remotes(layout, name):
+    """Connect the remote displays profile `name` was saved with (in the layout: apply starts
+    their streams), each whose host answers now. A host that doesn't is skipped, and its
+    displays stay disconnected."""
+    remote = layout.get("profiles", {}).get(name, {}).get("remote", {})
+    wanted = [(h, d) for _, h, d in remote_displays(layout) if d.get("id") in remote and d.get("off")]
+    hosts = list({id(h): h for h, _ in wanted}.values())
+    if not hosts:
+        return
+    with concurrent.futures.ThreadPoolExecutor(len(hosts)) as pool:
+        up = dict(zip(map(id, hosts), pool.map(host_answers, hosts)))
+    for h, d in wanted:
+        if up[id(h)]:
+            d.pop("off", None)
+            log(f"remote display {d['id']}: connecting (profile {name!r})")
+        else:
+            log(f"remote display {d['id']}: {h.get('name') or h['address']} isn't answering; skipped")
+
+
 def start_remotes(sock, layout, only=None):
     """Start the remote displays' streams (or just the ids in `only`; ft-screens leaves one
     running with the same settings alone), and stop the streams of ones no longer listed or
@@ -1103,7 +1154,9 @@ def save_named(layout, name):
     if not screens:
         raise RuntimeError("nothing to save: no arrangement captured")
     layout.setdefault("layouts", {})[name] = [{k: s[k] for k in SPATIAL if k in s} for s in screens]
-    remote = {d["id"]: {k: d[k] for k in SPATIAL if k in d} for _, _, d in remote_displays(layout) if "pos" in d}
+    # The remote displays connected now, like the apps open now.
+    remote = {d["id"]: {k: d[k] for k in SPATIAL if k in d} for _, _, d in remote_displays(layout)
+              if not d.get("off") and "pos" in d}
     profile = layout.setdefault("profiles", {}).setdefault(name, {})
     if remote:
         profile["remote"] = remote
@@ -1133,13 +1186,7 @@ def use_named(layout, name):
         elif "pos" not in screens[i]:
             screens[i].update({"pos": list(preset[i]["pos"]), "face": list(preset[i]["face"]),
                                "roll": preset[i]["roll"]})
-    # Remote displays the profile has a place for go there; the others stay where they are.
-    remote = layout.get("profiles", {}).get(name, {}).get("remote", {})
-    for _, _, d in remote_displays(layout):
-        if d.get("id") in remote:
-            for k in SPATIAL:
-                d.pop(k, None)
-            d.update(json.loads(json.dumps({k: v for k, v in remote[d["id"]].items() if k in SPATIAL})))
+    profile_remotes(layout, name)
     layout["mode"], layout["active"] = "custom", name
 
 
@@ -1194,8 +1241,10 @@ def capture_profile(layout, name):
     hidden = [i + 1 for i in range(screen_count(layout)) if screen_entry(layout, i).get("hidden")]
     profile = layout.setdefault("profiles", {}).setdefault(name, {})
     profile["hidden"] = hidden
+    remote = profile.get("remote", {})  # the ones connected (save_named)
     for _, _, d in remote_displays(layout):
-        profile.setdefault("remote", {}).setdefault(d["id"], {})["hidden"] = bool(d.get("hidden"))
+        if d["id"] in remote:
+            remote[d["id"]]["hidden"] = bool(d.get("hidden"))
     reply = ask_float("windows")
     if reply and reply.startswith("ok "):
         profile["windows"] = json.loads(reply[3:])
@@ -1531,6 +1580,7 @@ def main(argv):
                 return main([argv[0], "apply"] + argv[2:])
             use_named(layout, name)
             use_hidden(layout, name)
+            open_remotes(layout, name)
             save_layout(layout)
             log(f"starting in profile {name!r}")
             wait = float(argv[argv.index("--wait") + 1]) if "--wait" in argv else 60
@@ -1547,6 +1597,10 @@ def main(argv):
                 else:
                     log(f"kwin: {last}")
             open_apps(name, wait=90)  # ft-floatd starts with Plasma
+        elif cmd == "reset":
+            layout = load_layout()
+            name = layout.get("active") if layout.get("mode") == "custom" else None
+            return main([argv[0], "use", name] if name in layout.get("layouts", {}) else [argv[0], "apply"])
         elif cmd == "remote":
             remote_command(argv[2:])
         elif cmd in ("pin", "unpin") and len(argv) >= 3:
@@ -1577,6 +1631,13 @@ def main(argv):
                             except RuntimeError as e:
                                 log(f"visibility: {e}")
                     else:
+                        layout = load_layout()
+                        name = layout.get("active") if layout.get("mode") == "custom" else None
+                        if name in layout.get("profiles", {}):
+                            # Arranged as the profile in use: its remote displays too.
+                            profile_remotes(layout, name)
+                            open_remotes(layout, name)
+                            save_layout(layout)
                         apply(wait)
                     if not wait:
                         kwin_follow()
@@ -1609,6 +1670,7 @@ def main(argv):
                     layout = load_layout()
                     use_named(layout, argv[2])
                     use_hidden(layout, argv[2])
+                    open_remotes(layout, argv[2])
                     save_layout(layout)
                     log(f"using layout {argv[2]!r}")
                     try:

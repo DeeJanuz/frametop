@@ -48,7 +48,7 @@ Every screen is an overlay named `frametop.screen.N` with five controls:
 - `.curve` bends the screen into a cylinder around you, using your current distance as the radius, or makes it flat again.
 - `.roll` rolls the screen when you drag it sideways, like a knob. It snaps level within 2.5°, and scrolling on it turns 5° per notch.
 - `.resize`, the tab on the bottom right corner, sets the width. Screens go down to 15 cm wide.
-- `.reset`, left of the bar, puts every screen back in its layout around where you are now, like Meta+Shift+R (`ft-layout apply`).
+- `.reset`, left of the bar, is the quick reset, like Meta+Shift+R (`ft-layout reset`): with a profile in use it opens that profile again, as Open profile does, and otherwise it puts every screen back in its layout around where you are now.
 
 The controls are sized from both the screen's width and its distance from you, follow the surface of a curved screen, and stay invisible until a laser or the 3D mouse's cursor lands on one or comes within about 1.5 times a button's size of it. While invisible they're still there, fully transparent, so SteamVR's laser can find them. They're translucent until a laser is on them, like SteamVR's own window controls.
 
@@ -148,7 +148,7 @@ Device rules are saved in `~/.config/frametop-input.json`. `input-settings/insta
 
 ## Frametop Display Settings and ft-layout
 
-When the desktop starts, its screens arrange themselves around where you're facing. You can move them by hand at any time and put them back with Meta+Shift+R, the reset button left of any screen's bar, the Reset Screen Layout menu entry, Arrange now in the app, or a mouse button mapped to Reset desktop screen layout.
+When the desktop starts, its screens arrange themselves around where you're facing. You can move them by hand at any time and put them back with Meta+Shift+R, the reset button left of any screen's bar, the Reset Screen Layout menu entry, or a button mapped to Reset desktop screen layout. With a profile in use, these open it again, the same as Open profile: its screens, hidden screens, remote displays and apps. Arrange now in the app arranges the screens (and the profile's remote displays) without reopening its apps or hiding its hidden screens again.
 
 The desktop's own screen arrangement follows where the screens are around you, whatever their numbers: a screen you see to the left of another is to its left in Plasma too, so the pointer and dragged windows cross straight to it. Screens one above the other stack, and screens pinned to a wrist or your head come last. It's updated at startup, after arranging or saving the layout, and half a second after you let go of a screen you moved. With the headset off there's no head pose to go by, and the arrangement stays as it was.
 
