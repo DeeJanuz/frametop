@@ -12,11 +12,15 @@ FROM registry.fedoraproject.org/fedora-toolbox:44@sha256:034cb7c472038e2d879ddc1
 
 # Toolchain (the binaries are built in here) and the libraries they link.
 RUN dnf -y install --setopt=install_weak_deps=False \
-      gcc gcc-c++ make pkgconf-pkg-config curl unzip just \
+      gcc gcc-c++ make pkgconf-pkg-config curl unzip just git cmake ninja-build \
       pipewire-devel libxkbcommon-devel libinput-devel systemd-devel dbus-devel \
       libdrm-devel mesa-libgbm-devel wayland-devel vulkan-loader-devel \
       vulkan-headers plasma-wayland-protocols wlroots-devel pixman-devel \
       libstdc++-static glibc-static jsoncpp-devel zstd \
+      # remote displays (stream/): moonlight-embedded's libgamestream and
+      # moonlight-common-c, and the host's sound (Opus, PulseAudio)
+      openssl-devel libcurl-devel expat-devel libuuid-devel json-devel \
+      opus-devel pulseaudio-libs-devel \
       # Frametop Input Settings (Kirigami, PySide6) and remote desktop (krdp):
       # the KDE/Qt stack has no PyPI wheels, so it stays a dnf package
       python3-pyside6 kf6-kirigami kf6-qqc2-desktop-style qt6-qtwayland \
@@ -75,6 +79,26 @@ RUN gaze/build.sh \
  && install -t /opt/frametop/bin gaze/build/ft-gaze gaze/build/ft-gazepanel
 RUN power/build.sh \
  && install -t /opt/frametop/bin power/build/ft-powerd
+RUN stream/build.sh \
+ && install -t /opt/frametop/bin stream/build/ft-stream
+# Our own eye tracker: ft-eyegrab (it runs on the host, as root) and ft-eyes'
+# build/venv, which here only points at the venv above.
+RUN gaze/tracker/build.sh \
+ && install -t /opt/frametop/bin gaze/tracker/build/ft-eyegrab
+
+# A release installs from this image (pack/get-release.sh): it copies
+# /src/frametop, built, to the Frame for its host side (services, the driver,
+# the desktop's scripts), and this distrobox (1.8.2.5, as install.sh clones it,
+# here by commit) to run the image as the container those programs start in.
+RUN git init -q /opt/frametop/distrobox \
+ && cd /opt/frametop/distrobox \
+ && git fetch -q --depth 1 https://github.com/89luca89/distrobox.git 40c3cd724faa434aeb0a23e28776665b92de68bd \
+ && git checkout -q FETCH_HEAD \
+ && rm -rf .git
+# Programs built against OpenVR look for SteamVR's library here first. In the
+# container on the Frame, distrobox mounts the host at /run/host; elsewhere the
+# link leads nowhere and they use /opt/frametop/lib's.
+RUN ln -s /run/host/opt/steamvr /opt/steamvr
 
 # The default environment: Frametop's binaries and the venv's python3 (Fedora's
 # interpreter, with the locked packages and the dnf Qt stack) first.

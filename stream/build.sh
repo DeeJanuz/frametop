@@ -2,17 +2,17 @@
 # Build stream/build/ft-stream (ft-stream.cpp and host.cpp: a remote display's stream, for
 # ft-screens) in the dev container on the Frame, and the remote-display spikes:
 # stream/build/ft-dectest (spike S1, spike/ft-dectest.cpp) and stream/build/ft-streamtest
-# (spike S3, spike/ft-streamtest.cpp). Uses the same pinned OpenVR header as ft-screens, for
-# IVRIPCResourceManagerClient::ImportDmabuf. ft-stream and ft-streamtest also need moonlight-embedded
-# (GPLv3) at a pinned commit: its libgamestream for pairing and launching, and the
-# moonlight-common-c it pins for the protocol, and its table of Windows key codes. ft-stream
-# plays the host's sound with Opus and PipeWire's PulseAudio server (libpulse-simple).
+# (spike S3, spike/ft-streamtest.cpp). Uses the pinned OpenVR SDK (scripts/openvr.sh), as
+# ft-screens does, for IVRIPCResourceManagerClient::ImportDmabuf. ft-stream and ft-streamtest
+# also need moonlight-embedded (GPLv3) at a pinned commit: its libgamestream for pairing and
+# launching, and the moonlight-common-c it pins for the protocol, and its table of Windows key
+# codes. ft-stream plays the host's sound with Opus and PipeWire's PulseAudio server
+# (libpulse-simple).
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 "$root/scripts/sync.sh" >/dev/null
 exec "$root/scripts/frame.sh" -C stream 'set -e; mkdir -p build/include
-openvr=v2.15.6
-[ -f build/include/openvr-$openvr ] || { curl -fsSL "https://raw.githubusercontent.com/ValveSoftware/openvr/$openvr/headers/openvr.h" -o build/include/openvr.h && touch build/include/openvr-$openvr; }
+. ../scripts/openvr.sh
 me=f32e415aea6797d261d6b470dcf8bf18727341c2
 src=build/moonlight-embedded
 mlc=$src/third_party/moonlight-common-c
@@ -34,7 +34,7 @@ for f in client http mkcert xml; do
     gcc -O2 -w -I$mlc/src -c $src/libgamestream/$f.c -o build/gamestream/$f.o
 done
 flags="-std=c++17 -O2 -Wall -Wno-missing-field-initializers -Ibuild/include $(pkg-config --cflags gbm libdrm egl glesv2)"
-vr="-L/opt/steamvr/bin/linuxarm64 -lopenvr_api -Wl,-rpath,/opt/steamvr/bin/linuxarm64"
+vr="$OPENVR_LIBS"
 g++ $flags -o build/ft-dectest spike/ft-dectest.cpp $(pkg-config --libs gbm egl glesv2) $vr
 echo "built build/ft-dectest"
 g++ $flags -I$mlc/src -I$src/libgamestream -o build/ft-streamtest spike/ft-streamtest.cpp build/gamestream/*.o \
