@@ -24,7 +24,9 @@ Everything lives under ~/.local/share/frametop/hands/contrib (--base). Nothing i
 unless the person presses Upload; while CONSENT.md or UPLOAD.md is a draft, Upload stays off
 unless FT_HANDREC_ALLOW_UPLOAD=1 (the maintainer's rehearsal against a test repo, picked with
 FT_HANDREC_DATASET). --hub-dry-run does everything but the network calls.
-Launch with hands/rec/ft-handrec (host wrapper).
+Launch with hands/rec/ft-handrec (host wrapper). The standalone Hand Recorder
+(github.com/Frametop/frametop-hand-recorder) runs this backend on the host, from a venv, with
+its own window for SteamVR's dashboard: --qml its main.qml, --style Basic.
 """
 import argparse
 import datetime
@@ -43,6 +45,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QIco
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
 from PySide6.QtQuickControls2 import QQuickStyle
+import shiboken6
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -293,6 +296,11 @@ class Backend(QObject):
         return read_text(CONSENT_PATH) or "CONSENT.md is missing."
 
     @Property(str, constant=True)
+    def toolVersion(self):
+        """What session.json records as the tool (takes.tool_version), for the window to show."""
+        return takes.tool_version()
+
+    @Property(str, constant=True)
     def consentVersion(self):
         return consent_version()
 
@@ -389,7 +397,8 @@ class Backend(QObject):
             measured = ""
             try:
                 ring = mod.ring_lighting()
-                if ring is None and not self.sessionActive:
+                # A dry run starts nothing, the camera broker included.
+                if ring is None and not self.sessionActive and not self._session_options.get("dry_run"):
                     if mod.start_camd():
                         self._camd_started = True
                     time.sleep(1.0)    # the first near-black frames
@@ -1173,6 +1182,9 @@ def main():
                     help="test: Upload checks the export and says what it would send, with no network calls")
     ap.add_argument("--ignore-cameras", action="store_true",
                     help="start sessions even if the camera check (hands/camcheck.py) finds the upper cameras off")
+    ap.add_argument("--qml", default=os.path.join(HERE, "main.qml"),
+                    help="the window (default: this folder's main.qml, which needs Kirigami)")
+    ap.add_argument("--style", default="org.kde.desktop", help="the Qt Quick Controls style")
     a, qt_args = ap.parse_known_args()
     app = QGuiApplication([sys.argv[0]] + qt_args)
     app.setApplicationName("ft-handrec")
@@ -1180,7 +1192,7 @@ def main():
     app.setDesktopFileName("ft-handrec")
     if not QIcon.themeName():
         QIcon.setThemeName("breeze")
-    QQuickStyle.setStyle("org.kde.desktop")
+    QQuickStyle.setStyle(a.style)
     store = takes.Store(a.base)
     engine = QQmlApplicationEngine()
     engine.addImageProvider("frames", FrameProvider(store))
@@ -1195,7 +1207,7 @@ def main():
     app.aboutToQuit.connect(backend.shutdown)
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("startPage", a.page)
-    engine.load(QUrl.fromLocalFile(os.path.join(HERE, "main.qml")))
+    engine.load(QUrl.fromLocalFile(os.path.abspath(a.qml)))
     if not engine.rootObjects():
         sys.exit(1)
 
@@ -1208,7 +1220,11 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     tick = QTimer(interval=500, timeout=lambda: None)
     tick.start()
-    sys.exit(app.exec())
+    code = app.exec()
+    # The window goes before the backend: otherwise its bindings run again against a deleted
+    # backend as Python tears down ("Cannot read property ... of null", one per binding).
+    shiboken6.delete(engine)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

@@ -458,8 +458,15 @@ B: MSC=10
 """
 
 
-def event(etype, code, value):
-    return session.INPUT_EVENT.pack(1, 2, etype, code, value)
+def event(etype, code, value, t=1.000002):
+    return session.INPUT_EVENT.pack(int(t), round(t % 1 * 1e6), etype, code, value)
+
+
+def taps(*times):
+    """Presses, each 50 ms down, at these times (the kernel's clock), as one write."""
+    return b"".join(event(session.EV_KEY, session.KEY_SELECT, 1, t) + event(0, 0, 0, t)
+                    + event(session.EV_KEY, session.KEY_SELECT, 0, t + 0.05) + event(0, 0, 0, t + 0.05)
+                    for t in times)
 
 
 PRESS = event(session.EV_KEY, session.KEY_SELECT, 1) + event(0, 0, 0)
@@ -479,35 +486,74 @@ class InputTest(unittest.TestCase):
         # another gpio-keys without KEY_SELECT isn't the button
         self.assertIsNone(session.find_button(session.parse_input_devices(DEVICES.replace("200000000", "0"))))
 
-    def test_presses(self):
-        data = (PRESS + event(session.EV_KEY, session.KEY_SELECT, 2) * 3   # autorepeat: not presses
+    def test_events(self):
+        data = (PRESS + event(session.EV_KEY, session.KEY_SELECT, 2) * 3   # autorepeat: left out
                 + RELEASE + event(session.EV_KEY, 115, 1) + PRESS)        # another key
-        self.assertEqual(session.button_presses(data), (2, b""))
-        n, rest = session.button_presses(PRESS + PRESS[:10])
-        self.assertEqual((n, rest), (1, PRESS[:10]))   # half an event waits for the rest
-        self.assertEqual(session.button_presses(rest + PRESS[10:])[0], 1)
+        self.assertEqual(session.button_events(data), ([(True, 1.000002), (False, 1.000002), (True, 1.000002)], b""))
+        out, rest = session.button_events(PRESS + PRESS[:10])
+        self.assertEqual((out, rest), ([(True, 1.000002)], PRESS[:10]))   # half an event waits for the rest
+        self.assertEqual(session.button_events(rest + PRESS[10:])[0], [(True, 1.000002)])
+        self.assertEqual([t for _, t in session.button_events(taps(5.25))[0]], [5.25, 5.3])
+
+    def test_gestures(self):
+        def run(steps, **kw):
+            """steps: (time, "down" | "up" | "tick"). The gestures, with the time each came."""
+            g, out = session.ButtonGestures(double_s=0.4, hold_s=1.5, bounce_s=0.05, **kw), []
+            for t, what in steps:
+                out += [(t, x) for x in getattr(g, what)(t)]
+            return out
+        # a press comes once the double-press time has passed
+        self.assertEqual(run([(0, "down"), (0.1, "up"), (0.3, "tick"), (0.6, "tick")]), [(0.6, "press")])
+        # two: a double, at the second down, and nothing at its release
+        self.assertEqual(run([(0, "down"), (0.1, "up"), (0.4, "down"), (0.5, "up"), (2, "tick")]),
+                         [(0.4, "double")])
+        # the second too late: two presses (the first reported when the second goes down)
+        self.assertEqual(run([(0, "down"), (0.1, "up"), (0.6, "down"), (0.7, "up"), (1.2, "tick")]),
+                         [(0.6, "press"), (1.2, "press")])
+        # a hold: while still down, and nothing at the release
+        self.assertEqual(run([(0, "down"), (1.0, "tick"), (1.5, "tick"), (3, "up"), (4, "tick")]),
+                         [(1.5, "hold")])
+        # a hold noticed only at the release (a slow read) still counts
+        self.assertEqual(run([(0, "down"), (2, "up"), (3, "tick")]), [(2, "hold")])
+        # a bounce (up and down 20 ms apart) is one press
+        self.assertEqual(run([(0, "down"), (0.1, "up"), (0.12, "down"), (0.2, "up"), (1, "tick")]),
+                         [(1, "press")])
+        # a press, then a hold soon after: a double (the hold counts from a fresh down)
+        self.assertEqual(run([(0, "down"), (0.1, "up"), (0.3, "down"), (2, "tick"), (2.1, "up")]),
+                         [(0.3, "double")])
+        # a release with no down, and two downs: left alone
+        self.assertEqual(run([(0, "up"), (1, "down"), (1.1, "down"), (1.2, "up"), (2, "tick")]),
+                         [(2, "press")])
 
     def test_reader_fifo(self):
         tmp = tempfile.mkdtemp(prefix="handrec-button-test-")
         try:
             fifo = os.path.join(tmp, "button")
             os.mkfifo(fifo)
-            presses = []
-            reader = session.ButtonReader(fifo, lambda: presses.append(time.monotonic()), debounce_s=0.3).start()
+            got = []
+            reader = session.ButtonReader(fifo, got.append, double_s=0.15, hold_s=0.5).start()
             with open(fifo, "wb", buffering=0) as w:
-                w.write(PRESS + RELEASE)
-                w.write(PRESS[:7])                       # a press split across writes, a bounce
-                time.sleep(0.05)
+                w.write(PRESS + RELEASE)                 # a press
+                time.sleep(0.3)
+                w.write(PRESS[:7])                       # two, the first split across writes
+                time.sleep(0.02)
                 w.write(PRESS[7:] + RELEASE)
-                time.sleep(0.4)
+                time.sleep(0.07)
                 w.write(PRESS + RELEASE)
+                time.sleep(0.3)
+                w.write(taps(10, 10.1))                  # two in one read: the kernel's times tell them apart
+                time.sleep(0.3)
+                w.write(PRESS)                           # held
+                time.sleep(0.7)
+                self.assertEqual(got, ["press", "double", "double", "hold"])   # the hold came before the release
+                w.write(RELEASE)
                 time.sleep(0.2)
             with open(fifo, "wb", buffering=0) as w:     # the writer comes back: read again
                 time.sleep(0.4)
-                w.write(PRESS)
+                w.write(PRESS + RELEASE)
                 time.sleep(0.3)
             reader.stop()
-            self.assertEqual(len(presses), 3)
+            self.assertEqual(got, ["press", "double", "double", "hold", "press"])
             self.assertTrue(reader.ok)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -533,7 +579,7 @@ class ButtonSessionTest(SessionBase):
         writer = os.open(fifo, os.O_RDWR)   # kept open, so the reader never sees the end
         press = lambda: os.write(writer, PRESS + RELEASE)
         try:
-            with mock.patch.object(session, "BUTTON_DEBOUNCE_S", 0.0):
+            with mock.patch.object(session, "BUTTON_DOUBLE_S", 0.1):
                 s = self.session(speed=4, button_device=fifo)
                 s.input_devices = procfile
                 s.start()
@@ -560,6 +606,41 @@ class ButtonSessionTest(SessionBase):
             names = [e["event"] for e in self.events(s)]
             self.assertEqual(names, ["take", "ready", "prompt", "pause", "resume", "wait", "ready", "prompt", "wait",
                                      "end"])
+        finally:
+            os.close(writer)
+
+    def test_redo_and_stop(self):
+        """Two presses redo the step, a hold stops the session; the hints say so."""
+        fifo = os.path.join(self.tmp, "button")
+        os.mkfifo(fifo)
+        writer = os.open(fifo, os.O_RDWR)
+        press = lambda: os.write(writer, PRESS + RELEASE)
+        try:
+            with mock.patch.multiple(session, BUTTON_DOUBLE_S=0.15, BUTTON_HOLD_S=0.4):
+                s = self.session(speed=2, button_device=fifo)
+                s.start()
+                self.waiting(s, "starting")
+                press()
+                self.waiting(s, "intro")
+                press()
+                self.waiting(s, "ready", "Fist.")
+                press()
+                self.wait_for(s, lambda st: st["state"] == "running", "the hold")
+                os.write(writer, taps(1, 1.1))                # twice: redo
+                self.waiting(s, "ready", "Fist.")
+                time.sleep(0.1)                               # (sooner would be a bounce of the last)
+                press()
+                self.wait_for(s, lambda st: st["state"] == "running", "the hold again")
+                press()                                       # pause
+                st = self.wait_for(s, lambda st: st["state"] == "paused", "paused")
+                self.assertEqual(st["note"], session.RESUME_HINT_BUTTON)
+                os.write(writer, PRESS)                       # held: stop
+                s.join(20)
+                os.write(writer, RELEASE)
+            self.assertEqual(s.state, "stopped")
+            names = [e["event"] for e in self.events(s)]
+            self.assertEqual(names, ["take", "ready", "prompt", "redo", "wait", "ready", "prompt", "pause", "end"])
+            self.assertIn("panel: keys " + session.KEYS_STEP_BUTTON, self.panel)
         finally:
             os.close(writer)
 
@@ -628,6 +709,62 @@ class ManyPartsTest(unittest.TestCase):
         r = validate.validate(path)
         self.assertEqual(r.errors, [])
         self.assertEqual(r.summary["sets"], 120 + 30)
+
+
+class StandaloneTest(unittest.TestCase):
+    """The standalone Hand Recorder's tree (standalone.json at the top): ft-hands runs on the
+    host, the version comes from the build info, and repairs point at its install command."""
+    INFO = {"name": "frametop-hand-recorder", "version": "0.1.0", "frametop": "4ba49af",
+            "reinstall": "run the install command again"}
+
+    def test_build_info(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "standalone.json")
+            self.assertIsNone(takes.standalone(path))
+            with open(path, "w") as f:
+                json.dump(self.INFO, f)
+            self.assertEqual(takes.standalone(path), self.INFO)
+            with open(path, "w") as f:
+                f.write("[1]")
+            self.assertIsNone(takes.standalone(path))
+        with mock.patch.object(takes, "standalone", return_value=self.INFO):
+            self.assertEqual(takes.tool_version(), "ft-handrec 4ba49af (frametop-hand-recorder 0.1.0)")
+
+    def recorder_argv(self, standalone):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(session, "STANDALONE", standalone), \
+                mock.patch.object(session, "in_container", return_value=False), \
+                mock.patch.object(session.subprocess, "Popen") as popen:
+            session.Recorder(d, 1, 10, None, None)
+            return popen.call_args[0][0]
+
+    def tracker_argv(self, standalone):
+        fake = mock.Mock(ring=None)
+        with mock.patch.object(session, "STANDALONE", standalone), \
+                mock.patch.object(session.subprocess, "run") as run:
+            session.Session._start_tracker(fake)
+        return fake._start_unit.call_args[0][2], run
+
+    def test_ft_hands_on_the_host(self):
+        self.assertEqual(self.recorder_argv(self.INFO)[0], session.FT_HANDS)
+        argv, run = self.tracker_argv(self.INFO)
+        self.assertEqual(argv[0], session.FT_HANDS)
+        self.assertIn("--no-gestures", argv)
+        run.assert_not_called()   # no container to bring up
+
+    def test_ft_hands_in_the_dev_container(self):
+        self.assertTrue(self.recorder_argv(None)[0].endswith("distrobox"))
+        argv, _ = self.tracker_argv(None)
+        self.assertEqual(argv[:4], [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--"])
+        self.assertEqual(argv[4], session.FT_HANDS)
+
+    def test_fix_hint(self):
+        with mock.patch.object(session, "STANDALONE", self.INFO):
+            self.assertEqual(session.fix_hint("hands/build.sh"), "run the install command again")
+            text = session.camera_text({"status": "degraded", "reason": "2 of 4", "ring_missing": ["upper_left"]})
+        with mock.patch.object(session, "STANDALONE", None):
+            self.assertEqual(session.fix_hint("hands/build.sh"), "hands/build.sh")
+        self.assertIn("run the install command again", text)
+        self.assertNotIn("~/frametop", text)
 
 
 if __name__ == "__main__":

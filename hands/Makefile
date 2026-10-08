@@ -10,6 +10,8 @@ CFLAGS   ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
 CXXFLAGS ?= -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-psabi
 CXXFLAGS += -std=c++17 -fopenmp -I$(NCNN)/include/ncnn
 LDLIBS    = $(NCNN)/lib/libncnn.a -ljsoncpp -fopenmp -lpthread
+# The standalone Hand Recorder's release build passes LDFLAGS=-static (it runs on the host).
+LDFLAGS  ?=
 
 CAMD  = camd/camd.c camd/tp.c camd/xrcams.c
 TRACK = track/calib.cpp track/nets.cpp track/tracker.cpp track/io.cpp track/record.cpp track/pinch.cpp track/sides.cpp
@@ -24,15 +26,15 @@ build/ft-camd: $(CAMD) camd/tp.h camd/xrcams.h camd/fhring.h
 
 build/ft-hands: track/main.cpp $(TRACK) $(HDR) $(NCNN)/lib/libncnn.a
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -o $@ track/main.cpp $(TRACK) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ track/main.cpp $(TRACK) $(LDLIBS)
 
 build/ft-handreplay: track/replay.cpp $(TRACK) $(HDR) $(NCNN)/lib/libncnn.a
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -o $@ track/replay.cpp $(TRACK) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ track/replay.cpp $(TRACK) $(LDLIBS)
 
 build/sides-test: tests/sides_test.cpp $(TRACK) $(HDR) $(NCNN)/lib/libncnn.a
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -o $@ tests/sides_test.cpp $(TRACK) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ tests/sides_test.cpp $(TRACK) $(LDLIBS)
 
 check: build/sides-test
 	build/sides-test
