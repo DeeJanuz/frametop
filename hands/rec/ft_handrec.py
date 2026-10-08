@@ -25,7 +25,7 @@ unless the person presses Upload; while CONSENT.md or UPLOAD.md is a draft, Uplo
 unless FT_HANDREC_ALLOW_UPLOAD=1 (the maintainer's rehearsal against a test repo, picked with
 FT_HANDREC_DATASET). --hub-dry-run does everything but the network calls.
 Launch with hands/rec/ft-handrec (host wrapper). The standalone Hand Recorder
-(github.com/DeeJanuz/frametop-hand-recorder) runs this backend on the host, from a venv, with
+(github.com/Frametop/frametop-hand-recorder) runs this backend on the host, from a venv, with
 its own window for SteamVR's dashboard: --qml its main.qml, --style Basic.
 """
 import argparse

@@ -85,7 +85,7 @@ def find_zstd():
 
 def standalone(path=None):
     """The standalone Hand Recorder's build info, or None in a Frametop checkout. Its release
-    (github.com/DeeJanuz/frametop-hand-recorder) ships this repo's tree with standalone.json at
+    (github.com/Frametop/frametop-hand-recorder) ships this repo's tree with standalone.json at
     the top: {"name", "version", "frametop": this repo's git describe, "reinstall": how to repair
     an install}. Its binaries are built for the SteamOS host, so nothing runs in the dev container."""
     try:

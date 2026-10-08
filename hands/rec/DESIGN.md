@@ -25,7 +25,7 @@ Every part runs in the dev container, as ft-hands and Input Settings do. The hos
 
 ### The standalone Hand Recorder
 
-[frametop-hand-recorder](https://github.com/DeeJanuz/frametop-hand-recorder) is the recorder for people without Frametop. It pins this repo as a submodule and ships the parts above with its own window, a Qt Quick Controls `main.qml` sized for SteamVR's dashboard. Its release builds the binaries for the SteamOS host: ft-camd and ft-hands statically (`make LDFLAGS=-static`), and ft-handpanel against SteamVR's `libopenvr_api`. Everything runs on the host, the Python from a venv (`ft_handrec.py --qml ITS_QML --style Basic`).
+[frametop-hand-recorder](https://github.com/Frametop/frametop-hand-recorder) is the recorder for people without Frametop. It pins this repo as a submodule and ships the parts above with its own window, a Qt Quick Controls `main.qml` sized for SteamVR's dashboard. Its release builds the binaries for the SteamOS host: ft-camd and ft-hands statically (`make LDFLAGS=-static`), and ft-handpanel against SteamVR's `libopenvr_api`. Everything runs on the host, the Python from a venv (`ft_handrec.py --qml ITS_QML --style Basic`).
 
 Its tarball keeps this tree's layout (`hands/build/`, `hands/rec/`, `hands/models/`), so the paths here don't change. A `standalone.json` at the top marks it (`takes.standalone()`):
 - `session.py` starts ft-hands directly, not through distrobox.
