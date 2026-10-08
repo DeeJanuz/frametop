@@ -19,7 +19,7 @@ test-python:
     set -uo pipefail
     python3 -c 'import PySide6, numpy, cv2' || { echo "python3 can't import PySide6, numpy, and cv2"; exit 1; }
     status=0
-    for t in input/test/*.py hands/tests/test_*.py hands/rec/tests/*.py gaze/test/*.py; do
+    for t in input/test/*.py hands/tests/test_*.py hands/rec/tests/*.py gaze/test/*.py pack/test/*.py; do
         [ -f "$t" ] || continue
         if python3 "$t" >/dev/null; then echo "$t: ok"; else echo "$t: FAILED"; status=1; fi
     done

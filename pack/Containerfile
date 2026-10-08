@@ -86,12 +86,13 @@ RUN stream/build.sh \
 RUN gaze/tracker/build.sh \
  && install -t /opt/frametop/bin gaze/tracker/build/ft-eyegrab
 
-# A release installs from this image (pack/get-release.sh): it copies
+# A release installs from this image (get.sh --release): it copies
 # /src/frametop, built, to the Frame for its host side (services, the driver,
-# the desktop's scripts), and this distrobox (1.8.2.5, as install.sh clones it,
-# here by commit) to run the image as the container those programs start in.
-RUN git init -q /opt/frametop/distrobox \
- && cd /opt/frametop/distrobox \
+# the desktop's scripts), and its install.sh installs this distrobox (1.8.2.5,
+# as a source install clones it, here by commit) to run the image as the
+# container those programs start in (scripts/in-box).
+RUN git init -q pack/build/distrobox \
+ && cd pack/build/distrobox \
  && git fetch -q --depth 1 https://github.com/89luca89/distrobox.git 40c3cd724faa434aeb0a23e28776665b92de68bd \
  && git checkout -q FETCH_HEAD \
  && rm -rf .git

@@ -37,6 +37,11 @@ else
 fi
 FRAME_HOST=${FRAME_HOST:-frame}
 FRAME_BOX=${FRAME_BOX:-dev}
+# FRAME_RELEASE=1: this tree is a release (get.sh --release), copied out of its image with its
+# programs built, and its .frametop-release names the image and the container they run in
+# (scripts/in-box). It never builds: installers skip the build steps.
+FRAME_RELEASE=0
+[ -f "$REPO_ROOT/.frametop-release" ] && FRAME_RELEASE=1
 
 # on_frame '<command>': run a shell command on the Frame host, in FRAME_REPO.
 on_frame() {

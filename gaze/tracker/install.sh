@@ -20,7 +20,7 @@ sudo_run() { frame_sudo "$1"; }
 
 case ${1:-install} in
   install)
-    "$root/gaze/tracker/build.sh"
+    [ "$FRAME_RELEASE" = 1 ] || "$root/gaze/tracker/build.sh"
     ids=$(on_frame 'echo "$(id -u):$(id -g)"')
     fill_template "$root/gaze/tracker/$unit" | sed "s|@UID@|${ids%:*}|g; s|@GID@|${ids#*:}|g" |
       on_frame "cat > /tmp/$unit"

@@ -9,7 +9,7 @@ frame="$root/scripts/frame.sh"
 unit=frametop-gaze.service
 case ${1:-status} in
   install)
-    "$root/gaze/build.sh"
+    [ "$FRAME_RELEASE" = 1 ] || "$root/gaze/build.sh"
     fill_template "$root/gaze/$unit" | on_frame "mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/$unit"
     on_frame "chmod +x gaze/ft-gazed gaze/ft-gazectl"
     "$frame" --host "set -e; systemctl --user daemon-reload; systemctl --user enable $unit
