@@ -5,10 +5,12 @@
 # On a PC, FRAME_LOCAL=0: commands run over SSH on $FRAME_HOST (default "frame"), and the
 # Frame's copy is the one scripts/sync.sh keeps at ~/dev/frametop.
 # FRAME_LOCAL, FRAME_HOST, FRAME_REPO, and FRAME_BOX (container, default "dev") can be
-# set in the environment to override.
+# set in the environment to override. FRAME_IN_BOX=1 means this already runs inside the
+# build container (the image build, pack/Containerfile): commands run here, in this checkout.
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
+[ "${FRAME_IN_BOX:-0}" = 1 ] && FRAME_LOCAL=1
 if [ -z "${FRAME_LOCAL:-}" ]; then
   FRAME_LOCAL=0
   if grep -qx 'ID=steamos' /etc/os-release 2>/dev/null && grep -qE '^VARIANT_ID="?vr"?$' /etc/os-release; then
@@ -35,6 +37,11 @@ else
 fi
 FRAME_HOST=${FRAME_HOST:-frame}
 FRAME_BOX=${FRAME_BOX:-dev}
+# FRAME_RELEASE=1: this tree is a release (get.sh --release), copied out of its image with its
+# programs built, and its .frametop-release names the image and the container they run in
+# (scripts/in-box). It never builds: installers skip the build steps.
+FRAME_RELEASE=0
+[ -f "$REPO_ROOT/.frametop-release" ] && FRAME_RELEASE=1
 
 # on_frame '<command>': run a shell command on the Frame host, in FRAME_REPO.
 on_frame() {

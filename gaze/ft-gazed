@@ -134,6 +134,7 @@ from gazecheck import Checks  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / "gaze" / "build" / "ft-gaze"
+IN_BOX = REPO / "scripts" / "in-box"  # runs a program in the container it was built in
 ME = "\0ft_gazed"
 POINTER = "\0ft_pointer_helper"
 EYES_PROG = REPO / "gaze" / "tracker" / "ft-eyes"  # our own tracker
@@ -499,13 +500,11 @@ class Service:
             return
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"  # podman needs the real one
-        subprocess.run([str(REPO / "scripts" / "container-up.sh")], env=env, check=False)
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
         # ft-gaze quits when its stdin closes: the one thing distrobox passes on.
         sources = self.wanted_sources()
-        self.proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(HELPER), "--watch-stdin",
-                                      "--sources", sources], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, start_new_session=True)
+        self.proc = subprocess.Popen([str(IN_BOX), str(HELPER), "--watch-stdin", "--sources", sources], env=env,
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     start_new_session=True)
         self.proc_sources = sources
         os.set_blocking(self.proc.stdout.fileno(), False)
         os.set_blocking(self.proc.stderr.fileno(), False)
@@ -539,7 +538,7 @@ class Service:
         return (self.tracker == "own" and not self.override and self.awake) or time.monotonic() < self.eyes_until
 
     def start_eyes(self):
-        """Our own tracker, in the dev container, with build/venv's numpy and OpenCV. Like
+        """Our own tracker, in the container, with build/venv's numpy and OpenCV. Like
         ft-gaze, it quits when its stdin closes."""
         if not EYES_PYTHON.exists():
             log(f"ft-eyes isn't built: run {REPO}/gaze/tracker/build.sh")
@@ -547,11 +546,9 @@ class Service:
             return
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
-        subprocess.run([str(REPO / "scripts" / "container-up.sh")], env=env, check=False)
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
-        self.eyes_proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(EYES_PYTHON), str(EYES_PROG), "-v",
-                                           "--watch-stdin"], env=env, stdin=subprocess.PIPE,
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+        self.eyes_proc = subprocess.Popen([str(IN_BOX), str(EYES_PYTHON), str(EYES_PROG), "-v", "--watch-stdin"],
+                                          env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.PIPE, start_new_session=True)
         os.set_blocking(self.eyes_proc.stderr.fileno(), False)
         self.sel.register(self.eyes_proc.stderr, selectors.EVENT_READ, "eyes")
         log("ft-eyes started" + ("" if EYES_CAMS.exists() else

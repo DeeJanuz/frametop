@@ -8,13 +8,11 @@ PartOf=steamvr.service
 Requisite=steamvr.service
 
 [Service]
-# Runs in the dev container (built there against its libraries). The helper process
-# lives in the container, so clean it up explicitly around distrobox enter.
-# Start the container in a scope of its own first: started by this service (distrobox enter
-# does that on demand), stopping the service would stop the container and all in it.
-ExecStartPre=-@REPO@/scripts/container-up.sh
+# Runs in the container it was built in (the dev container, or a release's: scripts/in-box,
+# which starts it in a scope of its own, so stopping this service can't stop it). The helper
+# process lives in the container, so clean it up explicitly around it.
 ExecStartPre=-/usr/bin/pkill -x ft-pointer
-ExecStart=%h/.local/bin/distrobox enter dev -- @REPO@/pointer/helper/build/ft-pointer
+ExecStart=@REPO@/scripts/in-box @REPO@/pointer/helper/build/ft-pointer
 ExecStopPost=-/usr/bin/pkill -x ft-pointer
 Restart=on-failure
 RestartSec=3

@@ -253,8 +253,7 @@ class Checks:
             return
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
-        self.panel_proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(PANEL_PROG), "--watch-stdin"],
+        self.panel_proc = subprocess.Popen([str(REPO / "scripts" / "in-box"), str(PANEL_PROG), "--watch-stdin"],
                                            env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                            stderr=subprocess.PIPE, start_new_session=True)
         os.set_blocking(self.panel_proc.stderr.fileno(), False)

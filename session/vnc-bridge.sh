@@ -63,7 +63,7 @@ fi
 read -r _ _ w h _ _ <<< "$v"
 
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-box() { "$HOME/.local/bin/distrobox" enter dev -- "$@"; }
+box() { "$here/../scripts/in-box" "$@"; }
 stop_rdp() { pkill -f "[x]freerdp /v:127.0.0.1:$rdp_port " 2>/dev/null || true; }
 trap 'stop_rdp; pkill -f "[X]vnc $display " 2>/dev/null || true' EXIT
 

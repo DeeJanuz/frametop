@@ -99,13 +99,13 @@ if [ "${1:-}" != --inner ]; then
       -- "$0" --inner
   fi
 
-  # ft-screens runs in the dev container (it's built against Fedora's wlroots); KWin and
-  # Plasma stay on the host and connect to its socket.
+  # ft-screens runs in Frametop's container (it's built against Fedora's wlroots); KWin and
+  # Plasma stay on the host and connect to its socket. in-box starts the container in a scope
+  # of its own, not this desktop's, or stopping the desktop would stop the container.
   socket=ft-screens-0
   read -ra screen_args <<< "$("$here/../layout/ft-layout" screen-args)"
   export FT_SCREEN_COUNT=$(( ${#screen_args[@]} / 2 )) FT_FLOAT_SLOTS=$float_slots
-  "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
-  "$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens" --socket "$socket" \
+  "$here/../scripts/in-box" "$here/../screens/build/ft-screens" --socket "$socket" \
     "${screen_args[@]}" --spares "$float_slots" > /tmp/frametop-screens.log 2>&1 < /dev/null &
   stop_screens() { pkill -x ft-screens 2>/dev/null || true; }
   trap stop_screens EXIT

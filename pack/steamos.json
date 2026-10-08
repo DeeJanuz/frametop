@@ -1,0 +1,14 @@
+{
+  "about": "The SteamOS builds Frametop has been tested on, and the ones it's known to break on. Every release's Frametop.zip carries a copy (pack/release-info.py), and pack/install-release.sh checks this SteamOS build against the newest one, this file on main, when it can fetch it. Add a build once Frametop passed the headset tests on it (HEADSET-TESTS.md; scripts/doctor.sh --mark-good prints the versions). A broken build names the release that fixes it (fixed_in), or the first release that needs something the build lacks (from), or both: the releases in between refuse to install on it and name the fix.",
+  "tested": [
+    {
+      "build": "20260922.6101926",
+      "version": "0.3.0",
+      "branch": "stable",
+      "steamvr": "2.17.10",
+      "frametop": "0.2.1",
+      "date": "2026-10-05"
+    }
+  ],
+  "broken": []
+}

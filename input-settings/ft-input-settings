@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch Frametop Input Settings from a Plasma session on the Frame host.
-# The app runs in the dev container (PySide6 and Kirigami come from Fedora there).
+# The app runs in Frametop's container (PySide6 and Kirigami come from Fedora there).
 # podman needs the real XDG_RUNTIME_DIR and the real user bus (to reach systemd for
 # the container's cgroup; the Frametop session runs on a private bus from
 # dbus-run-session). The session's Wayland socket and bus go to the app itself.
@@ -10,8 +10,7 @@ case $wl in /*) ;; *) wl="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$wl" ;; esac
 session_bus=${DBUS_SESSION_BUS_ADDRESS:-}
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
-"$here/../scripts/container-up.sh"
-exec "$HOME/.local/bin/distrobox" enter dev -- env WAYLAND_DISPLAY="$wl" DISPLAY="${DISPLAY:-}" \
+exec "$here/../scripts/in-box" env WAYLAND_DISPLAY="$wl" DISPLAY="${DISPLAY:-}" \
   XAUTHORITY="${XAUTHORITY:-}" DBUS_SESSION_BUS_ADDRESS="$session_bus" \
   QT_QPA_PLATFORM="wayland;xcb" \
   python3 "$here/ft_input_settings.py" "$@"

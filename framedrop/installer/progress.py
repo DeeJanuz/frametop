@@ -1,0 +1,543 @@
+#!/usr/bin/env python3
+"""The FrameDrop installer's window: what to install, your password for the parts that need it,
+then the install's progress.
+
+Usage: progress.py DIR [--dry-run]
+  DIR        the installer's folder. A release's Frametop.zip has install-release.sh, the
+             image (frametop-image.tar), and frametop-release.json: it installs that, built.
+             A test zip has get.sh instead, which clones Frametop from GitHub.
+  --dry-run  unpack into ~/.cache/frametop-framedrop/dry-run and stop there, without
+             installing, for testing this flow
+
+The install runs in a user service of its own (UNIT): Steam ends the title's whole process
+tree when it's quit, and starts it with a high OOM score. Closing the window doesn't stop the
+install; playing the title again reattaches to it.
+
+Our eye tracker and the Bluetooth fixes need sudo. The window asks for your password on the
+headset, checks it with sudo, and keeps it in this process's memory until the install ends.
+sudo in the install gets it through askpass (SUDO_ASKPASS), from a socket in a folder only you
+can open, and the window answers only programs in the install's service. It's never written to
+a file, a log, the service's environment, or a command line.
+"""
+import json
+import os
+import pwd
+import re
+import socket
+import struct
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
+
+HERE = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent
+DRY_RUN = "--dry-run" in sys.argv[2:]
+UNIT = "frametop-framedrop-install"
+HOME = Path.home()
+STATE = HOME / ".cache" / "frametop-framedrop"
+LOG = STATE / "install.log"
+RELEASE = (HERE / "install-release.sh").exists() and (HERE / "frametop-image.tar").exists()
+SOCK_DIR = Path(f"/run/user/{os.getuid()}/frametop-install")
+SOCK = SOCK_DIR / "askpass"
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# get.sh and install.sh mark each step with "== N/10 what it is"
+STEP = re.compile(r"^== (\d+)/(\d+) (.*)$")
+DONE_TEXT = ("Frametop is installed. Restart SteamVR once, or reboot the headset, so it loads "
+             "Frametop's driver. Then open Launch a program, then Desktop.")
+
+
+def host_env():
+    """The user's real runtime folder and bus, for systemctl and systemd-run: a window opened
+    from a VR desktop's Dolphin or Konsole has that session's own. GTK keeps the session's."""
+    env = dict(os.environ)
+    env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{os.getuid()}/bus"
+    return env
+
+
+def unit_state():
+    out = subprocess.run(["systemctl", "--user", "show", "-P", "ActiveState", UNIT],
+                         capture_output=True, text=True, env=host_env()).stdout.strip()
+    return out or "inactive"
+
+
+def release_version():
+    try:
+        return json.loads((HERE / "frametop-release.json").read_text())["version"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
+def password_set():
+    """Does this user have a password sudo can take? SteamOS starts without one."""
+    user = pwd.getpwuid(os.getuid()).pw_name
+    out = subprocess.run(["passwd", "-S", user], capture_output=True, text=True).stdout.split()
+    return len(out) < 2 or out[1] == "P"  # P: usable; NP: none; L: locked
+
+
+def check_password(pw):
+    """Does sudo take it? Checked with cached credentials ignored, and forgotten after."""
+    try:
+        r = subprocess.run(["sudo", "-S", "-k", "-v", "-p", ""], input=bytes(pw) + b"\n",
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    subprocess.run(["sudo", "-k"], stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return r.returncode == 0
+
+
+def in_unit(pid):
+    """Is this process in the install's service?"""
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            return any(line.rstrip("\n").endswith(f"/{UNIT}.service") for line in f)
+    except OSError:
+        return False
+
+
+def install_command(eye_tracker, bluetooth):
+    if RELEASE:
+        args = [str(HERE / "install-release.sh"), "--yes"]
+        if DRY_RUN:
+            args += ["--unpack-only", "--dir", str(STATE / "dry-run")]
+    else:
+        args = [str(HERE / "get.sh"), "--yes"]
+        if DRY_RUN:
+            args += ["--clone-only", "--dir", str(STATE / "dry-run")]
+    if not eye_tracker:
+        args.append("--no-eye-tracker")
+    if bluetooth:
+        args.append("--bluetooth")
+    return args
+
+
+def start_unit(args, askpass):
+    env = host_env()
+    subprocess.run(["systemctl", "--user", "stop", UNIT], stderr=subprocess.DEVNULL, env=env)
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIT], stderr=subprocess.DEVNULL, env=env)
+    STATE.mkdir(parents=True, exist_ok=True)
+    LOG.write_bytes(b"")
+    cmd = ["systemd-run", "--user", f"--unit={UNIT}", "--description=Frametop install (FrameDrop)",
+           "--property=Type=oneshot", "--property=RemainAfterExit=yes",
+           f"--property=StandardOutput=truncate:{LOG}", "--property=StandardError=inherit",
+           f"--setenv=HOME={HOME}", f"--setenv=PATH={os.environ.get('PATH', '/usr/bin:/bin')}",
+           "--setenv=TERM=dumb", f"--working-directory={HOME}", "--quiet", "--no-block"]
+    if askpass:
+        cmd += [f"--setenv=SUDO_ASKPASS={HERE / 'askpass'}", f"--setenv=FRAMETOP_ASKPASS_SOCKET={SOCK}"]
+    cmd += ["/usr/bin/bash"] + args
+    return subprocess.run(cmd, env=env).returncode == 0
+
+
+class Askpass:
+    """The socket askpass asks: answers programs in the install's service with the password,
+    or holds them while the window asks you for it."""
+
+    def __init__(self, on_ask):
+        self.on_ask = on_ask
+        self.password = None  # bytearray, while the install runs
+        self.waiting = []
+        SOCK_DIR.mkdir(mode=0o700, exist_ok=True)
+        st = SOCK_DIR.stat()
+        if st.st_uid != os.getuid():
+            raise OSError(f"{SOCK_DIR} isn't yours")
+        os.chmod(SOCK_DIR, 0o700)
+        SOCK.unlink(missing_ok=True)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind(str(SOCK))
+        self.sock.listen(4)
+        self.sock.setblocking(False)
+        self.watch = GLib.io_add_watch(GLib.IOChannel.unix_new(self.sock.fileno()), GLib.PRIORITY_DEFAULT,
+                                       GLib.IO_IN, self.accept)
+
+    def accept(self, *_):
+        try:
+            conn, _ = self.sock.accept()
+        except OSError:
+            return True
+        pid, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                          struct.calcsize("3i")))
+        if uid != os.getuid() or not in_unit(pid):
+            conn.close()
+            return True
+        if self.password:
+            self.answer(conn)
+        else:
+            self.waiting.append(conn)
+            self.on_ask()
+        return True
+
+    def answer(self, conn):
+        try:
+            conn.setblocking(True)
+            conn.sendall(bytes(self.password) if self.password else b"")
+        except OSError:
+            pass
+        conn.close()
+
+    def give(self, pw):
+        self.password = pw
+        while self.waiting:
+            self.answer(self.waiting.pop())
+
+    def refuse(self):
+        while self.waiting:
+            self.waiting.pop().close()
+
+    def close(self):
+        if self.password:
+            self.password[:] = bytes(len(self.password))
+        self.password = None
+        self.refuse()
+        GLib.source_remove(self.watch)
+        self.sock.close()
+        SOCK.unlink(missing_ok=True)
+
+
+class Keypad(Gtk.Box):
+    """Keys to click with the controller's laser, for a password field: in VR, SteamVR's own
+    keyboard comes up for a Steam title's window but its keys don't reach it (tested
+    2026-10-07), while clicks on the window's buttons do. A physical keyboard types as usual."""
+
+    LETTERS = ("1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm")
+    SYMBOLS = ("!@#$%^&*()", "-_=+[]{}\\|", ";:'\",.<>/?", "`~")
+
+    def __init__(self, entry):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.entry = entry
+        self.shift = self.symbols = False
+        self.rows = []
+        for _ in range(4):
+            row = Gtk.Box(spacing=4, halign=Gtk.Align.CENTER, homogeneous=True)
+            self.rows.append(row)
+            self.append(row)
+        bottom = Gtk.Box(spacing=4, halign=Gtk.Align.CENTER)
+        for label, action in (("Shift", self.toggle_shift), ("!#1", self.toggle_symbols),
+                              ("Space", lambda *_: self.type(" ")), ("Delete", self.backspace)):
+            b = Gtk.Button(label=label)
+            b.set_size_request(110 if label != "Space" else 260, 48)
+            b.connect("clicked", action)
+            bottom.append(b)
+            if label == "!#1":
+                self.symbols_key = b
+        self.append(bottom)
+        self.fill()
+
+    def fill(self):
+        for row, keys in zip(self.rows, self.SYMBOLS if self.symbols else self.LETTERS):
+            while (child := row.get_first_child()) is not None:
+                row.remove(child)
+            for k in keys:
+                k = k.upper() if self.shift and not self.symbols else k
+                b = Gtk.Button(label=k)
+                b.set_size_request(56, 48)
+                b.connect("clicked", lambda _b, k=k: self.type(k))
+                row.append(b)
+
+    def type(self, text):
+        self.entry.set_text(self.entry.get_text() + text)
+        self.entry.set_position(-1)
+
+    def backspace(self, *_):
+        self.entry.set_text(self.entry.get_text()[:-1])
+        self.entry.set_position(-1)
+
+    def toggle_shift(self, *_):
+        self.shift = not self.shift
+        self.fill()
+
+    def toggle_symbols(self, *_):
+        self.symbols = not self.symbols
+        self.symbols_key.set_label("abc" if self.symbols else "!#1")
+        self.fill()
+
+
+def keypad_row(entry, *extra):
+    """The password field, a button that shows or hides the keypad, and the keypad: shown by
+    itself when Steam started this (FrameDrop's title, so most likely in VR)."""
+    keypad = Keypad(entry)
+    keypad.set_visible("SteamAppId" in os.environ)
+    toggle = Gtk.Button(label="Keypad")
+    toggle.connect("clicked", lambda *_: keypad.set_visible(not keypad.get_visible()))
+    row = Gtk.Box(spacing=8)
+    entry.set_hexpand(True)
+    for w in (entry, toggle, *extra):
+        row.append(w)
+    return row, keypad
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Frametop")
+        self.set_default_size(900, 860 if "SteamAppId" in os.environ else 640)
+        self.offset = 0
+        self.partial = ""
+        self.askpass = None
+        self.checking = False
+
+        self.status = Gtk.Label(label="Install Frametop", xalign=0, wrap=True)
+        self.status.add_css_class("title-2")
+        self.detail = Gtk.Label(xalign=0, wrap=True)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                           margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+        self.box.append(self.status)
+        self.box.append(self.detail)
+        view = Adw.ToolbarView(content=self.box)
+        view.add_top_bar(Adw.HeaderBar())
+        self.set_content(view)
+        self.connect("close-request", self.closing)
+
+        if unit_state() == "activating":
+            self.show_progress()  # playing the title again: the install is still going
+        else:
+            self.show_choices()
+
+    # --- what to install, and the password
+
+    def show_choices(self):
+        what = f"Frametop {release_version()}" if RELEASE else "Frametop from GitHub"
+        self.detail.set_label(f"This installs {what}: the multi-screen desktop, the 3D mouse, gaze "
+                              "mode, and Frametop's settings apps. Two optional parts need your "
+                              "SteamOS password (sudo):")
+        self.eye = Gtk.CheckButton(label="Our own eye tracker for gaze mode (more accurate than SteamVR's)",
+                                   active=True)
+        self.bt = Gtk.CheckButton(label="Bluetooth fixes (LE mice and keyboards, like the Swiftpoint Z3, "
+                                        "reconnect after they sleep)")
+        self.pw = Gtk.PasswordEntry(show_peek_icon=True, placeholder_text="Your SteamOS password")
+        pw_note = Gtk.Label(label="It's used only for this install, and isn't saved anywhere.", xalign=0,
+                            wrap=True)
+        pw_note.add_css_class("dim-label")
+        self.error = Gtk.Label(xalign=0, wrap=True, visible=False)
+        self.error.add_css_class("error")
+        self.go = Gtk.Button(label="Install", halign=Gtk.Align.END)
+        self.go.add_css_class("suggested-action")
+        self.go.connect("clicked", self.install)
+        self.pw.connect("activate", self.install)
+        pw_row, keypad = keypad_row(self.pw)
+        self.choices = [self.eye, self.bt, pw_row, keypad, pw_note, self.error, self.go]
+        if not password_set():
+            for c in (self.eye, self.bt):
+                c.set_active(False)
+                c.set_sensitive(False)
+            pw_row.set_visible(False)
+            keypad.set_visible(False)
+            pw_note.set_label("Your user has no password, so sudo can't run and these two can't be "
+                              "installed from here. To set one, run passwd in Konsole; then play "
+                              "Frametop again, or install them later from a terminal "
+                              "(gaze/tracker/install.sh, setup/bluetooth/install.sh).")
+        for c in (self.eye, self.bt):
+            c.connect("toggled", lambda *_: pw_row.set_sensitive(self.eye.get_active() or self.bt.get_active()))
+        for w in self.choices:
+            self.box.append(w)
+
+    def install(self, *_):
+        if self.checking:
+            return
+        needs = self.eye.get_active() or self.bt.get_active()
+        if not needs:
+            return self.begin(None)
+        text = self.pw.get_text()
+        if not text:
+            return self.say("Type your password, or untick the parts that need it.")
+        pw = bytearray(text.encode())
+        self.pw.set_text("")
+        self.checking = True
+        self.go.set_sensitive(False)
+        self.say("Checking the password...")
+
+        def check():
+            ok = check_password(pw)
+            GLib.idle_add(checked, ok)
+
+        def checked(ok):
+            self.checking = False
+            self.go.set_sensitive(True)
+            if ok:
+                self.begin(pw)
+            else:
+                pw[:] = bytes(len(pw))
+                self.say("sudo didn't take that password. Try again, or untick the parts that need it.")
+            return False
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def say(self, text):
+        self.error.set_label(text)
+        self.error.set_visible(True)
+
+    def begin(self, pw):
+        args = install_command(self.eye.get_active(), self.bt.get_active())
+        if pw is not None:
+            try:
+                self.askpass = Askpass(self.ask_again)
+            except OSError as e:
+                pw[:] = bytes(len(pw))
+                return self.say(f"Couldn't make the password's socket: {e}")
+            self.askpass.give(pw)
+        if not start_unit(args, pw is not None):
+            if self.askpass:
+                self.askpass.close()
+                self.askpass = None
+            return self.say("Couldn't start the install service (systemd-run).")
+        for w in self.choices:
+            self.box.remove(w)
+        self.show_progress()
+
+    # --- progress
+
+    def show_progress(self):
+        self.status.set_label("Installing Frametop")
+        self.detail.set_label("Starting...")
+        self.bar = Gtk.ProgressBar()
+        self.bar.pulse()
+        self.text = Gtk.TextView(editable=False, cursor_visible=False, monospace=True,
+                                 wrap_mode=Pango.WrapMode.WORD_CHAR)
+        self.text.set_left_margin(8)
+        self.text.set_right_margin(8)
+        scroll = Gtk.ScrolledWindow(vexpand=True, child=self.text)
+
+        # The install wants the password and the window doesn't have it (played again).
+        self.ask_pw = Gtk.PasswordEntry(show_peek_icon=True,
+                                        placeholder_text="The next step needs your SteamOS password")
+        ok = Gtk.Button(label="OK")
+        skip = Gtk.Button(label="Skip that part")
+        ok.connect("clicked", self.answer_ask)
+        self.ask_pw.connect("activate", self.answer_ask)
+        skip.connect("clicked", self.skip_ask)
+        ask_row, ask_keypad = keypad_row(self.ask_pw, ok, skip)
+        self.ask_bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False)
+        self.ask_bar.append(ask_row)
+        self.ask_bar.append(ask_keypad)
+        self.ask_error = Gtk.Label(xalign=0, wrap=True, visible=False)
+        self.ask_error.add_css_class("error")
+
+        keep = " Keep it open until the install is done: it gives the steps that need it your password." \
+            if self.askpass else ""
+        self.note = Gtk.Label(label="You can close this window: the install keeps going. Play Frametop "
+                                    "again to come back to it." + keep, xalign=0, wrap=True)
+        self.note.add_css_class("dim-label")
+        close = Gtk.Button(label="Close", halign=Gtk.Align.END)
+        close.connect("clicked", lambda *_: self.close())
+        for w in (self.bar, scroll, self.ask_bar, self.ask_error, self.note, close):
+            self.box.append(w)
+
+        if self.askpass is None:
+            try:
+                self.askpass = Askpass(self.ask_again)
+            except OSError:
+                self.askpass = None  # askpass then fails, and install.sh skips those parts
+        GLib.timeout_add(500, self.tick)
+        self.tick()
+
+    def ask_again(self):
+        if hasattr(self, "ask_bar"):
+            self.ask_bar.set_visible(True)
+            self.ask_pw.grab_focus()
+
+    def answer_ask(self, *_):
+        text = self.ask_pw.get_text()
+        if not text or self.checking:
+            return
+        pw = bytearray(text.encode())
+        self.ask_pw.set_text("")
+        self.checking = True
+
+        def check():
+            GLib.idle_add(checked, check_password(pw))
+
+        def checked(ok):
+            self.checking = False
+            if ok and self.askpass:
+                self.askpass.give(pw)
+                self.ask_bar.set_visible(False)
+                self.ask_error.set_visible(False)
+            else:
+                pw[:] = bytes(len(pw))
+                self.ask_error.set_label("sudo didn't take that password.")
+                self.ask_error.set_visible(True)
+            return False
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def skip_ask(self, *_):
+        if self.askpass:
+            self.askpass.refuse()
+        self.ask_bar.set_visible(False)
+        self.ask_error.set_visible(False)
+
+    def add_lines(self, lines):
+        buf = self.text.get_buffer()
+        for line in lines:
+            m = STEP.match(line)
+            if m:
+                n, total, what = int(m[1]), int(m[2]), m[3]
+                self.bar.set_fraction(max(0, n - 1) / total)
+                self.detail.set_label(f"Step {max(n, 1)} of {total}: {what}")
+            buf.insert(buf.get_end_iter(), line + "\n")
+        # Keep the view at the newest line.
+        end = buf.create_mark(None, buf.get_end_iter(), False)
+        self.text.scroll_mark_onscreen(end)
+        buf.delete_mark(end)
+
+    def tick(self):
+        try:
+            with open(LOG, "rb") as f:
+                f.seek(self.offset)
+                data = f.read()
+                self.offset += len(data)
+        except FileNotFoundError:
+            data = b""
+        if data:
+            text = self.partial + ANSI.sub("", data.decode("utf-8", "replace")).replace("\r", "\n")
+            *lines, self.partial = text.split("\n")
+            self.add_lines(lines)
+
+        state = unit_state()
+        if state == "activating":
+            if self.bar.get_fraction() == 0:
+                self.bar.pulse()
+            return True
+        if self.partial:
+            self.add_lines([self.partial])
+            self.partial = ""
+        self.forget()
+        self.note.set_visible(False)
+        self.ask_bar.set_visible(False)
+        if state == "active":
+            self.status.set_label("Done")
+            self.detail.set_label(DONE_TEXT)
+            self.bar.set_fraction(1)
+        else:
+            self.status.set_label("The install stopped")
+            self.detail.set_label("The log above says why. Play Frametop again to try again.")
+        return False
+
+    def forget(self):
+        if self.askpass:
+            self.askpass.close()
+            self.askpass = None
+
+    def closing(self, *_):
+        self.forget()
+        return False
+
+
+def main():
+    app = Adw.Application(application_id="io.github.deejanuz.FrametopInstall")
+
+    def activate(a):
+        # Played again while the window is open: show that one.
+        win = a.get_active_window() or Window(a)
+        win.present()
+
+    app.connect("activate", activate)
+    app.run([])
+
+
+if __name__ == "__main__":
+    main()

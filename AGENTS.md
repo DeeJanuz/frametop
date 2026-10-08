@@ -33,6 +33,14 @@ A Steam Frame is someone's personal headset, and they may be wearing it while yo
 
 A SteamOS update replaces SteamVR, KWin, and gamescope with the rest of the OS image. When a change starts depending on something from the image (a host file, an OpenVR interface outside the bundled header, an undocumented layout or output format, a SteamVR or KWin quirk), add a check for it to `scripts/update-check.py`, or a retest hint for its package there. [docs/design.md](docs/design.md) has the background.
 
+## The image (`pack/`)
+
+`pack/Containerfile` builds Frametop as an OCI image, the groundwork for installing without building on the headset; no installer uses it yet. [pack/design.md](pack/design.md) explains why and what is open, and [pack/README.md](pack/README.md) documents the specifics. Rules:
+
+- **Pin every input.** Base images by digest, Python via `uv.lock` (commit the lock, never a bare `uv pip install`), downloads by tag or commit and sha256, CI actions by commit SHA.
+- **One build recipe.** The image runs the components' own `build.sh` scripts (`FRAME_IN_BOX=1`), and the OpenVR SDK they build against is pinned in `scripts/openvr.sh`. Change a build there, not in the Containerfile, and keep the Containerfile buildable on arm64, the only architecture the Frame has.
+- **Keep the tests green in the image.** `./ft dev test` runs `just test` inside it, and CI runs the same recipes. A new offline test that needs no headset goes in the `justfile` too.
+
 ## Names
 
 User-facing names are "Frametop", "Frametop Display Settings", and "Frametop Input Settings". Programs and files use the `ft-` / `ft_` prefix (`ft-screens`, `ft-pointer`, `ft-layout`, the `ft_pointer` driver); config, units, and overlay keys use `frametop`. Program names must stay within 15 characters: Linux truncates process names there, and the scripts find programs with `pgrep -x` / `pkill -x`.

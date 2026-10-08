@@ -14,7 +14,8 @@
 #      (our eye tracker's frame grabber and the Bluetooth fixes, with sudo) are removed, and so
 #      are the file capabilities of hand tracking's camera broker (ft-camd, with sudo). What runs
 #      now keeps running until you restart the headset.
-#   2. After the restart, run it again. It deletes the code (~/frametop) and, if you want, your
+#   2. After the restart, run it again. It deletes the code (~/frametop, or the releases in
+#      ~/.local/share/frametop/releases with their containers and images) and, if you want, your
 #      settings and the build container.
 # When nothing of Frametop is running, one run does both.
 #
@@ -37,6 +38,7 @@ override=$apps/deckard-nested-desktop.desktop
 native_copy=$apps/native-deckard-nested-desktop.desktop
 relay_unit=$HOME/.config/systemd/user/frametop-input-relay.service
 driver=$HOME/.local/share/frametop/ft_pointer
+releases=$HOME/.local/share/frametop/releases  # pack/install-release.sh
 vrpathreg=/opt/steamvr/bin/linuxarm64/vrpathreg
 handsctl=$HOME/.local/bin/ft-handsctl
 eyegrab_files=(/etc/systemd/system/frametop-eyegrab.service /etc/frametop/ft-eyegrab)
@@ -195,7 +197,27 @@ main() {
   fi
 
   step "Step 2 of 2: delete what's left"
-  if [ -d "$repo" ] && is_repo "$repo"; then
+  if [ -d "$releases" ]; then
+    local boxes=() images=() b
+    for f in "$releases"/*/.frametop-release; do
+      boxes+=("$(sed -n 's/^BOX=//p' "$f")")
+      images+=("$(sed -n 's/^IMAGE=//p' "$f")")
+    done
+    echo "Frametop's releases: their files in $releases ($(size "$releases")), and the container and"
+    echo "image of each (${#boxes[@]}; an image is about 3 GB). A downloaded Frametop.zip stays where it is."
+    if ask "Delete the releases, their containers, and their images?" y; then
+      for b in "${boxes[@]}"; do
+        [[ $b =~ ^frametop-[A-Za-z0-9_.-]+$ ]] && { run podman rm -f "$b" 2>/dev/null || true; }
+      done
+      for b in "${images[@]}"; do
+        [[ $b == localhost/frametop:* ]] && { run podman rmi "$b" 2>/dev/null || true; }
+      done
+      run rm -rf "$releases"
+    fi
+  fi
+  if [[ $repo == "$releases"/* ]]; then
+    :  # a release: above
+  elif [ -d "$repo" ] && is_repo "$repo"; then
     if [ -f "$repo/.git" ]; then
       echo "Leaving $repo: it's a git worktree. Remove it with git worktree remove."
     else

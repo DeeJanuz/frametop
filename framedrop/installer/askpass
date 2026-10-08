@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+"""SUDO_ASKPASS for the FrameDrop install: sudo runs this for the password, and it asks the
+install window (progress.py) for it, over the window's socket in XDG_RUNTIME_DIR. The window
+answers only programs in the install's own service, and asks you on the headset if it doesn't
+have the password yet. The password goes to sudo on stdout and nowhere else.
+
+With the window closed there's nobody to ask: this fails, so sudo does, and install.sh says
+which parts it skipped. Playing Frametop again reopens the window and the install.
+"""
+import os
+import socket
+import sys
+
+path = os.environ.get("FRAMETOP_ASKPASS_SOCKET", f"/run/user/{os.getuid()}/frametop-install/askpass")
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(600)  # time for you to type it, if the window has to ask
+try:
+    s.connect(path)  # connecting is the question: the window answers, then closes
+    answer = bytearray()
+    while chunk := s.recv(4096):
+        answer += chunk
+except OSError as e:
+    print(f"askpass: the install window isn't answering ({e.strerror or e}): play Frametop again",
+          file=sys.stderr)
+    sys.exit(1)
+if not answer:
+    sys.exit(1)  # you cancelled
+sys.stdout.buffer.write(bytes(answer) + b"\n")
+answer[:] = bytes(len(answer))
