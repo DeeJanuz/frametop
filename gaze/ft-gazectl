@@ -6,6 +6,9 @@
   ft-gazectl status          the gaze service (ft-gazed): samples, lessons, the correction
   ft-gazectl forget          drop what the pointer's lessons taught (the calibration stays)
   ft-gazectl reload          the service reads calibration.json again
+  ft-gazectl quickcal|calibrate|fitcheck|fivecheck
+                             open that check in the headset panel: the one-dot check, the
+                             full calibration, the headset fit check, the five-dot check
 """
 
 import json
@@ -55,6 +58,11 @@ def main():
             print(json.dumps(json.loads(r), indent=1))
         except ValueError:
             print(r)
+    elif cmd in ("quickcal", "calibrate", "fitcheck", "fivecheck"):
+        r = ask("ft_gazed", cmd)
+        if r is None:
+            sys.exit("the gaze service (ft-gazed) isn't running")
+        print(r)
     else:
         sys.exit(__doc__)
 

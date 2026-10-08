@@ -14,7 +14,8 @@ directions: look at each one.
           on is seen only while the gaze service is awake (gaze mode on, someone wearing it: see
           ft-gazed), so it also opens when gaze mode comes on after the service idled.
   five    the middle and four around it, when the first FIVE_COUNT lessons after a quick check
-          were all over FIVE_LIMIT degrees off: the quick check didn't fix it.
+          were all over FIVE_LIMIT degrees off: the quick check didn't fix it. Its panel is
+          wider than quick's, to hold them (PANEL_DEG).
   full    the calibration, as the gaze probe's: three rounds, dark, medium and bright (pupil
           size, and the tracker's error with it, changes with brightness), each the middle and
           a ring of six (SteamVR's tracker) or eight (ours, whose fit goes wrong past its dots)
@@ -170,6 +171,26 @@ def reject_reason(reply, why):
         return "tracker not running", "our tracker isn't running", False
     text = reply.removeprefix("fail ")
     return text[:24], f"our tracker said: {text}", False
+
+
+# The panel's sizes for each check (ft-gazepanel.cpp's kQuickDeg, kFiveDeg, kFullDeg): width in
+# degrees, and height / width. Every dot of a check must fit its panel (off_panel).
+PANEL_DEG = {"quick": (16.0, 1.0), "five": (40.0, 0.75), "full": (64.0, 0.75)}
+
+
+def off_panel(kind, own):
+    """The dots of a check that wouldn't show whole on its panel: the panel's projection
+    (ft-gazepanel's ToPixel), with a degree to spare for the dot's ring."""
+    wdeg, aspect = PANEL_DEG[kind]
+    half = math.tan(math.radians(wdeg / 2))
+    m = math.tan(math.radians(1.0)) / (2 * half)
+    out = []
+    for yaw, pitch, _ in check_dots(kind, own):
+        x = 0.5 - math.tan(math.radians(yaw)) / (2 * half)
+        y = 0.5 - math.tan(math.radians(pitch)) / math.cos(math.radians(yaw)) / (2 * half) / aspect
+        if not (m <= x <= 1 - m and m / aspect <= y <= 1 - m / aspect):
+            out.append((yaw, pitch))
+    return out
 
 
 def spread(points):
@@ -452,7 +473,10 @@ class Checks:
                 self.screens_shown = (st[2] == "0") if st[1] == "always" else (st[2] == "1")
                 ask(SCREENS, "hide", 0.5)
         self.to_helper("calpanel 1")
-        self.to_panel(f"show {'full' if kind == 'full' else 'quick'}")
+        off = off_panel(kind, own)
+        if off:
+            log(f"{kind} check: {len(off)} dots off its panel: {off}")
+        self.to_panel(f"show {kind}")
         self.show_dot()
         if kind == "quick":
             self.last_quick = now
@@ -670,9 +694,9 @@ class Checks:
         if not ok:
             c["tries"] += 1
             log(f"{c['kind']} check dot {c['i'] + 1}: not taken: {rec['reason']} ({rec.get('reply', '')})")
-            full = c["kind"] == "full"
+            full, big = c["kind"] == "full", c["kind"] != "quick"  # quick's panel holds only short notes
             if c["tries"] >= 2 or not full:
-                self.note(f"Dot skipped: {long}" + (f" ({FIT_HINT})" if fit else "") if full else f"Skipped: {short}")
+                self.note(f"Dot skipped: {long}" + (f" ({FIT_HINT})" if fit else "") if big else f"Skipped: {short}")
                 self.skip()
             else:
                 self.note(f"Not taken: {long}. Look at the dot and click again")
@@ -807,9 +831,9 @@ class Checks:
             log(f"{words[0]}, asked for while idle: {reply.removeprefix('error ')}")
 
     def command(self, words, queue=True):
-        """quickcal, calibrate, calaccept, calquit -> a reply."""
+        """quickcal, calibrate, fitcheck, fivecheck, calaccept, calquit -> a reply."""
         cmd = words[0]
-        if cmd in ("quickcal", "calibrate", "fitcheck") and queue and self.svc.waking() and not self.check:
+        if cmd in ("quickcal", "calibrate", "fitcheck", "fivecheck") and queue and self.svc.waking() and not self.check:
             # The tracker isn't running (or only just started): wake it, and do this once it sends.
             self.pending = (words, time.monotonic())
             self.svc.update_awake()
@@ -820,6 +844,8 @@ class Checks:
             return self.start("full", "asked for")
         if cmd == "fitcheck":
             return self.start("fit", "asked for")
+        if cmd == "fivecheck":
+            return self.start("five", "asked for")
         if cmd == "calaccept":
             if self.check and self.check["kind"] == "fit":
                 self.check["fit"].toggle_guide(time.monotonic())
@@ -874,11 +900,11 @@ class Checks:
             return
         if c["accept"] and c["accept_at"] and now - c["accept_at"] > ACCEPT_WAIT:
             # Clicked, but no capture yet (see on_sample): say what it's waiting for.
-            full = c["kind"] == "full"
+            big = c["kind"] != "quick"
             if now - c.get("gaze_at", 0.0) > 0.5:
-                self.note("Waiting: the eye tracker isn't sending a gaze" if full else "Waiting: no gaze")
+                self.note("Waiting: the eye tracker isn't sending a gaze" if big else "Waiting: no gaze")
             else:
-                self.note("Waiting for your gaze to hold still on the dot" if full else "Hold your look still")
+                self.note("Waiting for your gaze to hold still on the dot" if big else "Hold your look still")
         if c["kind"] == "quick" and now - c["started"] > QUICK_TIMEOUT:
             self.close("ignored")
         elif c["kind"] != "quick" and now - c["shown"] > CLICK_IDLE:
