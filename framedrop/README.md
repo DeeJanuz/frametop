@@ -34,7 +34,7 @@ It uses Valve's SteamOS Devkit path: pair once with the headset's devkit service
 
 ### The password
 
-FrameDrop has no way to pass a password along, and the zip is the same file for everyone, so the password is typed on the headset, in the window. It stays in the window's memory until the install ends:
+FrameDrop has no way to pass a password along, and the zip is the same file for everyone, so the password is typed on the headset, in the window. In VR that means the window's own keypad (shown when Steam starts the window; its Keypad button shows or hides it), whose keys you click with the controller's laser. SteamVR's keyboard doesn't come up for the field by itself, and when it's opened (`steam://open/keyboard`) its keys don't reach the window (tested with frame-testbench, 2026-10-07: the field stayed empty, while laser clicks on the window's checkboxes worked). A Bluetooth keyboard types as usual. The password stays in the window's memory until the install ends:
 
 - The service gets `SUDO_ASKPASS=installer/askpass`. When install.sh's sudo asks, askpass connects to a socket the window keeps in `/run/user/UID/frametop-install` (mode 0700), and the window answers only a process in the install's own service (checked by its peer credentials and cgroup). If it doesn't have the password yet (the window was opened again), it asks you for it, or you skip that part.
 - The password is never written to a file, a log, the service's environment, or a command line. The window wipes its copy when the install ends or the window closes. Strings Python and GTK made from it along the way can't be wiped; they go with the process.
@@ -69,4 +69,4 @@ This writes `framedrop/build/Frametop.zip` (reproducible), `frametop.framedrop.j
 - Does FrameDrop keep or set the exec bit on `frametop-install.sh`? A zip unpacked on Windows loses it, and without it nothing runs.
 - What start command does FrameDrop pick for this zip, and which runtime?
 - Does the manifest's `name` become the Devkit Game name? It has to stay free of `-`.
-- Can you type the password in the window in VR: does the SteamVR keyboard come up for its password field?
+- Typing the password with the window's keypad, launched with Play from the library (frame-testbench reached the window only when started with devkit.sh run, where the systemui overlay hides its lower half).

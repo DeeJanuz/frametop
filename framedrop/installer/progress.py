@@ -199,10 +199,82 @@ class Askpass:
         SOCK.unlink(missing_ok=True)
 
 
+class Keypad(Gtk.Box):
+    """Keys to click with the controller's laser, for a password field: in VR, SteamVR's own
+    keyboard comes up for a Steam title's window but its keys don't reach it (tested
+    2026-10-07), while clicks on the window's buttons do. A physical keyboard types as usual."""
+
+    LETTERS = ("1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm")
+    SYMBOLS = ("!@#$%^&*()", "-_=+[]{}\\|", ";:'\",.<>/?", "`~")
+
+    def __init__(self, entry):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.entry = entry
+        self.shift = self.symbols = False
+        self.rows = []
+        for _ in range(4):
+            row = Gtk.Box(spacing=4, halign=Gtk.Align.CENTER, homogeneous=True)
+            self.rows.append(row)
+            self.append(row)
+        bottom = Gtk.Box(spacing=4, halign=Gtk.Align.CENTER)
+        for label, action in (("Shift", self.toggle_shift), ("!#1", self.toggle_symbols),
+                              ("Space", lambda *_: self.type(" ")), ("Delete", self.backspace)):
+            b = Gtk.Button(label=label)
+            b.set_size_request(110 if label != "Space" else 260, 48)
+            b.connect("clicked", action)
+            bottom.append(b)
+            if label == "!#1":
+                self.symbols_key = b
+        self.append(bottom)
+        self.fill()
+
+    def fill(self):
+        for row, keys in zip(self.rows, self.SYMBOLS if self.symbols else self.LETTERS):
+            while (child := row.get_first_child()) is not None:
+                row.remove(child)
+            for k in keys:
+                k = k.upper() if self.shift and not self.symbols else k
+                b = Gtk.Button(label=k)
+                b.set_size_request(56, 48)
+                b.connect("clicked", lambda _b, k=k: self.type(k))
+                row.append(b)
+
+    def type(self, text):
+        self.entry.set_text(self.entry.get_text() + text)
+        self.entry.set_position(-1)
+
+    def backspace(self, *_):
+        self.entry.set_text(self.entry.get_text()[:-1])
+        self.entry.set_position(-1)
+
+    def toggle_shift(self, *_):
+        self.shift = not self.shift
+        self.fill()
+
+    def toggle_symbols(self, *_):
+        self.symbols = not self.symbols
+        self.symbols_key.set_label("abc" if self.symbols else "!#1")
+        self.fill()
+
+
+def keypad_row(entry, *extra):
+    """The password field, a button that shows or hides the keypad, and the keypad: shown by
+    itself when Steam started this (FrameDrop's title, so most likely in VR)."""
+    keypad = Keypad(entry)
+    keypad.set_visible("SteamAppId" in os.environ)
+    toggle = Gtk.Button(label="Keypad")
+    toggle.connect("clicked", lambda *_: keypad.set_visible(not keypad.get_visible()))
+    row = Gtk.Box(spacing=8)
+    entry.set_hexpand(True)
+    for w in (entry, toggle, *extra):
+        row.append(w)
+    return row, keypad
+
+
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Frametop")
-        self.set_default_size(900, 640)
+        self.set_default_size(900, 860 if "SteamAppId" in os.environ else 640)
         self.offset = 0
         self.partial = ""
         self.askpass = None
@@ -228,7 +300,7 @@ class Window(Adw.ApplicationWindow):
     # --- what to install, and the password
 
     def show_choices(self):
-        what = f"Frametop {release_version()}, built," if RELEASE else "Frametop from GitHub"
+        what = f"Frametop {release_version()}" if RELEASE else "Frametop from GitHub"
         self.detail.set_label(f"This installs {what}: the multi-screen desktop, the 3D mouse, gaze "
                               "mode, and Frametop's settings apps. Two optional parts need your "
                               "SteamOS password (sudo):")
@@ -246,18 +318,20 @@ class Window(Adw.ApplicationWindow):
         self.go.add_css_class("suggested-action")
         self.go.connect("clicked", self.install)
         self.pw.connect("activate", self.install)
-        self.choices = [self.eye, self.bt, self.pw, pw_note, self.error, self.go]
+        pw_row, keypad = keypad_row(self.pw)
+        self.choices = [self.eye, self.bt, pw_row, keypad, pw_note, self.error, self.go]
         if not password_set():
             for c in (self.eye, self.bt):
                 c.set_active(False)
                 c.set_sensitive(False)
-            self.pw.set_visible(False)
+            pw_row.set_visible(False)
+            keypad.set_visible(False)
             pw_note.set_label("Your user has no password, so sudo can't run and these two can't be "
                               "installed from here. To set one, run passwd in Konsole; then play "
                               "Frametop again, or install them later from a terminal "
                               "(gaze/tracker/install.sh, setup/bluetooth/install.sh).")
         for c in (self.eye, self.bt):
-            c.connect("toggled", lambda *_: self.pw.set_sensitive(self.eye.get_active() or self.bt.get_active()))
+            c.connect("toggled", lambda *_: pw_row.set_sensitive(self.eye.get_active() or self.bt.get_active()))
         for w in self.choices:
             self.box.append(w)
 
@@ -328,16 +402,17 @@ class Window(Adw.ApplicationWindow):
         scroll = Gtk.ScrolledWindow(vexpand=True, child=self.text)
 
         # The install wants the password and the window doesn't have it (played again).
-        self.ask_bar = Gtk.Box(spacing=8, visible=False)
-        self.ask_pw = Gtk.PasswordEntry(show_peek_icon=True, hexpand=True,
+        self.ask_pw = Gtk.PasswordEntry(show_peek_icon=True,
                                         placeholder_text="The next step needs your SteamOS password")
         ok = Gtk.Button(label="OK")
         skip = Gtk.Button(label="Skip that part")
         ok.connect("clicked", self.answer_ask)
         self.ask_pw.connect("activate", self.answer_ask)
         skip.connect("clicked", self.skip_ask)
-        for w in (self.ask_pw, ok, skip):
-            self.ask_bar.append(w)
+        ask_row, ask_keypad = keypad_row(self.ask_pw, ok, skip)
+        self.ask_bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, visible=False)
+        self.ask_bar.append(ask_row)
+        self.ask_bar.append(ask_keypad)
         self.ask_error = Gtk.Label(xalign=0, wrap=True, visible=False)
         self.ask_error.add_css_class("error")
 
