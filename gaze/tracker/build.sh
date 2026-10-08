@@ -19,12 +19,13 @@ echo "built build/ft-eyegrab, newest glibc symbol: $max"
 if [ "${FRAME_IN_BOX:-0}" = 1 ] && [ -x /opt/frametop/venv/bin/python ]; then
   rm -rf build/venv
   python3 -m venv --without-pip build/venv
-  /opt/frametop/venv/bin/python -c "import site; print(site.getsitepackages()[0])" \
-    >"$(build/venv/bin/python -c "import site; print(site.getsitepackages()[0])")/frametop-image.pth"
+  /opt/frametop/venv/bin/python -c "import sysconfig; print(sysconfig.get_path(\"purelib\"))" \
+    >"$(build/venv/bin/python -c "import sysconfig; print(sysconfig.get_path(\"purelib\"))")/frametop-image.pth"
 elif ! cmp -s requirements.txt build/venv/requirements.done; then
   rm -rf build/venv
   python3 -m venv build/venv
   build/venv/bin/pip install -q --disable-pip-version-check -r requirements.txt
   cp requirements.txt build/venv/requirements.done
 fi
-echo "build/venv: $(build/venv/bin/python -c "import numpy, cv2; print(\"numpy\", numpy.__version__, \"opencv\", cv2.__version__)")"'
+v=$(build/venv/bin/python -c "import numpy, cv2; print(\"numpy\", numpy.__version__, \"opencv\", cv2.__version__)")
+echo "build/venv: $v"'
