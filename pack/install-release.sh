@@ -219,6 +219,7 @@ main() {
   ln -sfn "$version" "$base/current"
   for d in "$base"/*/; do
     d=${d%/}
+    [ -L "$d" ] && continue  # "current" itself, a link to the release just installed
     [ -f "$d/.frametop-release" ] || continue
     case ${d##*/} in "$version"|"$prev") continue ;; esac
     old_image=$(sed -n 's/^IMAGE=//p' "$d/.frametop-release")
