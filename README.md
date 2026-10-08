@@ -31,6 +31,8 @@ You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or th
 
    It asks which version you want: stable (the `main` branch, tested releases) or experimental (the `experimental` branch, the newest features, less tested). Then it clones the repo into `~/frametop` and runs `install.sh`. To choose without the question, add `-s -- --stable` or `-s -- --experimental` after `bash`. By hand, the same is `git clone https://github.com/DeeJanuz/frametop.git ~/frametop`, then `cd ~/frametop` and `./install.sh` (add `--branch experimental` to the clone for experimental).
 
+   The third choice, experimental release, downloads Frametop already built (`Frametop.zip`, about 1.1 GB, from the [Frametop organization's releases](https://github.com/Frametop/frametop/releases)) and installs it without compiling anything. `-s -- --release --experimental` picks it without the question.
+
    The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and everything else. The first run downloads 1–2 GB. It asks you four things along the way: whether to install gaze mode (experimental, yes by default), our own eye tracker for it (yes by default), and the Bluetooth fixes, then whether to restart SteamVR. The eye tracker and the Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. SteamVR has to restart once at the end, which closes everything open in VR, including the terminal. Rebooting the headset works too.
 
 After the restart, Launch a program → Desktop opens the multi-screen desktop, with its screens arranged around where you're facing. Frametop Display Settings and Frametop Input Settings are in the desktop's application menu, under Settings. SteamOS's own single-screen desktop is still there, as Native Desktop in the same list.
@@ -194,7 +196,7 @@ A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland com
 
 | Folder | What it is |
 | --- | --- |
-| `get.sh` | The one-line installer: picks stable or experimental, clones or updates the repo, and runs `install.sh`. |
+| `get.sh` | The one-line installer: picks stable or experimental, clones or updates the repo, and runs `install.sh`; or installs a built release (`--release`). |
 | `install.sh` | The one-step installer. Safe to re-run. |
 | `uninstall.sh` | The uninstaller: run it, restart the headset, and run it again. It doesn't need the rest of the repo. |
 | `desktops.sh` | Start, stop, and configure the desktop, and install the input relay. |
