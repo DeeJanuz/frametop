@@ -181,6 +181,13 @@ Kirigami.ApplicationWindow {
                     onTriggered: backend.toggleScreens()
                 },
                 Kirigami.Action {
+                    visible: spage.md
+                    text: "Remote displays"
+                    icon.name: "network-workgroup"
+                    tooltip: "Other computers' monitors as screens: Frametop Remote Displays"
+                    onTriggered: backend.openRemoteDisplays()
+                },
+                Kirigami.Action {
                     visible: backend.desktopRunning
                     text: "Restart desktop"
                     icon.name: "view-refresh"

@@ -479,11 +479,11 @@ std::string ExeDir() {
     return p.substr(0, p.rfind('/'));
 }
 
-// One of ft-screens' panels showing a desktop: a screen (frametop.screen.N), a floating
-// window (frametop.float.N), or a floating window's popup (frametop.float.N.sub.K), not a
-// control of theirs.
+// One of ft-screens' panels showing a desktop: a screen (frametop.screen.N), another
+// machine's display (frametop.remote.N), a floating window (frametop.float.N), or a floating
+// window's popup (frametop.float.N.sub.K), not a control of theirs.
 bool FramePanel(const std::string &key) {
-    for (const char *prefix : {"frametop.screen.", "frametop.float."}) {
+    for (const char *prefix : {"frametop.screen.", "frametop.remote.", "frametop.float."}) {
         if (key.rfind(prefix, 0) != 0) continue;
         const std::string rest = key.substr(std::strlen(prefix));
         const size_t dot = rest.find('.');

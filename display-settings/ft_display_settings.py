@@ -16,6 +16,8 @@ the dev container:
     saved from where the screens are, with a preview; arrange now; save the current
     arrangement under a name; rename and delete; arrange automatically when the
     desktop starts.
+  - Remote displays (other computers' monitors as screens) have their own app, Frametop
+    Remote Displays (remote-displays/); a button opens it.
   - Power: how long the headset can go unused before ft-powerd turns its displays off
     (DISPLAY_OFF_MIN; the service's state comes from its control socket, @ft_powerd),
     and whether the Frame stays awake while plugged in, which is Steam's own setting
@@ -54,6 +56,7 @@ SCREEN_RESOLUTIONS = [(1920, 1080, ""), (2560, 1440, ""), (3840, 2160, "4K"), (2
                       (2560, 1600, "16:10"), (1080, 1920, "portrait"), (1440, 2560, "portrait"),
                       (2160, 3840, "portrait 4K")]
 FT_SCREENS = "\0ft_screens"
+REMOTE_DISPLAYS = os.path.join(HERE, "..", "remote-displays", "ft_remote_displays.py")
 FT_POWERD = "\0ft_powerd"
 # Steam's default for "When Plugged In and Idle -> Sleep after", to go back to when
 # nothing was saved.
@@ -657,6 +660,13 @@ class Backend(QObject):
     @Slot()
     def capture(self):
         self._run("Saving the current arrangement", "capture")
+
+    # --- remote displays: their own app ---
+    @Slot()
+    def openRemoteDisplays(self):
+        """Frametop Remote Displays (we're in the dev container already, as it runs)."""
+        if not QProcess.startDetached(sys.executable, [os.path.abspath(REMOTE_DISPLAYS)]):
+            self.message.emit("Couldn't start Frametop Remote Displays", True)
 
     # --- ft-layout on the host ---
     def _run(self, label, *args):

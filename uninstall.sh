@@ -111,7 +111,7 @@ main() {
   [ -f "$override" ] && grep -q 'Frametop' "$override" || override=
   [ -f "$native_copy" ] || native_copy=
   units=("$HOME"/.config/systemd/user/frametop-*.service)
-  for f in ft-input-settings ft-display-settings ft-layout-reset ft-screens-toggle ft-remote-settings ft-gazeprobe; do
+  for f in ft-input-settings ft-display-settings ft-remote-displays ft-layout-reset ft-screens-toggle ft-remote-settings ft-gazeprobe; do
     [ -e "$apps/$f.desktop" ] && entries+=("$apps/$f.desktop")
   done
   [ -e "$apps/frametop-handrec.desktop" ] && entries+=("$apps/frametop-handrec.desktop")
@@ -219,12 +219,14 @@ main() {
     "$HOME/.cache/frametop"
 
   local settings=("$HOME"/.config/frametop.conf* "$HOME"/.config/frametop-*.json* "$HOME/.config/frametop-remote"
-                  "$HOME/.config/frametop" "$HOME/.local/state/frametop")
+                  "$HOME/.config/frametop" "$HOME/.local/state/frametop" "$HOME/.local/share/frametop-stream")
   local kept=()
   for f in "${settings[@]}"; do [ -e "$f" ] && kept+=("$f"); done
   if [ ${#kept[@]} -gt 0 ]; then
     echo "Your settings: the screen layout and profiles, button maps, gaze calibration, the remote"
-    echo "desktop password, and the Frametop desktop's own Plasma setup (${kept[*]/#$HOME/\~})."
+    echo "desktop password, the remote displays' pairings and sign-ins (their computers keep Frametop's"
+    echo "clients and token until you remove them in their Web UI), and the Frametop desktop's own Plasma"
+    echo "setup (${kept[*]/#$HOME/\~})."
     ask "Delete your settings too? Keep them to pick up where you left off if you reinstall." n &&
       run rm -rf "${kept[@]}"
   fi

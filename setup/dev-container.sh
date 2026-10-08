@@ -30,6 +30,9 @@ packages=(
   python3-pyside6 kf6-kirigami kf6-qqc2-desktop-style qt6-qtwayland breeze-icon-theme plasma-breeze
   # Frametop remote desktop (VNC bridge through krdp)
   krdp freerdp tigervnc-x11-server xrandr
+  # remote displays (stream/): moonlight-common-c and moonlight-embedded's libgamestream,
+  # and the host's sound (Opus, played through PipeWire's PulseAudio server)
+  openssl-devel libcurl-devel expat-devel libuuid-devel json-devel opus-devel pulseaudio-libs-devel
   # diagnostics and remote UI testing
   wayland-utils xorg-x11-server-Xvfb ImageMagick xdotool
 )
