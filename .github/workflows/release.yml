@@ -83,9 +83,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          pre=()
-          [[ $VERSION == *-* ]] && pre=(--prerelease)
+          pre=() notes=pack/release-notes.md
+          if [[ $VERSION == *-* ]]; then
+            pre=(--prerelease)
+            # get.sh --release asks for a channel and offers stable first: an experimental
+            # release's install line names its channel.
+            notes=$RUNNER_TEMP/release-notes.md
+            sed 's/bash -s -- --release`/bash -s -- --release --experimental`/' pack/release-notes.md >"$notes"
+            grep -q -- '--release --experimental`' "$notes" ||
+              echo "::warning::pack/release-notes.md has no get.sh --release line to mark experimental"
+          fi
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag "${pre[@]}" \
-            --title "Frametop $VERSION" --notes-file pack/release-notes.md --generate-notes \
+            --title "Frametop $VERSION" --notes-file "$notes" --generate-notes \
             framedrop/build/Frametop.zip framedrop/build/frametop.framedrop.json \
             framedrop/build/frametop-release.json framedrop/build/SHA256SUMS
