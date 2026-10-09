@@ -321,6 +321,36 @@ def installed_binaries():
     return found
 
 
+# Frametop's root files in /etc, by what installs them. A SteamOS update deletes every /etc file
+# its keep list (/usr/lib/rauc/atomic-update-keep.conf) doesn't name: it keeps the units, but not
+# what they run, unless a drop-in in /etc/atomic-update.conf.d names that too.
+ROOT_PARTS = [
+    ("Bluetooth fixes", "/etc/systemd/system/steamframe-bt-fixups.service", "/etc/steamframe/bt-fixups.sh",
+     "/etc/atomic-update.conf.d/frametop-bluetooth.conf", "setup/bluetooth/install.sh install"),
+    ("eye tracker's frame grabber", "/etc/systemd/system/frametop-eyegrab.service", "/etc/frametop/ft-eyegrab",
+     "/etc/atomic-update.conf.d/frametop-eyegrab.conf", "gaze/tracker/install.sh"),
+]
+
+
+def check_root_files():
+    for label, unit, program, keep, install in ROOT_PARTS:
+        if not os.path.exists(unit):
+            continue
+        try:
+            with open(keep) as f:
+                kept = program in (line.strip() for line in f)
+        except OSError:
+            kept = False
+        if not os.path.exists(program):
+            report("FAIL", label, f"{program} is gone (a SteamOS update deletes it unless it's kept); "
+                   f"reinstall with {install}")
+        elif not kept:
+            report("warn", label, f"the next SteamOS update will delete {program}; "
+                   f"reinstall with {install}, which keeps it")
+        else:
+            report("ok", label, "installed, and kept through SteamOS updates")
+
+
 def check_openvr():
     needs = {}  # interface version: programs built against it
     for path in installed_binaries():
@@ -552,6 +582,7 @@ def main():
     versions = current_versions()
     check_versions(versions)
     check_host()
+    check_root_files()
     steamvr_up = run("pgrep", "-x", "vrserver")[0] == 0
     if not steamvr_up:
         report("skip", "SteamVR checks", "SteamVR isn't running")
