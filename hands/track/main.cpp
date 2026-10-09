@@ -38,7 +38,8 @@
 // HANDS_CAMERAS, HANDS_BRIGHT, HANDS_BRIGHT_ON, HANDS_BRIGHT_OFF, HANDS_COLOR_LEFT (which
 // colour camera is passthrough_left: color_video0 or color_video3), HANDS_COLOR_CROP
 // (subtract or none: tools/check_color.py tells both), HANDS_MISREAD_GUARD (0 or 1: the
-// tracker's guards for fine-tuned landmark models, Tracker::set_misread_guard).
+// tracker's guards for fine-tuned landmark models, Tracker::set_misread_guard), HANDS_MODELS (as
+// --models: a folder with palm.ncnn.* and hand.ncnn.*, e.g. fine-tuned ones).
 #include "io.h"
 #include "pinch.h"
 #include "record.h"
@@ -240,6 +241,7 @@ int main(int argc, char **argv) {
     // latency 9.6 against 14.1 ms, and the compositor's late frames and CPU/GPU time didn't change.
     std::vector<int> cpus = {5, 6, 7};
     if (const auto c = parse_cpus(setting("HANDS_CPUS").c_str()); !c.empty()) cpus = c;
+    if (const std::string m = setting("HANDS_MODELS"); !m.empty()) models = m;
     // Which side camera is which (see the top): auto, 0 or 1, and where that came from
     std::string sides_mode = setting("HANDS_SWAP_SIDES"), sides_from = "config";
     if (sides_mode.empty()) sides_mode = "auto", sides_from = "default";
@@ -322,7 +324,7 @@ int main(int argc, char **argv) {
                         "camera's newest dark frame, as <name>_dk; with --with-color, the color cameras' as color_video<N>.\n"
                         "auto picks the cameras by the light (see the top of track/main.cpp).\n"
                         "Settings in ~/.config/frametop.conf: HANDS_SWAP_SIDES=auto|0|1, HANDS_CPUS=5,6,7, HANDS_CAMERAS, HANDS_BRIGHT,\n"
-                        "HANDS_BRIGHT_ON, HANDS_BRIGHT_OFF, HANDS_COLOR_LEFT, HANDS_COLOR_CROP, HANDS_MISREAD_GUARD=0|1\n"
+                        "HANDS_BRIGHT_ON, HANDS_BRIGHT_OFF, HANDS_COLOR_LEFT, HANDS_COLOR_CROP, HANDS_MISREAD_GUARD=0|1, HANDS_MODELS=DIR\n"
                         "(FT_<name> overrides).\n",
                         argv[0]);
             return a == "--help" ? 0 : 1;
