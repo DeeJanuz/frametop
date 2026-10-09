@@ -2,7 +2,7 @@
 # Uninstall Frametop from the Steam Frame. In a terminal on the headset (Konsole in the desktop,
 # or over SSH):
 #
-#   curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash
+#   curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash
 #
 # or ~/frametop/uninstall.sh. It doesn't use the rest of the repo, so it also works when
 # ~/frametop is gone or broken.
@@ -28,7 +28,7 @@ shopt -s nullglob
 usage() {
   cat <<'EOF'
 usage: uninstall.sh [--dir DIR] [--dry-run]
-piped: curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash -s -- [options]
+piped: curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash -s -- [options]
 EOF
 }
 
@@ -185,9 +185,9 @@ main() {
     echo "($repo) and, if you want, your settings and the build container:"
     echo
     if [ "$repo" = "$HOME/frametop" ]; then
-      echo "  curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash"
+      echo "  curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash"
     else
-      echo "  curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash -s -- --dir $(printf %q "$repo")"
+      echo "  curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash -s -- --dir $(printf %q "$repo")"
     fi
     echo
     if ask "Restart the headset now? This closes everything open, in VR and on the desktop." n; then

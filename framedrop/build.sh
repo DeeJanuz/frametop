@@ -40,14 +40,14 @@ files=("$here/installer/frametop-install.sh" "$here/installer/progress.py" "$her
 if [ -n "$image" ]; then
   [ -n "$version" ] || { echo "--image needs --version" >&2; exit 2; }
   commit=${commit:-$(git -C "$repo" rev-parse HEAD)}
-  url=${1:-https://github.com/DeeJanuz/frametop/releases/download/v$version/Frametop.zip}
+  url=${1:-https://github.com/Frametop/frametop/releases/download/v$version/Frametop.zip}
   echo "saving $image"
   podman save -q --format oci-archive -o "$out/frametop-image.tar" "$image"
   python3 "$repo/pack/release-info.py" --image-file "$out/frametop-image.tar" --version "$version" \
     --commit "$commit" ${channel:+--channel "$channel"} >"$out/frametop-release.json"
   files+=("$repo/pack/install-release.sh" "$out/frametop-release.json" "$out/frametop-image.tar")
 else
-  url=${1:-https://github.com/DeeJanuz/frametop/releases/download/framedrop-installer/Frametop.zip}
+  url=${1:-https://github.com/Frametop/frametop/releases/download/framedrop-installer/Frametop.zip}
   files+=("$repo/get.sh")
 fi
 

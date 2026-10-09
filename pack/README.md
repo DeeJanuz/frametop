@@ -194,6 +194,17 @@ prerelease when the tag has a `-` (`v0.3.0-exp.1`); someone publishes it. A
 manual run keeps the zip as an artifact for a week. The repo needs Depot's
 GitHub app for the runner label to work.
 
+Two repos (2026-10-09): Frametop/frametop, the organization's, is the home.
+Its CI builds the releases (Depot's runners need an organization), its Pages
+(`frametop.github.io/frametop`, from main) serve `get.sh` and `uninstall.sh`,
+and new clones come from it. DeeJanuz/frametop is the upstream it mirrors:
+issues and pull requests go there, and older clones update from it. A release:
+merge into experimental (and main for a stable one, by merge commit), push both
+branches to both repos, then tag on Frametop/frametop and publish the draft.
+DeeJanuz/frametop's Pages serve a `gh-pages` branch whose `get.sh` and
+`uninstall.sh` only hand over to the organization's, so the one-liner from
+before keeps working.
+
 ## The longer arc
 
 The image only pays off when it makes installing Frametop easier, so none of

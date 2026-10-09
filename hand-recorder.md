@@ -27,7 +27,7 @@ For now the recorder runs inside Frametop's desktop, so these steps install Fram
 ## 1. Install Frametop
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- --stable
+curl -fsSL https://frametop.github.io/frametop/get.sh | bash -s -- --stable
 ```
 
 This clones Frametop into `~/frametop` and runs its installer. The first run downloads 1–2 GB. The installer asks a few questions (gaze mode, the eye tracker, the Bluetooth fixes); the defaults are fine. At the end SteamVR restarts, which closes Konsole. If Frametop is already installed, this updates it.
@@ -49,7 +49,7 @@ Open Frametop Hand Recorder from the desktop's application menu. It walks you th
 ## Update
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- --stable
+curl -fsSL https://frametop.github.io/frametop/get.sh | bash -s -- --stable
 ~/frametop/hands/rec/install.sh
 ```
 

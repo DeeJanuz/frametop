@@ -13,6 +13,8 @@ Two settings apps come with it: Frametop Display Settings for the screens, profi
 
 Frametop is an independent project, not made by or affiliated with Valve.
 
+Frametop's home is [Frametop/frametop](https://github.com/Frametop/frametop): the install command clones it, and its releases are built there. Issues and pull requests go to [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop), the upstream it mirrors.
+
 Join the [Frametop Discord](https://discord.gg/W3X9f7z3Bc) for questions, ideas, and help with your setup.
 
 ## Install on the headset
@@ -26,12 +28,12 @@ You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or th
 3. Run:
 
    ```
-   curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash
+   curl -fsSL https://frametop.github.io/frametop/get.sh | bash
    ```
 
-   It asks which version you want: stable (the `main` branch, tested releases) or experimental (the `experimental` branch, the newest features, less tested). Then it clones the repo into `~/frametop` and runs `install.sh`. To choose without the question, add `-s -- --stable` or `-s -- --experimental` after `bash`. By hand, the same is `git clone https://github.com/DeeJanuz/frametop.git ~/frametop`, then `cd ~/frametop` and `./install.sh` (add `--branch experimental` to the clone for experimental).
+   It asks which version you want: stable (the `main` branch, tested releases) or experimental (the `experimental` branch, the newest features, less tested). Then it clones the repo into `~/frametop` and runs `install.sh`. To choose without the question, add `-s -- --stable` or `-s -- --experimental` after `bash`. By hand, the same is `git clone https://github.com/Frametop/frametop.git ~/frametop`, then `cd ~/frametop` and `./install.sh` (add `--branch experimental` to the clone for experimental).
 
-   The third choice, experimental release, downloads Frametop already built (`Frametop.zip`, about 1.1 GB, from the [Frametop organization's releases](https://github.com/Frametop/frametop/releases)) and installs it without compiling anything. `-s -- --release --experimental` picks it without the question.
+   The third and fourth choices, stable release and experimental release, download Frametop already built (`Frametop.zip`, about 1.1 GB, from the [releases](https://github.com/Frametop/frametop/releases)) and install it without compiling anything. `-s -- --release` picks the stable release without the question, and `-s -- --release --experimental` the experimental one.
 
    The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and everything else. The first run downloads 1–2 GB. It asks you four things along the way: whether to install gaze mode (experimental, yes by default), our own eye tracker for it (yes by default), and the Bluetooth fixes, then whether to restart SteamVR. The eye tracker and the Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. SteamVR has to restart once at the end, which closes everything open in VR, including the terminal. Rebooting the headset works too.
 
@@ -170,7 +172,7 @@ If the problem is something you can make happen, like a window that won't drag o
 Run the same command again. It updates `~/frametop` to the latest of the version you have (or switches, if you pick the other one) and installs it:
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash
+curl -fsSL https://frametop.github.io/frametop/get.sh | bash
 ```
 
 Or by hand: `cd ~/frametop && git pull && ./install.sh`.
@@ -180,7 +182,7 @@ Or by hand: `cd ~/frametop && git pull && ./install.sh`.
 In a terminal on the headset, run:
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash
+curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash
 ```
 
 It works in two steps, so it never takes away the keyboard, mouse, or desktop you're using while it runs:

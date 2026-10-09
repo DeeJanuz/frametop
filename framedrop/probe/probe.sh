@@ -61,8 +61,8 @@ done
 section "what an installer needs"
 check "home writable" sh -c 'f=$HOME/.cache/frametop-framedrop/.w && : >"$f" && rm "$f" && echo yes'
 check "~/frametop visible" sh -c 'ls -d "$HOME/frametop" && git -C "$HOME/frametop" log -1 --format=%h'
-have git && check "git ls-remote github" git ls-remote --heads https://github.com/DeeJanuz/frametop.git experimental
-have curl && check "curl get.sh" sh -c 'curl -fsSL https://deejanuz.github.io/frametop/get.sh | head -1'
+have git && check "git ls-remote github" git ls-remote --heads https://github.com/Frametop/frametop.git experimental
+have curl && check "curl get.sh" sh -c 'curl -fsSL https://frametop.github.io/frametop/get.sh | head -1'
 have podman && check "podman ps" podman ps --format '{{.Names}}'
 have distrobox && check "distrobox list" distrobox list
 have systemctl && check "systemctl --user" systemctl --user is-system-running
