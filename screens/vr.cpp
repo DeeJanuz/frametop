@@ -329,6 +329,28 @@ struct Screen {
     }
 };
 std::map<int, Screen> g_screens;
+
+// For the log and the debug line (scripts/report.sh): which screen, which drag, which laser.
+int ScreenIndexOf(const Screen &s) {
+    for (const auto &[index, t] : g_screens)
+        if (&t == &s) return index;
+    return -1;
+}
+const char *DragName(Drag d) {
+    switch (d) {
+        case Drag::Move: return "move";
+        case Drag::Resize: return "resize";
+        case Drag::Roll: return "roll";
+        default: return "none";
+    }
+}
+std::string DeviceLabel(vr::TrackedDeviceIndex_t i) {
+    if (i == kNone) return "none";
+    if (vr::VRSystem()->GetTrackedDeviceClass(i) == vr::TrackedDeviceClass_Controller && !IsHandController(i))
+        return "3D mouse";
+    const std::string hand = HandName(i);
+    return hand == "none" ? "device " + std::to_string(i) : hand + " controller";
+}
 std::map<const void *, vr::SharedTextureHandle_t> g_imports;
 
 // Hand cutouts (see the top and handcut.h).
@@ -1126,7 +1148,11 @@ vr::TrackedDeviceIndex_t WristOnLaser(const Screen &s, const Mat &d, const Mat &
 
 void StartDrag(Screen &s, Drag mode, vr::TrackedDeviceIndex_t dev) {
     Mat d, p;
-    if (dev == kNone || !DevicePose(dev, &d) || !ScreenPose(s, &p)) return;
+    if (dev == kNone || !DevicePose(dev, &d) || !ScreenPose(s, &p)) {
+        std::printf("screen %d: %s not started: no pose for the %s or the screen\n", ScreenIndexOf(s) + 1,
+                    DragName(mode), DeviceLabel(dev).c_str());
+        return;
+    }
     s.pinTarget = kNone;
     if (s.pinned != kNone && mode == Drag::Move) {
         // Carried freely; let go, it goes back on the same wrist (unless disarmed).
@@ -1150,11 +1176,15 @@ void StartDrag(Screen &s, Drag mode, vr::TrackedDeviceIndex_t dev) {
         Mat l;
         if (!LaserPose(dev, &l) || !RollLaserAngle(s, l, &s.rollAngle)) s.drag = Drag::None, s.dragDevice = kNone;
     }
+    if (s.drag != Drag::None)
+        std::printf("screen %d: %s by the %s%s\n", ScreenIndexOf(s) + 1, DragName(mode), DeviceLabel(dev).c_str(),
+                    vr::VROverlay()->IsDashboardVisible() ? " (Steam menu open)" : "");
     ApplyAlpha(s);
 }
 
 // Stop moving where it is (a command took over).
 void EndDrag(Screen &s) {
+    if (s.drag != Drag::None) std::printf("screen %d: %s ended\n", ScreenIndexOf(s) + 1, DragName(s.drag));
     s.drag = Drag::None;
     s.dragDevice = kNone;
     s.pinTarget = s.onWrist = kNone;
@@ -1984,6 +2014,8 @@ void UpdateSteamInFront() {
     const bool front = SteamInFront();
     if (front == g_steamInFront) return;
     g_steamInFront = front;
+    std::printf("Steam %s%s\n", front ? "in front (the Steam menu or Steam's keyboard)" : "out of the way",
+                front && keyboard::Shown() ? ": our keyboard steps aside" : !front && g_keyboardAside ? ": our keyboard comes back" : "");
     if (front && keyboard::Shown()) {
         g_asidePose = keyboard::Pose();
         keyboard::Hide();
@@ -2838,6 +2870,21 @@ void ft_vr_command(const char *cmd, char *reply, int size) {
         std::snprintf(reply, size, "ok");
     } else if (std::sscanf(cmd, "spin %15s", word) == 1) {
         SpinCommand(word, reply, size);
+    } else if (std::strcmp(cmd, "debug") == 0) {
+        // One line for scripts/report.sh: what decides whether a laser drags and the keyboard shows.
+        std::string drags;
+        for (const auto &[index, s] : g_screens)
+            if (s.drag != Drag::None)
+                drags += (drags.empty() ? "" : ",") + std::to_string(index + 1) + ":" + DragName(s.drag) + ":" +
+                         DeviceLabel(s.dragDevice);
+        std::snprintf(reply, size,
+                      "ok dashboard=%d steam_front=%d keyboard=%s mode=%s manual=%d lasers=%s game=%d paused=%d "
+                      "press=%#x by=%s on=%d catcher=%d drags=%s",
+                      vr::VROverlay()->IsDashboardVisible() ? 1 : 0, SteamInFront() ? 1 : 0,
+                      keyboard::Shown() ? "shown" : g_keyboardAside ? "aside" : "hidden", ModeName(), g_manual ? 1 : 0,
+                      LasersName(), g_gameRunning ? 1 : 0, g_paused ? 1 : 0, g_press.buttons,
+                      DeviceLabel(g_press.device).c_str(), g_press.screen + 1, g_catcherShown ? 1 : 0,
+                      drags.empty() ? "-" : drags.c_str());
     } else if (std::strncmp(cmd, "state", 5) == 0) {
         std::snprintf(reply, size, "ok %s %d %.0f %s %.0f %s %d %s", ModeName(), g_manual ? 1 : 0, g_wristAngle,
                       g_gestureHand.c_str(), g_gestureAngle, LasersName(), g_gameRunning ? 1 : 0,
