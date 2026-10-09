@@ -19,7 +19,7 @@ int failures = 0;
     } while (0)
 
 // The file as the eye server writes it, one sample at a time, with every field from the
-// timestamp on moved by `shift` (0 stable, 5 the 0.4.x beta).
+// timestamp on moved by `shift` (0 on SteamOS 0.3, 5 on 0.4).
 struct File {
     std::vector<uint8_t> bytes = std::vector<uint8_t>(324122);  // eye-server.mmap's size
     EyeFile eyes;
