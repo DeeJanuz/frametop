@@ -13,7 +13,7 @@ Two settings apps come with it: Frametop Display Settings for the screens, profi
 
 Frametop is an independent project, not made by or affiliated with Valve.
 
-Frametop's home is [Frametop/frametop](https://github.com/Frametop/frametop): the install command clones it, and its releases are built there. Issues and pull requests go to [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop), the upstream it mirrors.
+Frametop lives at [Frametop/frametop](https://github.com/Frametop/frametop): code, releases, issues, and pull requests. It moved there from DeeJanuz/frametop on 2026-10-09; the old links and clones still work.
 
 Join the [Frametop Discord](https://discord.gg/W3X9f7z3Bc) for questions, ideas, and help with your setup.
 
@@ -165,7 +165,7 @@ From a release, start in `~/.local/share/frametop/releases/current` instead of `
 
 This writes `frametop-report-<date>.txt` with version numbers, service states, settings, Frametop's keyboard and the Steam menu, and recent logs. Bluetooth addresses and the headset's serial number are masked.
 
-If the problem is something you can make happen, like a window that won't drag or a keyboard that doesn't open, run `scripts/report.sh --watch` instead. After the usual report it records for 60 seconds (`--watch 120` for longer) while you make it happen in the headset. It notes when the Steam menu opens and closes, which laser drags what, where typing goes, and when Frametop's keyboard opens or why it doesn't. It takes up to half a minute, because it also checks gaze mode: it starts the gaze service for a moment to see whether the eye tracker sends. If gaze or its calibration doesn't work, run it while you wear the headset. `scripts/gaze-report.py` prints only the gaze part, with what looks wrong first. Then [open an issue](https://github.com/DeeJanuz/frametop/issues), describe what you did, what you expected, and what happened, and attach the file. Quick questions can go to [Discord](https://discord.gg/W3X9f7z3Bc) instead.
+If the problem is something you can make happen, like a window that won't drag or a keyboard that doesn't open, run `scripts/report.sh --watch` instead. After the usual report it records for 60 seconds (`--watch 120` for longer) while you make it happen in the headset. It notes when the Steam menu opens and closes, which laser drags what, where typing goes, and when Frametop's keyboard opens or why it doesn't. It takes up to half a minute, because it also checks gaze mode: it starts the gaze service for a moment to see whether the eye tracker sends. If gaze or its calibration doesn't work, run it while you wear the headset. `scripts/gaze-report.py` prints only the gaze part, with what looks wrong first. Then [open an issue](https://github.com/Frametop/frametop/issues), describe what you did, what you expected, and what happened, and attach the file. Quick questions can go to [Discord](https://discord.gg/W3X9f7z3Bc) instead.
 
 ## Update
 

@@ -38,9 +38,9 @@ piped: curl -fsSL https://frametop.github.io/frametop/get.sh | bash -s -- [optio
 EOF
 }
 
-# Frametop's home is the Frametop organization's repo: the branches clone from it, and its CI
-# runners (Depot, which need an organization) build the releases. DeeJanuz/frametop is the
-# upstream it mirrors, where issues go; clones made from it before 2026-10-09 still update from it.
+# Frametop lives in the Frametop organization's repo: the branches clone from it, and its CI
+# runners (Depot, which need an organization) build the releases. It moved there from
+# DeeJanuz/frametop on 2026-10-09; GitHub redirects clones made from the old name.
 SLUG=${FRAMETOP_REPO:-Frametop/frametop}  # FRAMETOP_REPO: another repo's releases, such as a fork's
 
 # release_zip CHANNEL VERSION: the URL of a release's Frametop.zip on GitHub.
