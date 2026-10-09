@@ -93,9 +93,11 @@ class NoDevice:
 
 relay.Virtual = NoDevice
 relay.Volume.key = lambda self, fd, code, value, now: VOLUME.append((code, value))
-relay.log = lambda *args: None  # the relay's own log
+LOG = []  # the relay's own log
+relay.log = lambda *args: LOG.append(" ".join(map(str, args)))
 bindings = {"now": None}  # the rules' key_bindings; None: the relay's defaults
 devices = {"roles": {}, "buttons": {}}  # the rules' "devices" roles and per-device "buttons"
+vr_keyboard = {"mode": None}  # the rules' vr_keyboard (Frametop's keyboard); None: the default
 MOUSE_ID = "usb:0003:0004:test mouse"  # the fake mouse's id (Node.id)
 
 
@@ -103,6 +105,8 @@ def read_rules(path=None):
     rules = {"devices": {i: {"role": r} for i, r in devices["roles"].items()},
              "buttons": {i: dict(b) for i, b in devices["buttons"].items()}, "controller_buttons": {}}
     rules["key_bindings"] = dict(relay.DEFAULT_KEY_BINDINGS if bindings["now"] is None else bindings["now"])
+    if vr_keyboard["mode"]:
+        rules["vr_keyboard"] = vr_keyboard["mode"]
     return rules
 
 
@@ -413,6 +417,36 @@ def tests():
     check("steam_menu, pause_toggle and commands work without pointer mode",
           (relay.needs_pointer("steam_menu"), relay.needs_pointer("pause_toggle"), relay.needs_pointer("command:ls")),
           (False, False, False))
+
+    # A text field on the desktop got focus (ft-textinput): Frametop's keyboard by the Keyboard
+    # setting, and a log line saying why, once per decision (scripts/report.sh reads them).
+    def text_field():
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        c.sendto(b"textfield 1", f"\0{tag}_relay")
+        time.sleep(0.1)
+        return [m for m in typed() if m.startswith("vrkeyboard")]
+
+    def said():
+        got = [m for m in LOG if m.startswith("text field focused")]
+        LOG.clear()
+        return got
+
+    typed(), said()
+    check("text field, a keyboard connected (default setting): no keyboard", text_field(), [])
+    check("...and the log says why", said(), [("text field focused: not opening Frametop's keyboard: a keyboard is "
+                                               "connected (test keyboard), and the Keyboard setting opens it only "
+                                               "without one")])
+    check("the same again: not logged twice", (text_field(), said()), ([], []))
+    vr_keyboard["mode"] = "always"
+    use(None)
+    check("text field, setting always: it opens", text_field(), ["vrkeyboard show"])
+    check("...logged", said(), ["text field focused: asking ft-screens to open Frametop's keyboard"])
+    vr_keyboard["mode"] = "never"
+    use(None)
+    check("text field, setting never: no keyboard, logged",
+          (text_field(), said()), ([], ["text field focused: not opening Frametop's keyboard (Keyboard setting: never)"]))
+    vr_keyboard["mode"] = None
+    use(None)
     print("FAILED: " + ", ".join(failures) if failures else "all passed", flush=True)
     shutil.rmtree(OUT, ignore_errors=True)
     os._exit(1 if failures else 0)

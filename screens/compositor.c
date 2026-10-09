@@ -686,9 +686,15 @@ static void keyboard_command(struct server *s, const char *what, char *reply, in
         return (void)snprintf(reply, size, "ok closed");
     }
     if (open) return (void)snprintf(reply, size, "ok open");
-    if (!ft_vr_screens_shown()) return (void)snprintf(reply, size, "ok screens hidden");
+    if (!ft_vr_screens_shown()) {
+        wlr_log(WLR_INFO, "keyboard not opened (%s): the screens are hidden", toggle ? "button" : "text field");
+        return (void)snprintf(reply, size, "ok screens hidden");
+    }
     const int screen = focused_screen(s);
-    if (screen < 0 || !ft_vr_keyboard_show(screen)) return (void)snprintf(reply, size, "error not shown");
+    if (screen < 0 || !ft_vr_keyboard_show(screen)) {
+        wlr_log(WLR_INFO, "keyboard not opened (%s) for screen %d", toggle ? "button" : "text field", screen + 1);
+        return (void)snprintf(reply, size, "error not shown");
+    }
     wlr_log(WLR_INFO, "keyboard open for screen %d (%s)", screen + 1, toggle ? "button" : "text field");
     s->kb_screen = screen;
     s->kb_auto = !toggle;
@@ -831,6 +837,14 @@ static int control_readable(int fd, uint32_t mask, void *data) {
             if (strcmp(buf + 6, "-") != 0 && strncmp(buf + 6, "frametop.", 9) != 0) s->keys_clicked = false;
             len = sizeof from;
             continue;
+        } else if (strcmp(buf, "debug") == 0) {
+            // ft-screens' side of scripts/report.sh's debug line; vr.cpp adds SteamVR's.
+            char vr[1024] = "ok vr=off";
+            if (s->vr) ft_vr_command("debug", vr, sizeof vr);
+            snprintf(reply, sizeof reply, "%s kb_screen=%d kb_auto=%d typing=%s focused_screen=%d pointer_screen=%d",
+                     vr, s->kb_screen + 1, s->kb_auto ? 1 : 0,
+                     s->key_remote >= 0 ? "remote" : s->keys_desktop ? "desktop" : s->keys_clicked ? "desktop (hidden)" : "steam",
+                     focused_screen(s) + 1, s->pointer_focus ? s->pointer_focus->index + 1 : 0);
         } else if (!ft_remote_command(buf, reply, sizeof reply)) {
             ft_vr_command(buf, reply, sizeof reply);
         }

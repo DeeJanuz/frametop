@@ -932,9 +932,22 @@ def main():
         if not focused:
             if not state["rules"].get("vr_keyboard_persist", True):
                 vr_keyboard("hide")  # ft-screens closes it only if it opened it for a text field
-        elif mode == "always" or (mode == "no_keyboard" and not any(
-                n.candidate and n.is_keyboard and n.role == "passthrough" and not n.uinput for n in nodes.values())):
+            return
+        keyboards = sorted({n.name for n in nodes.values()
+                            if n.candidate and n.is_keyboard and n.role == "passthrough" and not n.uinput})
+        if mode == "always" or (mode == "no_keyboard" and not keyboards):
             vr_keyboard("show")
+            why = "asking ft-screens to open Frametop's keyboard"
+        elif mode == "no_keyboard":
+            why = (f"not opening Frametop's keyboard: a keyboard is connected ({', '.join(keyboards)}), "
+                   "and the Keyboard setting opens it only without one")
+        else:
+            why = f"not opening Frametop's keyboard (Keyboard setting: {mode})"
+        # For bug reports (scripts/report.sh): once per decision, again after 30 s.
+        now = time.monotonic()
+        if why != state.get("text_field_said") or now - state.get("text_field_said_at", 0.0) > 30:
+            log(f"text field focused: {why}")
+            state["text_field_said"], state["text_field_said_at"] = why, now
 
     def do_action(action, value, now, source="mouse"):
         """A mapped mouse or controller button, or key combination (pointer mode only, but
