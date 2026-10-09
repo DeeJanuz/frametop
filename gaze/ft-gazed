@@ -694,6 +694,10 @@ class Service:
         if down:
             self.counts["looking_down"] += 1
             return
+        if own and self.one_eye is not None:
+            # SteamVR judges only that eye's openness, and a blink closes both: ours still
+            # sees the other, so it stays in.
+            low[1 - self.one_eye] = low[self.one_eye]
         # Our tracker finds the pupils itself; SteamVR's openness still marks the blinks.
         bad = [eyes[k] is None or low[k] or (not own and self.lost[k]) for k in (0, 1)]
         if not own and self.one_eye is not None:
