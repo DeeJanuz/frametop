@@ -1235,7 +1235,12 @@ class Backend(QObject):
     @Slot()
     def applyBluetoothFixes(self):
         if not os.path.exists("/run/host/etc/steamframe/bt-fixups.sh") and not os.path.exists("/etc/steamframe/bt-fixups.sh"):
-            self.message.emit("Bluetooth fixes aren't installed (setup/bluetooth/install.sh)", True)
+            # The unit outlives the script: SteamOS updates keep /etc's units, not what they run.
+            if any(os.path.exists(r + "/etc/systemd/system/steamframe-bt-fixups.service") for r in ("/run/host", "")):
+                self.message.emit("A SteamOS update deleted the Bluetooth fixes: reinstall them with "
+                                  "setup/bluetooth/install.sh install", True)
+            else:
+                self.message.emit("Bluetooth fixes aren't installed (setup/bluetooth/install.sh)", True)
             return
         result = host("pkexec", "/etc/steamframe/bt-fixups.sh")
         if result.returncode == 0:

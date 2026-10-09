@@ -299,6 +299,9 @@ class Service:
             auto = ""
             if self.tracker_setting == "auto":
                 auto = " (auto: ours is installed)" if tracker == "own" else " (auto: ours isn't installed)"
+                if tracker == "steam" and EYEGRAB[1].exists() and not EYEGRAB[0].exists():
+                    auto = (f" (auto: ours lost {EYEGRAB[0]}, which SteamOS updates delete unless it's kept;"
+                            " reinstall it with gaze/tracker/install.sh)")
             log(f"tracker {tracker}{auto}, eye bias {bias}" + (f" (--source {self.override} wins)" if self.override else ""))
             self.tracker, self.bias = tracker, bias
             for w in self.weights.values():

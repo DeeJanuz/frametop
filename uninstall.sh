@@ -41,9 +41,10 @@ driver=$HOME/.local/share/frametop/ft_pointer
 releases=$HOME/.local/share/frametop/releases  # pack/install-release.sh
 vrpathreg=/opt/steamvr/bin/linuxarm64/vrpathreg
 handsctl=$HOME/.local/bin/ft-handsctl
-eyegrab_files=(/etc/systemd/system/frametop-eyegrab.service /etc/frametop/ft-eyegrab)
+eyegrab_files=(/etc/systemd/system/frametop-eyegrab.service /etc/frametop/ft-eyegrab
+               /etc/atomic-update.conf.d/frametop-eyegrab.conf)
 bt_files=(/etc/systemd/system/steamframe-bt-fixups.service /etc/systemd/system/bluetooth.service.d/steamframe.conf
-          /etc/steamframe/bt-fixups.sh)
+          /etc/steamframe/bt-fixups.sh /etc/atomic-update.conf.d/frametop-bluetooth.conf)
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 run() {  # run a command, or with --dry-run, show it
