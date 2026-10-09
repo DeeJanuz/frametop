@@ -2,11 +2,11 @@
 # Frametop's one-line installer. In a terminal on the Steam Frame (Konsole in the desktop, or
 # over SSH):
 #
-#   curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash
+#   curl -fsSL https://frametop.github.io/frametop/get.sh | bash
 #
 # It asks which version to install, clones the repo into ~/frametop (or updates the clone
 # that's there), and runs its install.sh. Run it again to update, or to switch versions.
-# Its third choice, or --release, installs a release instead: Frametop built, in one file. It downloads the
+# Its third and fourth choices, or --release, install a release instead: Frametop built, in one file. It downloads the
 # release's Frametop.zip from GitHub (about 1.1 GB: the newest stable release, or with
 # --experimental the newest of any), unpacks it in ~/.cache/frametop/release, and runs its
 # install-release.sh, which checks this SteamOS build against the releases' SteamOS table and
@@ -34,12 +34,13 @@ usage: get.sh [--stable | --experimental | --branch NAME] [--dir DIR] [--clone-o
        get.sh --release [--stable | --experimental | --version V | --zip FILE|URL]
               [--any-steamos] [--dir DIR] [--clone-only] [--yes] [--no-eye-tracker]
               [--no-bluetooth | --bluetooth]
-piped: curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- [options]
+piped: curl -fsSL https://frametop.github.io/frametop/get.sh | bash -s -- [options]
 EOF
 }
 
-# Releases are built in the Frametop organization's repo: its CI runners (Depot) need an
-# organization. The branches still clone from DeeJanuz/frametop.
+# Frametop's home is the Frametop organization's repo: the branches clone from it, and its CI
+# runners (Depot, which need an organization) build the releases. DeeJanuz/frametop is the
+# upstream it mirrors, where issues go; clones made from it before 2026-10-09 still update from it.
 SLUG=${FRAMETOP_REPO:-Frametop/frametop}  # FRAMETOP_REPO: another repo's releases, such as a fork's
 
 # release_zip CHANNEL VERSION: the URL of a release's Frametop.zip on GitHub.
@@ -113,7 +114,7 @@ install_release() {
 
 # Everything happens in main, called on the last line, so a download cut short runs nothing.
 main() {
-  local repo=https://github.com/DeeJanuz/frametop.git dir= branch= clone_only=0
+  local repo=https://github.com/Frametop/frametop.git dir= branch= clone_only=0
   local yes=0 tty=0 current= def answer release=0 zip= want= any=0
   local pass=()
   while [ $# -gt 0 ]; do
@@ -179,15 +180,19 @@ main() {
       echo "Which version of Frametop?"
       echo "  1) stable: the main branch, tested releases"
       echo "  2) experimental: the newest features, less tested"
-      [ "$release" = 0 ] && echo "  3) experimental release: built, nothing to compile (a 1.1 GB download)"
+      if [ "$release" = 0 ]; then
+        echo "  3) stable release: built, nothing to compile (a 1.1 GB download)"
+        echo "  4) experimental release: built, nothing to compile (a 1.1 GB download)"
+      fi
       [ -n "$current" ] && echo "(installed now: $current)"
-      read -r -p "Choose 1$([ "$release" = 0 ] && echo ", 2, or 3" || echo " or 2") [$([ "$def" = main ] && echo 1 || echo 2)]: " \
+      read -r -p "Choose 1$([ "$release" = 0 ] && echo ", 2, 3, or 4" || echo " or 2") [$([ "$def" = main ] && echo 1 || echo 2)]: " \
         answer </dev/tty || answer=
       case ${answer:-$def} in
         1|main|s*) branch=main ;;
         2|experimental|e*) branch=experimental ;;
-        3) [ "$release" = 0 ] || { echo "not 1 or 2: $answer" >&2; return 2; }
-           release=1 branch=experimental dir=$dir_arg ;;
+        3|4) [ "$release" = 0 ] || { echo "not 1 or 2: $answer" >&2; return 2; }
+           release=1 dir=$dir_arg
+           branch=$([ "$answer" = 3 ] && echo main || echo experimental) ;;
         *) echo "not one of the choices: $answer" >&2; return 2 ;;
       esac
     fi

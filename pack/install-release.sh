@@ -24,7 +24,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
-TABLE_URL=${FRAMETOP_STEAMOS_TABLE:-https://raw.githubusercontent.com/DeeJanuz/frametop/main/pack/steamos.json}
+TABLE_URL=${FRAMETOP_STEAMOS_TABLE:-https://raw.githubusercontent.com/Frametop/frametop/main/pack/steamos.json}
 
 # check_release RELEASE_JSON TABLE_JSON BUILD_ID: is the release usable, and is it for this
 # SteamOS build? Prints seven lines: status (tested, untested, or broken), version, commit,
