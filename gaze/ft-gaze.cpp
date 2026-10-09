@@ -98,10 +98,11 @@ double NowRaw() {
 }
 
 // --- eye-server.mmap (packed, unaligned: read with memcpy) ---
-// The SteamOS 0.4.x beta (SteamVR 2.18.2) moved every field from the timestamp on by 5
-// bytes (measured 2026-10-04 with the ftdiag scan: timestamp 0x157 -> 0x15c, the vectors
-// moved with it; the counter at 0x38 kept its place). Which layout is live is detected at
-// runtime (EyeFile::Detect), so one binary serves both generations.
+// SteamOS 0.4 (SteamVR 2.18.2; first on the 0.4.3 beta, the same on 0.4.5, the release)
+// moved every field from the timestamp on by 5 bytes (measured 2026-10-04 with the ftdiag
+// scan: timestamp 0x157 -> 0x15c, the vectors moved with it; the counter at 0x38 kept its
+// place). Which layout is live is detected at runtime (EyeFile::Detect), so one binary
+// serves both generations.
 constexpr size_t kCounter = 0x38;  // u32, one per sample
 constexpr size_t kTime = 0x157;    // f64, CLOCK_MONOTONIC_RAW seconds
 constexpr size_t kLeft1 = 0x15f, kRight1 = 0x16b;  // set 1: unit vectors, head space
@@ -115,11 +116,11 @@ constexpr size_t kVar1 = 0x177, kVar2 = 0x1b3;
 // x, y, right x, y). An eye's pair stops changing while the tracker can't see it.
 constexpr size_t kMeas = 0x1d3;
 constexpr size_t kNeed = 0x1f3 + 5;  // enough for either layout
-constexpr size_t kShifts[] = {0, 5};  // the layouts EyeFile::Detect knows: stable, 0.4.x beta
+constexpr size_t kShifts[] = {0, 5};  // the layouts EyeFile::Detect knows: SteamOS 0.3, 0.4
 
 struct EyeFile {
-    // Everything from the timestamp on is read at base + shift: 0 on stable, 5 on the
-    // 0.4.x beta (see the constants above). known once Detect has seen that layout's
+    // Everything from the timestamp on is read at base + shift: 0 on SteamOS 0.3, 5 on 0.4
+    // (see the constants above). known once Detect has seen that layout's
     // timestamp tick; before that, reading would yield garbage that still passes
     // ReadSample's check.
     size_t shift = 0;
@@ -673,7 +674,7 @@ int main(int argc, char **argv) {
         if (haveMmap && !eyes.known && (eyes.Detecting() || (writing && now >= nextLayoutCheck))) {
             const EyeFile::Detection d = eyes.Detect(now);
             if (d == EyeFile::kFound) {
-                std::fprintf(stderr, "ft-gaze: eye-server.mmap layout: %s\n", eyes.shift ? "beta (+5)" : "stable");
+                std::fprintf(stderr, "ft-gaze: eye-server.mmap layout: %s\n", eyes.shift ? "SteamOS 0.4 (+5)" : "SteamOS 0.3");
             } else if (d == EyeFile::kNone) {
                 nextLayoutCheck = now + 1.0;
                 if (!missSince) missSince = now;

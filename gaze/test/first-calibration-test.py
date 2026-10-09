@@ -43,6 +43,7 @@ gazecheck.SCREENS = f"\0{tag}_screens"
 gazecheck.PANEL = f"\0{tag}_panel"
 gazed.EYES_SOCKET = gazecheck.EYES = f"\0{tag}_eyes"
 gazed.read_settings = lambda: ("own", "auto", "auto", 55.0)
+gazed.TrackedEye = lambda: lambda now=None: None  # both eyes, whatever SteamVR's settings say
 DOTS = 3
 real_dots = gazecheck.check_dots
 gazecheck.check_dots = lambda kind, own: real_dots(kind, own)[:DOTS]  # a short calibration

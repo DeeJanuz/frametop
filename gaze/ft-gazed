@@ -131,7 +131,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gazecal import (DEFAULT_MODEL, EYE_FOUND, EYE_LOST, MODELS, STATE, Correction, EyeFallback,  # noqa: E402
-                     EyeWeights, Fixation, LiveCorrection, SteamEyeLog)
+                     EyeWeights, Fixation, LiveCorrection, SteamEyeLog, TrackedEye)
 from gazecheck import Checks  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
@@ -239,6 +239,9 @@ class Service:
         self.opens = (deque(maxlen=90), deque(maxlen=90))  # left, right
         self.vergence = deque(maxlen=90)
         self.fallback = EyeFallback()
+        # SteamVR's tracker following one eye only (gazecal.tracked_eye): 0 left, 1 right, or None.
+        self.tracked = TrackedEye()
+        self.one_eye = self.tracked()
         self.lost = [False, False]
         self.bad_at = [0.0, 0.0]    # sample time an eye was last lost or closed
         self.counts = {"samples": 0, "sent": 0, "blinks": 0, "one_eye": 0, "one_eye_used": 0, "lost_left": 0,
@@ -283,7 +286,9 @@ class Service:
             return "source"
         if self.tracker == "own":
             return "own"
-        return "eyes" if all(self.models[e].samples for e in SIDES) else "source"
+        # With one eye tracked, that eye's own calibration is enough.
+        sides = SIDES if self.one_eye is None else (SIDES[self.one_eye],)
+        return "eyes" if all(self.models[e].samples for e in sides) else "source"
 
     # --- Settings, calibration and lessons ---
 
@@ -640,11 +645,17 @@ class Service:
             for k in (0, 1):
                 self.lost[k] = unc[k] > (EYE_FOUND if self.lost[k] else EYE_LOST)
             if not down:
-                self.counts["lost_left"] += self.lost[0]
-                self.counts["lost_right"] += self.lost[1]
+                self.counts["lost_left"] += self.lost[0] and self.one_eye != 1
+                self.counts["lost_right"] += self.lost[1] and self.one_eye != 0
         return low
 
     def on_sample(self, s):
+        one = self.tracked()
+        if one != self.one_eye:
+            log("SteamVR now tracks both eyes" if one is None else
+                f"SteamVR tracks the {SIDES[one]} eye only (Track Dominant Eye Only): going by that eye")
+            self.one_eye = one
+            self.fix.reset()
         self.checks.on_sample(s)
         kind = self.kind
         if kind != self.last_kind:
@@ -671,7 +682,8 @@ class Service:
             eyes = [(p["hy"], p["hp"]) if "hy" in p else None for p in per]
             if not any(eyes):
                 return
-            hp, hit = next(e[1] for e in eyes if e), m1.get("hit")
+            one = self.one_eye
+            hp, hit = (eyes[one] if one is not None and eyes[one] else next(e for e in eyes if e))[1], m1.get("hit")
         self.counts["samples"] += 1
         self.last_sample = time.monotonic()
         down = hp < KEYBOARD_PITCH and not hit
@@ -681,6 +693,8 @@ class Service:
             return
         # Our tracker finds the pupils itself; SteamVR's openness still marks the blinks.
         bad = [eyes[k] is None or low[k] or (not own and self.lost[k]) for k in (0, 1)]
+        if not own and self.one_eye is not None:
+            bad[1 - self.one_eye] = True  # SteamVR ignores that eye
         if all(bad):
             self.counts["blinks"] += 1
             return
@@ -715,11 +729,27 @@ class Service:
                 self.bad_at[k] = s["t"]  # the fallback doesn't learn from these either
             return
         bad = [low[k] or self.lost[k] for k in (0, 1)]
+        hy, hp = src["hy"], src["hp"]
+        eyes = (s["src"].get("mmap2") or {}).get("eyes")
+        one = self.one_eye
+        if one is not None:
+            # SteamVR's combined gaze already follows that eye alone; set 2's averages the
+            # ignored one in, so mmap2 takes the eye's own reading. No fallback to learn.
+            if bad[one]:
+                self.counts["blinks"] += 1
+                return
+            if self.source == "mmap2":
+                if not eyes:
+                    self.counts["dropped"] += 1
+                    return
+                hy, hp = eyes[one]
+            fy, fp = self.fix(hy, hp, s["t"], 1.0)
+            cy, cp = self.correction(self.source, fy, fp)
+            self.send(s["t"], fy + cy, fp + cp, fy, fp, None)
+            return
         if all(bad):
             self.counts["blinks"] += 1
             return
-        hy, hp = src["hy"], src["hp"]
-        eyes = (s["src"].get("mmap2") or {}).get("eyes")
         for k in (0, 1):
             if bad[k]:
                 self.bad_at[k] = s["t"]

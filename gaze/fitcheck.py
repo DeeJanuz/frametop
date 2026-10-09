@@ -51,7 +51,10 @@ GUIDE = [
 
 
 class FitCheck:
-    def __init__(self):
+    def __init__(self, ignore=None):
+        # The eye SteamVR's tracker ignores (0 left, 1 right) with Track Dominant Eye Only on
+        # (gazecal.tracked_eye), or None: its losses say nothing about the fit.
+        self.ignore = ignore
         self.reset()
 
     def reset(self):
@@ -99,7 +102,8 @@ class FitCheck:
             if q and (eye.get("new") or [1, 1])[k]:
                 self.q[k].append(q[k])
         closed = [opens[k] < CLOSED for k in (0, 1)]
-        if all(closed) or all(self.lost):
+        judged = [k for k in (0, 1) if k != self.ignore]
+        if all(closed[k] for k in judged) or all(self.lost[k] for k in judged):
             return  # a blink: says nothing about the fit
         key = (math.floor(hy / CELL), math.floor(hp / CELL))
         for k in (0, 1):
@@ -143,6 +147,8 @@ class FitCheck:
     # --- Summaries ---
 
     def status(self, k):
+        if k == self.ignore:
+            return "not tracked", (0.6, 0.6, 0.6)
         if not self.samples:
             return "no data", (0.6, 0.6, 0.6)
         if self.lost[k]:
@@ -174,8 +180,13 @@ class FitCheck:
             return ["Look around slowly (the screen's corners, then down at your keyboard, up, left and right) "
                     "or press Enter for a guided check."]
         out = []
+        if self.ignore is not None:
+            out.append(f"SteamVR tracks only your {EYES[1 - self.ignore].lower()} (Track Dominant Eye Only in "
+                       f"SteamVR's settings), so your {EYES[self.ignore].lower()} doesn't count here.")
         bad = {}
         for k in (0, 1):
+            if k == self.ignore:
+                continue
             for key, words, _ in REGIONS:
                 share = self.region_share(k, key)
                 if share is not None and share >= 0.15:
@@ -197,7 +208,7 @@ class FitCheck:
                                "face, not one eye's fit.")
                 continue
             k = next(iter(eyes))
-            other = self.region_share(1 - k, key)
+            other = self.region_share(1 - k, key) if 1 - k != self.ignore else None
             vs = f", the {EYES[1 - k].lower()} {other:.0%}" if other is not None else ""
             line = f"{EYES[k]}: lost {eyes[k]:.0%} of the time looking {words}{vs}."
             if key == "down":
@@ -211,10 +222,12 @@ class FitCheck:
                          "eyes.")
             out.append(line)
         s0, s1 = self.signal(0), self.signal(1)
-        if s0 is not None and s1 is not None and abs(s0 - s1) > 0.25:
+        if self.ignore is None and s0 is not None and s1 is not None and abs(s0 - s1) > 0.25:
             k = 0 if s0 < s1 else 1
             out.append(f"The tracker is less sure of your {EYES[k].lower()} even when it has it "
                        f"(signal {min(s0, s1):.0%} against {max(s0, s1):.0%}).")
+        if self.ignore is not None and len(out) == 1:
+            out.append(f"Your {EYES[1 - self.ignore].lower()} is tracked everywhere you've looked so far.")
         if not out:
             out.append("Both eyes are tracked everywhere you've looked so far.")
         return out

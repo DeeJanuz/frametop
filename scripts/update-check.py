@@ -41,6 +41,9 @@ VRPATHS = os.path.join(HOME, ".config/openvr/openvrpaths.vrpath")
 STRAY_VRPATHS = os.path.join(HOME, ".config/frametop/openvr/openvrpaths.vrpath")
 BACKLIGHT = "/sys/class/backlight/ae94000.dsi.0/brightness"  # as in power/ft-powerd.cpp
 EYE_MMAP = "/dev/shm/eye-server.mmap"
+# SteamVR's settings, where SteamOS 0.4's Track Dominant Eye Only lives (as gaze/gazecal.py reads it).
+STEAMVR_SETTINGS = (os.path.join(HOME, ".config/openvr/config/steamvr.vrsettings"),
+                    os.path.join(HOME, ".steam/steam/config/steamvr.vrsettings"))
 VRSERVER = "http://127.0.0.1:27062"  # its web socket: input/vrws.py
 PAUSE_STATE = f"/run/user/{os.getuid()}/frametop-pause.json"  # input/game_pause.py
 HOST_GLIBC = (2, 39)  # the newest the pointer driver may need (pointer/driver/build.sh)
@@ -48,7 +51,8 @@ HOST_GLIBC = (2, 39)  # the newest the pointer driver may need (pointer/driver/b
 # Packages in the OS image that Frametop depends on, and what to try by hand when one changes.
 PACKAGES = {
     "deckard-steamvr-rel": "the 3D mouse on the dashboard, on SteamVR Settings, and on a SteamVR "
-                           "window's grab bar; picking up a controller; mapped controller buttons; gaze",
+                           "window's grab bar; picking up a controller; mapped controller buttons; gaze, "
+                           "and a gaze calibration with Track Dominant Eye Only on",
     "kwin": "clicks near the far edge of a screen whose scale isn't 1; every screen comes back "
             "after a desktop restart; floating a window; no blur behind the taskbar's menus",
     "plasma-workspace": "the taskbar and panels after a desktop restart; no DiscoverNotifier or "
@@ -57,7 +61,10 @@ PACKAGES = {
                     "the registry stops and comes back after a desktop restart",
     "gamescope": "the headset's volume buttons with nothing focused; typing goes where you last clicked",
     "bluez": "a Bluetooth mouse reconnecting after it sleeps",
-    "steamdeck-kde-presets": "Launch a program -> Native Desktop opens SteamOS's own desktop",
+    "steamdeck-kde-presets": "Launch a program -> Native Desktop opens SteamOS's own desktop; starting "
+                             "the desktop sends Steam no command line (no ExecCommandLine in "
+                             "~/.local/share/Steam/logs/console_log.txt)",
+    "holo-cursors": "the desktop keeps its Breeze cursor (over remote access, and with the gamescope backend)",
 }
 KERNEL_HINT = "display power (ft-powerd) and hand tracking"
 
@@ -75,7 +82,7 @@ UNITS = {
 # layouts its EyeFile::Detect knows: everything from the timestamp on moved by a shift.
 EYE_COUNTER, EYE_TIME, EYE_NEED = 0x38, 0x157, 0x1F3 + 5
 EYE_SET1 = (0x15F, 0x16B)  # set 1 left, right
-EYE_LAYOUTS = {0: "stable", 5: "the 0.4.x beta's (+5)"}
+EYE_LAYOUTS = {0: "SteamOS 0.3's", 5: "SteamOS 0.4's (+5)"}
 
 # Runs in a child process, so a SteamVR that hangs can't hang the check.
 OPENVR_PROBE = r"""
@@ -185,6 +192,8 @@ def check_host():
         ("/etc/profile.d/flatpak.sh", "warn", "Flatpak apps may open Discover instead of starting"),
         (STOCK_LAUNCHER, "warn", "SteamOS's Desktop launcher entry is gone or renamed, so Frametop's "
          "copy may not replace it, and there's no Native Desktop"),
+        ("/usr/share/steamos/steamos-cursor.png", "warn",
+         "the gamescope backend has no cursor image (SteamOS 0.4's own session moved to /usr/share/holo)"),
     ]
     missing = [n for n in needed if not os.path.exists(n[0])]
     for path, state, effect in missing:
@@ -471,8 +480,29 @@ def check_vr_socket():
                "(input/vrws.py: the message format changed?)")
 
 
+def tracked_eye():
+    """gaze/gazecal.py's tracked_eye: the one eye SteamVR's tracker follows with Track Dominant
+    Eye Only on (0 left, 1 right), or None."""
+    for path in STEAMVR_SETTINGS:
+        try:
+            with open(path) as f:
+                steamvr = json.load(f).get("steamvr")
+        except OSError:
+            continue
+        except (ValueError, AttributeError):
+            return None
+        if not isinstance(steamvr, dict) or steamvr.get("eyeTrackingDominantEyeOnly") is not True:
+            return None
+        return 0 if steamvr.get("dominantEye", 1) == 0 else 1
+    return None
+
+
 def check_eye_tracker():
     gaze = systemctl("is-enabled", "frametop-gaze") == "enabled"
+    one = tracked_eye()
+    if one is not None:
+        report("ok", "eye tracking", f"SteamVR tracks your {('left', 'right')[one]} eye only (Track Dominant "
+               "Eye Only), and Frametop's gaze goes by that eye")
     try:
         with open(EYE_MMAP, "rb") as f:
             m = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)

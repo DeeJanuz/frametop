@@ -30,7 +30,7 @@ kwriteconfig6 --file ~/.config/frametop/kwinrc --group Plugins --key contrastEna
 kwriteconfig6 --file ~/.config/frametop/kdeglobals --group KDE --key AnimationDurationFactor 1
 ```
 
-Two of the system's autostart programs don't start in this desktop: Discover's update notifier (`org.kde.discover.notifier`), which starts Discover to check for updates, and IBus (`ibus`), which can't reach the desktop's apps because KWin's input method is `input/ft-textinput`. The session script puts copies with `Hidden=true` in `~/.config/frametop/autostart` once (marked in `frametoprc`), and skips a name you already have a file for. Delete a copy to start that program again.
+Three of the system's autostart programs don't start in this desktop: Discover's update notifier (`org.kde.discover.notifier`), which starts Discover to check for updates, IBus (`ibus`), which can't reach the desktop's apps because KWin's input method is `input/ft-textinput`, and Steam (`steam`), which is already running. The session script puts copies with `Hidden=true` in `~/.config/frametop/autostart` once (marked in `frametoprc`; Steam's was added later and is hidden once on desktops that already had the other two), and skips a name you already have a file for. Delete a copy to start that program again.
 
 Settings are in two files, and Frametop Display Settings edits both. The screens (resolution, width in metres, scale, curve, which one has the taskbar) and their layout are in `~/.config/frametop-layout.json`. The backend, remote desktop, and pointer settings are in `~/.config/frametop.conf`; `session/frametop.conf.example` lists every key.
 

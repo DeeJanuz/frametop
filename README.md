@@ -17,7 +17,7 @@ Join the [Frametop Discord](https://discord.gg/W3X9f7z3Bc) for questions, ideas,
 
 ## Install on the headset
 
-> **Frametop doesn't work on the SteamOS beta right now.** On the beta (SteamOS 0.4.3), gaze mode can't read the eye tracker, and the desktop has started without its taskbar ([#15](https://github.com/DeeJanuz/frametop/issues/15)). Use the stable SteamOS release until this note is gone.
+> **SteamOS 0.4:** SteamOS 0.4 moved the eye tracker's data that gaze mode reads. This version of Frametop reads both SteamOS 0.3's and 0.4's; the 0.4.5 release hasn't been tried in the headset with it yet. Run `scripts/doctor.sh` after the update: it says whether the eye tracker's layout is one Frametop knows.
 
 You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or the on-screen one), and about 3 GB of free space.
 
