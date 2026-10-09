@@ -178,6 +178,16 @@ export XDG_CONFIG_HOME=$HOME/.config/frametop
 export XDG_STATE_HOME=$HOME/.local/state/frametop
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
+# The cursor: the Steam client's XCURSOR_THEME=steam comes along in the environment, and
+# KWin and the apps take it over this desktop's own setting. SteamOS had no theme of that
+# name, so they fell back to Breeze; SteamOS 0.4 has one (holo-cursors: Steam's arrow, the
+# rest Breeze Light). The theme is this desktop's own (System Settings, Breeze unless
+# changed there); the size stays what it was, unless one is set there too.
+cursor_theme=$(kreadconfig6 --file kcminputrc --group Mouse --key cursorTheme)
+cursor_size=$(kreadconfig6 --file kcminputrc --group Mouse --key cursorSize)
+export XCURSOR_THEME=${cursor_theme:-breeze_cursors}
+[ -z "$cursor_size" ] || export XCURSOR_SIZE=$cursor_size
+
 # Remote desktop over VNC: session/remote-desktop.sh captures the desktop with
 # krdp on 127.0.0.1, and session/vnc-bridge.sh re-serves its primary screen over VNC. krdpserver runs from the container, so KWin can't
 # match it to an installed app. KWin's permission check for screencast and fake
@@ -273,15 +283,24 @@ fi
 # 600 MB and a share of a core, with Flatpak's helper and AppStream behind it); updates
 # come with SteamOS and from Discover in the stock desktop. IBus can't reach the
 # desktop's apps: KWin's input method is ft-textinput, and the session drops the
-# variables that point apps at IBus or XIM. Deleting the copy brings an entry back.
-if [ "$(kreadconfig6 --file "$frametoprc" --group Defaults --key autostart)" != 1 ]; then
-  for entry in org.kde.discover.notifier ibus; do
+# variables that point apps at IBus or XIM. Steam is already running (the desktop starts
+# from it), so its entry's `steam -silent` only reaches that client as a command line it
+# runs; SteamOS 0.4 adds -vrdisable -deckard to it, meant for Desktop Mode's own Steam.
+# Deleting the copy brings an entry back. The marker is the last list done, so an entry
+# added later is hidden once on desktops that did the first list, and none comes back.
+case $(kreadconfig6 --file "$frametoprc" --group Defaults --key autostart) in
+  2) hide= ;;
+  1) hide=steam ;;
+  *) hide="org.kde.discover.notifier ibus steam" ;;
+esac
+if [ -n "$hide" ]; then
+  for entry in $hide; do
     src=/etc/xdg/autostart/$entry.desktop dst=$XDG_CONFIG_HOME/autostart/$entry.desktop
     [ -r "$src" ] && [ ! -e "$dst" ] || continue
     mkdir -p "$(dirname "$dst")"
     sed '/^\[Desktop Entry\]$/a Hidden=true' "$src" > "$dst"
   done
-  kwriteconfig6 --file "$frametoprc" --group Defaults --key autostart 1
+  kwriteconfig6 --file "$frametoprc" --group Defaults --key autostart 2
 fi
 
 # Profiles reopen apps (docs/profiles.md), so Plasma's own session restore stays off here;
