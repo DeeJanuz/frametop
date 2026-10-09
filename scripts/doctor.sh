@@ -44,7 +44,11 @@ else
 fi
 check "SteamOS" on_home '. /etc/os-release; echo "$PRETTY_NAME $VERSION_ID build $BUILD_ID, $(uname -m)"'
 check "distrobox" on_home 'test -x ~/.local/bin/distrobox && ~/.local/bin/distrobox version | head -1'
-check "container $FRAME_BOX" on_home "podman ps -a --filter name=^$FRAME_BOX\$ --format '{{.Image}} {{.Status}}' | grep ."
+# A release runs in its own container, which its .frametop-release names (as scripts/in-box
+# reads it); a checkout builds and runs in FRAME_BOX.
+box=$FRAME_BOX
+[ "$FRAME_RELEASE" = 1 ] && box=${FRAMETOP_BOX:-$(sed -n 's/^BOX=//p' "$REPO_ROOT/.frametop-release" | tail -1)}
+check "container ${box:-(none named)}" on_home "podman ps -a --filter name=^$box\$ --format '{{.Image}} {{.Status}}' | grep ."
 check "free space in ~" on_home "df -h ~ | awk 'NR==2{print \$4\" free\"}'"
 if check "repo on the Frame" on_frame 'pwd'; then
   # A taskbar saved on a screen the desktop doesn't have is hidden; the desktop's next start
