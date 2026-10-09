@@ -51,6 +51,7 @@ sys.path.insert(0, HANDS)
 import camcheck  # noqa: E402  (hands/camcheck.py: are all four mono cameras running?)
 sys.path.insert(0, HERE)
 import sides  # noqa: E402  (hands/rec/sides.py: which side camera is which)
+import takes  # noqa: E402  (hands/rec/takes.py: the version, and the standalone recorder's build info)
 FT_HANDS = os.path.join(HANDS, "build", "ft-hands")
 FT_CAMD = os.path.join(HANDS, "build", "ft-camd")
 PANEL_BIN = os.path.join(HERE, "build", "ft-handpanel")
@@ -60,6 +61,9 @@ BASE_DIR = os.path.expanduser("~/.local/share/frametop/hands/contrib")
 PANEL_SOCKET = "ft_handpanel"
 CAMD_UNIT = "frametop-handrec-camd.service"
 HANDS_UNIT = "frametop-handrec-hands.service"
+# The standalone Hand Recorder (takes.standalone()): its binaries run on the host, so ft-hands
+# starts directly rather than in the dev container, and repairs mean its install command.
+STANDALONE = takes.standalone()
 
 RECORD_HZ = 10
 SIDES_READ_S = 0.5       # how often the tracking ft-hands' side camera decision is read
@@ -72,15 +76,19 @@ MIN_FREE = 1.5e9         # stop the session before the disk fills
 COUNTDOWN_S = 3          # step mode: the 3-2-1 before each step, recorded
 FIRST_SET_S = 3.0        # step mode: how long the hold may wait for its recording's first set
 RESUME_HINT = "Paused. Resume: P in the Hand recorder window"
+RESUME_HINT_BUTTON = "Paused. Resume: press the headset button, or P in the Hand recorder window"
 READY_TEXT = "Ready? Press Space or click Next"
 # With the headset's button: it leads when no mouse is connected (the window's Next can't be clicked).
 READY_BUTTON = "Ready? Press the button on the right side of the headset"
 READY_BUTTON_MOUSE = "Ready? Press Space, click Next, or press the headset button"
 KEYS_STEP = "Hand recorder window:  Space next  \u00b7  P pause  \u00b7  R redo  \u00b7  S skip section  \u00b7  Esc stop"
 KEYS_AUTO = "Hand recorder window:  P pause  \u00b7  R redo  \u00b7  S skip section  \u00b7  Esc stop"
-KEYS_STEP_BUTTON = ("Headset button: next, pause  \u00b7  Window: Space next  \u00b7  P pause  \u00b7  R redo  "
-                    "\u00b7  S skip  \u00b7  Esc stop")
-KEYS_AUTO_BUTTON = "Headset button: pause  \u00b7  Window: P pause  \u00b7  R redo  \u00b7  S skip section  \u00b7  Esc stop"
+# The headset button: a press, two (redo) and a hold (stop): ButtonGestures. The window's keys follow
+# by letter: the window lists what they do.
+KEYS_STEP_BUTTON = ("Headset button: press for next or pause  \u00b7  press twice to redo  \u00b7  hold to stop  "
+                    "\u00b7  Window keys: Space  P  R  S  Esc")
+KEYS_AUTO_BUTTON = ("Headset button: press to pause  \u00b7  press twice to redo  \u00b7  hold to stop  "
+                    "\u00b7  Window keys: P  R  S  Esc")
 # The early no-hands stop (DESIGN.md, "Camera check"): the first step of this section has both
 # hands up. If the live tracker publishes through its hold and never sees a hand, the session
 # stops that step and asks: try again, or stop. Only when the tracker published in at least
@@ -93,6 +101,8 @@ NO_HANDS_TITLE = "I can't see your hands"
 NO_HANDS_TEXT = "The hand tracker didn't see either of your hands during that whole step."
 NO_HANDS_RETRY = ("Try again: hold both hands up in front of you, about 40 cm away. To stop instead: "
                   "Esc or Stop in the Hand recorder window.")
+NO_HANDS_RETRY_BUTTON = ("Try again: hold both hands up in front of you, about 40 cm away, and press the headset "
+                         "button. To stop instead: hold the button, or Esc or Stop in the Hand recorder window.")
 
 
 def mono_ns():
@@ -129,6 +139,13 @@ def host_command(*cmd):
         return list(cmd)
     return ["env", "-C", os.path.expanduser("~"), "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus" % os.getuid(),
             exe] + list(cmd)
+
+
+def fix_hint(frametop):
+    """How to repair a missing or broken part: Frametop's command, or the standalone install's."""
+    if STANDALONE:
+        return STANDALONE.get("reinstall") or "run the Hand Recorder's install command again"
+    return frametop
 
 
 def host_path(path):
@@ -310,8 +327,9 @@ def classify_lighting(ring):
     Nor does a sunlit room reliably: the first daylight round (dataset PR #5, big sunlit windows)
     read 2.38, since the windows are a small part of each picture and the mean barely moves. So
     "indoor" means "no strong daylight on the cameras", and the window asks people to pick
-    daylight themselves. What did show it there: hands only ~1.15x as bright as their surroundings
-    (1.5-1.7x in lamp-lit rooms), which needs hands in view, so it's measured on the dataset side."""
+    daylight themselves. Review corrects a missed one from the pictures (sunlit windows, the time
+    of day): hands standing out little from the room goes with daylight but also with pale rooms
+    at night, so it isn't a test either."""
     ir = ambient_ir(ring)
     if ir is None:
         return ""
@@ -374,10 +392,10 @@ def start_camd(path=None, log=lambda line: None, stop=lambda: False, timeout=15.
     if ring_alive(path):
         return False
     if not os.access(FT_CAMD, os.X_OK):
-        raise RuntimeError("ft-camd isn't built: hands/build.sh")
+        raise RuntimeError("ft-camd isn't built: " + fix_hint("hands/build.sh"))
     caps = subprocess.run(["getcap", FT_CAMD], capture_output=True, text=True) if shutil.which("getcap") else None
     if caps is not None and "cap_sys_ptrace" not in caps.stdout:
-        raise RuntimeError("ft-camd needs its capabilities: hands/run.sh caps (asks for sudo)")
+        raise RuntimeError("ft-camd needs its capabilities: " + fix_hint("hands/run.sh caps (asks for sudo)"))
     started = start_unit(CAMD_UNIT, "the camera broker", [FT_CAMD, "--status", "60"], log)
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -619,7 +637,7 @@ class Recorder:
                 "--sides", "auto" if swap is None else "1" if swap else "0"]
         if ring:
             argv += ["--ring", ring]
-        if not in_container():
+        if not in_container() and not STANDALONE:
             argv = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--"] + argv
         self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
         self.started_ns = mono_ns()
@@ -678,7 +696,9 @@ EV_KEY, EV_REL = 0x01, 0x02
 REL_X, REL_Y = 0x00, 0x01
 KEY_SELECT = 353
 BUTTON_DEVICE = "gpio-keys"
-BUTTON_DEBOUNCE_S = 0.3   # presses closer than this count once
+BUTTON_DOUBLE_S = 0.45    # a second press this soon after the first one's release: a double press
+BUTTON_HOLD_S = 1.5       # held down this long: a hold
+BUTTON_BOUNCE_S = 0.03    # a release and press closer than this are one press (gpio-keys debounces too)
 
 
 def parse_input_devices(text):
@@ -758,29 +778,84 @@ def mouse_connected(path=INPUT_DEVICES):
     return any(real_mouse(d) for d in read_input_devices(path))
 
 
-def button_presses(data):
-    """KEY_SELECT key-downs in a run of input_event structs (value 1; releases and autorepeat
-    are left out). Returns (how many, the bytes left over after the last whole event)."""
-    n, usable = 0, len(data) - len(data) % INPUT_EVENT.size
+def button_events(data):
+    """KEY_SELECT downs and ups in a run of input_event structs: [(True for a down or False for
+    an up, the event's time in seconds), ...] (autorepeat, value 2, is left out). Returns (them,
+    the bytes left over after the last whole event)."""
+    out, usable = [], len(data) - len(data) % INPUT_EVENT.size
     for off in range(0, usable, INPUT_EVENT.size):
-        _, _, etype, code, value = INPUT_EVENT.unpack_from(data, off)
-        if etype == EV_KEY and code == KEY_SELECT and value == 1:
-            n += 1
-    return n, data[usable:]
+        sec, usec, etype, code, value = INPUT_EVENT.unpack_from(data, off)
+        if etype == EV_KEY and code == KEY_SELECT and value in (0, 1):
+            out.append((value == 1, sec + usec / 1e6))
+    return out, data[usable:]
+
+
+class ButtonGestures:
+    """The headset button's downs and ups, with their times, as gestures:
+      "press": one short press, reported once the double-press time has passed without a second;
+      "double": two presses, the second down within double_s of the first one's release, reported
+        at the second down;
+      "hold": held down for hold_s, reported while still down.
+    A release and a press closer than bounce_s are one press. Each call returns the gestures that
+    are due, in order; tick() is called now and then to report the ones that are due by time."""
+
+    def __init__(self, double_s=BUTTON_DOUBLE_S, hold_s=BUTTON_HOLD_S, bounce_s=BUTTON_BOUNCE_S):
+        self.double_s, self.hold_s, self.bounce_s = double_s, hold_s, bounce_s
+        self.down_at = None    # when the button went down, while it's down
+        self.done = False      # the press that's down was already reported (a double, a hold)
+        self.released = None   # when a short press was let go, until it's reported or doubled
+        self._up = None        # the last release, for the bounce: (time, down_at, done, released before it)
+
+    def down(self, t):
+        if self.down_at is not None:   # a missed release
+            return []
+        if self._up and t - self._up[0] < self.bounce_s:   # a bounce: still the same press
+            _, self.down_at, self.done, self.released = self._up
+            self._up = None
+            return []
+        out = self.tick(t)
+        self.down_at, self.done = t, False
+        if self.released is not None:   # within the double-press time (else tick reported it)
+            self.released, self.done = None, True
+            out.append("double")
+        return out
+
+    def up(self, t):
+        if self.down_at is None:
+            return []
+        out = self.tick(t)
+        self._up = (t, self.down_at, self.done, self.released)
+        if not self.done:
+            self.released = t
+        self.down_at, self.done = None, False
+        return out
+
+    def tick(self, t):
+        if self.down_at is not None and not self.done and t - self.down_at >= self.hold_s:
+            self.done = True
+            return ["hold"]
+        if self.released is not None and t - self.released > self.double_s:
+            self.released = None
+            return ["press"]
+        return []
+
+    def waiting(self):
+        """Something is due by time alone: a hold, or a press that may still become a double."""
+        return (self.down_at is not None and not self.done) or self.released is not None
 
 
 class ButtonReader:
-    """Reads the headset button on a thread and calls on_press() per press, debounced. path:
-    an event device or, for testing, a FIFO carrying input_event structs. It's opened read-only
-    and shared; if it can't be opened (no device, no permission, /dev/input not reachable in a
-    container) it says so in the log and tries again now and then."""
+    """Reads the headset button on a thread and calls on_gesture("press" | "double" | "hold")
+    (ButtonGestures). path: an event device or, for testing, a FIFO carrying input_event
+    structs. It's opened read-only and shared; if it can't be opened (no device, no permission,
+    /dev/input not reachable in a container) it says so in the log and tries again now and then."""
 
-    def __init__(self, path, on_press, log=None, debounce_s=BUTTON_DEBOUNCE_S):
-        self.path, self.on_press, self.log = path, on_press, log or (lambda s: None)
-        self.debounce_s = debounce_s
+    def __init__(self, path, on_gesture, log=None, double_s=BUTTON_DOUBLE_S, hold_s=BUTTON_HOLD_S,
+                 bounce_s=BUTTON_BOUNCE_S):
+        self.path, self.on_gesture, self.log = path, on_gesture, log or (lambda s: None)
+        self.gestures = ButtonGestures(double_s, hold_s, bounce_s)
         self.ok = False      # opened at least once
         self._stop = threading.Event()
-        self._last = -1e9
         self._thread = threading.Thread(target=self._run, name="handrec-button", daemon=True)
 
     def start(self):
@@ -791,11 +866,9 @@ class ButtonReader:
         self._stop.set()
         self._thread.join(2)
 
-    def _press(self, n):
-        now = time.monotonic()
-        if n and now - self._last >= self.debounce_s:
-            self._last = now
-            self.on_press()
+    def _report(self, gestures):
+        for g in gestures:
+            self.on_gesture(g)
 
     def _run(self):
         failed = False
@@ -814,8 +887,9 @@ class ButtonReader:
             rest = b""
             try:
                 while not self._stop.is_set():
-                    r, _, _ = select.select([fd], [], [], 0.2)
+                    r, _, _ = select.select([fd], [], [], 0.02 if self.gestures.waiting() else 0.2)
                     if not r:
+                        self._report(self.gestures.tick(time.monotonic()))
                         continue
                     try:
                         data = os.read(fd, INPUT_EVENT.size * 64)
@@ -824,8 +898,13 @@ class ButtonReader:
                     if not data:   # a FIFO's writer left: open it again
                         self._stop.wait(0.2)
                         break
-                    n, rest = button_presses(rest + data)
-                    self._press(n)
+                    events, rest = button_events(rest + data)
+                    # The kernel's times (the realtime clock) keep the gaps between events that
+                    # came in one read; the last one is taken as now.
+                    now = time.monotonic()
+                    for is_down, t in events:
+                        at = now - min(max(events[-1][1] - t, 0.0), 2.0)
+                        self._report(self.gestures.down(at) if is_down else self.gestures.up(at))
             except OSError as e:   # the device went away
                 self.log("headset button: %s: %s" % (self.path, e.strerror))
                 self._stop.wait(2)
@@ -1122,15 +1201,6 @@ class _Redo(Exception):
     pass
 
 
-def _git_describe():
-    try:
-        r = subprocess.run(["git", "-C", REPO, "describe", "--always", "--dirty", "--tags"],
-                           capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() or "unknown"
-    except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-
-
 def _os_version():
     path = "/run/host/etc/os-release" if in_container() else "/etc/os-release"
     try:
@@ -1198,8 +1268,8 @@ def camera_text(result):
         return camcheck.USER_TEXT
     if camcheck.is_ring_short(result):
         return ("The headset's tracking cameras are all running, but the recorder can't read some of them (%s). "
-                "Close the Hand Recorder, run ~/frametop/hands/rec/install.sh again, and open it again. If that "
-                "doesn't help, ask in the Frametop Discord." % result.get("reason", ""))
+                "Close the Hand Recorder, %s, and open it again. If that doesn't help, ask in the Frametop "
+                "Discord." % (result.get("reason", ""), fix_hint("run ~/frametop/hands/rec/install.sh again")))
     return ("Not all of the headset's tracking cameras are running (%s). Restart SteamVR, or restart the "
             "headset if that doesn't fix it." % result.get("reason", ""))
 
@@ -1302,8 +1372,25 @@ class Session:
             self._want[key] = value
         self._wake.set()
 
+    def button_gesture(self, gesture):
+        """The headset's button (ButtonGestures). A press: Next while a step waits, pause during
+        a countdown or hold (and auto mode's timed screens), resume while paused. A double press:
+        redo, as R. A hold: stop, as Esc."""
+        if gesture == "press":
+            self.button_press()
+        elif gesture == "double":
+            if self._status["state"] in ("done", "stopped", "error") or not self._status.get("can_redo"):
+                return
+            self.redo()
+            self._log("headset button (redo)")
+        elif gesture == "hold":
+            if self._status["state"] in ("done", "stopped", "error"):
+                return
+            self._log("headset button (stop)")
+            self.stop(wait=0)
+
     def button_press(self):
-        """The headset's button: Next while a step waits, pause during a countdown or hold
+        """The headset button's press: Next while a step waits, pause during a countdown or hold
         (and auto mode's timed screens), resume while paused."""
         with self._lock:
             paused = self._want["pause"]
@@ -1449,7 +1536,7 @@ class Session:
         self._ring_path = ring_path
         if not self.dry_run:
             if not os.access(FT_HANDS, os.X_OK):
-                raise _Fail("ft-hands isn't built: hands/build.sh")
+                raise _Fail("ft-hands isn't built: " + fix_hint("hands/build.sh"))
             self._ensure_ring(ring_path)
             if not tracker_running():
                 if self.start_processes:
@@ -1467,7 +1554,7 @@ class Session:
             pass
         removed = self._write_calibration() + self._write_device()
         self._session_json = {
-            "schema": 1, "tool": "ft-handrec " + _git_describe(), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "schema": 1, "tool": takes.tool_version(), "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "contributor": self.profile.get("contributor", ""),
             "lighting": lighting_record(self.lighting_choice, lighting),
             "checklist": self.checklist,
@@ -1512,7 +1599,8 @@ class Session:
         if not path:
             self._log("headset button: no %s device with KEY_SELECT in %s" % (BUTTON_DEVICE, INPUT_DEVICES))
             return
-        self._button = ButtonReader(path, self.button_press, log=self._log, debounce_s=BUTTON_DEBOUNCE_S).start()
+        self._button = ButtonReader(path, self.button_gesture, log=self._log, double_s=BUTTON_DOUBLE_S,
+                                    hold_s=BUTTON_HOLD_S, bounce_s=BUTTON_BOUNCE_S).start()
         end = time.monotonic() + 0.5   # opened in a moment, or it isn't reachable
         while not self._button.ok and time.monotonic() < end:
             time.sleep(0.01)
@@ -1604,11 +1692,12 @@ class Session:
             raise _Stop()
 
     def _start_tracker(self):
-        up = os.path.join(REPO, "scripts", "container-up.sh")
-        if os.access(up, os.X_OK):
-            subprocess.run(host_command(up), capture_output=True, timeout=120)
-        argv = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--", FT_HANDS,
-                "--no-gestures", "--status", "0"]
+        argv = [FT_HANDS, "--no-gestures", "--status", "0"]
+        if not STANDALONE:   # built in the dev container: it runs there
+            up = os.path.join(REPO, "scripts", "container-up.sh")
+            if os.access(up, os.X_OK):
+                subprocess.run(host_command(up), capture_output=True, timeout=120)
+            argv = [os.path.expanduser("~/.local/bin/distrobox"), "enter", "dev", "--"] + argv
         if self.ring:
             argv += ["--ring", self.ring]
         self._start_unit(HANDS_UNIT, "hand tracking for feedback", argv)
@@ -1631,7 +1720,7 @@ class Session:
             self._log("using the ft-handpanel that's running")
             return
         if not os.access(self.panel_bin, os.X_OK):
-            raise _Fail("ft-handpanel isn't built: hands/rec/build.sh")
+            raise _Fail("ft-handpanel isn't built: " + fix_hint("hands/rec/build.sh"))
         self._panel_proc = subprocess.Popen([self.panel_bin, "--watch-stdin"], stdin=subprocess.PIPE,
                                             stdout=self._log_file, stderr=self._log_file)
         end = time.monotonic() + 15
@@ -1747,9 +1836,10 @@ class Session:
         if self._recording:
             self._stop_recording()
             self._event("pause")
+        hint = RESUME_HINT_BUTTON if self._button_ok() else RESUME_HINT
         self._panel.cmd("paused on")
-        self._panel.set("note", "note " + RESUME_HINT)
-        self._emit(state="paused", note=RESUME_HINT)
+        self._panel.set("note", "note " + hint)
+        self._emit(state="paused", note=hint)
         self._log("paused")
 
     def _unpause(self, record=True):
@@ -1935,10 +2025,13 @@ class Session:
             for e in items)))
         self._status.update(strip=items, cue=cue)
 
+    def _button_ok(self):
+        return bool(self._button and self._button.ok)
+
     def _hints(self, action=True):
         """The Next hint (with action) and the key line for what's there now: the headset button
         leads when no mouse is connected. Looked at again for each step, so a mouse plugged in counts."""
-        button = bool(self._button and self._button.ok)
+        button = self._button_ok()
         mouse = mouse_connected(self.input_devices)
         text = (READY_BUTTON_MOUSE if mouse else READY_BUTTON) if button else READY_TEXT
         keys = (KEYS_AUTO_BUTTON if self.auto else KEYS_STEP_BUTTON) if button else (KEYS_AUTO if self.auto else KEYS_STEP)
@@ -2244,7 +2337,7 @@ class Session:
         for line in (cam or {}).get("evidence", []):
             self._log("      " + line)
         text = "%s|%s|%s" % (NO_HANDS_TEXT, cam_text or "The camera check found nothing wrong (%s)." % summary,
-                             NO_HANDS_RETRY)
+                             NO_HANDS_RETRY_BUTTON if self._button_ok() else NO_HANDS_RETRY)
         self._stop_note = "Stopped: no hands were seen in the first step. Camera check: %s." % summary
         if cam_text:
             self._stop_note += " " + cam_text
@@ -2497,7 +2590,8 @@ def main():
                     help="test: press Next by itself after S seconds of waiting (real time)")
     ap.add_argument("--poses", help="the pose pictures' folder, with poses.json (default hands/rec/poses)")
     ap.add_argument("--no-headset-button", action="store_true",
-                    help="don't read the headset's button (gpio-keys KEY_SELECT: Next, pause, resume)")
+                    help="don't read the headset's button (gpio-keys KEY_SELECT: a press is Next, pause or resume; "
+                         "two are redo; a hold is stop)")
     ap.add_argument("--button-device", metavar="PATH",
                     help="test: read the button from this event device or FIFO of input_event structs (also in a dry run)")
     ap.add_argument("--quick", action="store_true",

@@ -227,8 +227,9 @@
 // drags again from there. Without gaze mode they work from wherever the pointer is.
 //   The gaze calibration panel (gaze/panel/ft-gazepanel, run by the gaze service): while
 // ft-gazed says it's up ("calpanel 1", renewed every second; it lapses 3 s after the last),
-// the dot hides and a press answers the panel instead of clicking: a left click or gaze_left
-// sends "calaccept" to @ft_gazed (take this dot now), a right click or gaze_right "calquit".
+// the dot hides and a press answers the panel instead of clicking: a left click, gaze_left, or
+// a gaze_precision or gaze_drag press sends "calaccept" to @ft_gazed (take this dot now), a right
+// click or gaze_right "calquit" (calpanel.h).
 //   POINTER_ROLE (right, left, or stylus): the hand role our device takes while connected. A
 // Frame controller in your hand counts as used through its touch sensors and takes its hand's
 // role back, and then no click lands (see "no hand role" in the main loop): with a controller
@@ -316,6 +317,7 @@
 // POINTER_ROLE (right): gaze precision and keyboard clicks, above.
 #include <openvr.h>
 
+#include "calpanel.h"
 #include "vrbuttons.h"
 #include "vrmath.h"
 
@@ -479,11 +481,11 @@ std::string ExeDir() {
     return p.substr(0, p.rfind('/'));
 }
 
-// One of ft-screens' panels showing a desktop: a screen (frametop.screen.N), a floating
-// window (frametop.float.N), or a floating window's popup (frametop.float.N.sub.K), not a
-// control of theirs.
+// One of ft-screens' panels showing a desktop: a screen (frametop.screen.N), another
+// machine's display (frametop.remote.N), a floating window (frametop.float.N), or a floating
+// window's popup (frametop.float.N.sub.K), not a control of theirs.
 bool FramePanel(const std::string &key) {
-    for (const char *prefix : {"frametop.screen.", "frametop.float."}) {
+    for (const char *prefix : {"frametop.screen.", "frametop.remote.", "frametop.float."}) {
         if (key.rfind(prefix, 0) != 0) continue;
         const std::string rest = key.substr(std::strlen(prefix));
         const size_t dot = rest.find('.');
@@ -1485,14 +1487,12 @@ int main() {
                 }
             }
             if (Clock::now() < calPanelUntil) {
-                const bool accept = !std::strncmp(buf, "btn trigger 1", 13) || !std::strncmp(buf, "gazekey left 1", 14);
-                const bool quit = !std::strncmp(buf, "btn b 1", 7) || !std::strncmp(buf, "gazekey right 1", 15);
-                if (accept || quit) {
-                    SendTo(out, "ft_gazed", accept ? "calaccept" : "calquit");
+                const CalPanelAnswer answer = calPanelAnswer(buf);
+                if (answer == CalPanelAnswer::Accept || answer == CalPanelAnswer::Quit) {
+                    SendTo(out, "ft_gazed", answer == CalPanelAnswer::Accept ? "calaccept" : "calquit");
                     continue;
                 }
-                if (!std::strncmp(buf, "btn ", 4) || !std::strncmp(buf, "gazekey ", 8) ||
-                    !std::strncmp(buf, "precision ", 10) || !std::strncmp(buf, "gazedrag ", 9))
+                if (answer == CalPanelAnswer::Ignore)
                     continue;  // their releases, and the other buttons: nothing to click now
             }
             {
@@ -1563,8 +1563,19 @@ int main() {
             // (Moves were taken first, above.)
             const bool mouseInput = std::strncmp(buf, "btn", 3) == 0 || std::strncmp(buf, "scroll", 6) == 0;
             if (mouseInput) lastMouse = Clock::now();
-            // Any mouse input wakes the pointer (after a controller took over, or a helper restart).
-            if (!active && mouseInput) wake(Clock::now());
+            // Mouse input wakes the pointer (after a controller took over, or a helper restart),
+            // but a release doesn't (a button up, a scroll back to 0 0): the relay sends those with
+            // the pointer off when Frametop pauses for a game (input-relay.py stand_down), and
+            // waking would connect the virtual controller during the game. The release is still
+            // handled below (it ends its press, or goes to the driver), so no button stays down.
+            {
+                char name[16];
+                int v = 1;
+                double sx = 1, sy = 1;
+                const bool release = (std::sscanf(buf, "btn %15s %d", name, &v) == 2 && v == 0) ||
+                                     (std::sscanf(buf, "scroll %lf %lf", &sx, &sy) == 2 && sx == 0 && sy == 0);
+                if (!active && mouseInput && !release) wake(Clock::now());
+            }
             char key[128];
             double px, py, pz, pyaw, ppitch, proll = 0, pgrab = -1;
             if (std::sscanf(buf, "grabprobe %127s", key) == 1) {
@@ -2394,7 +2405,11 @@ int main() {
 
         // A held-back press (see the top): held still long enough, it's a real press (a drag);
         // released, it's a click where the pointer is now (this frame's pose has gone out).
-        if (!active) aimHeld = aimRight = clickPress = aimHand = confirmLesson = false;  // released meanwhile: nothing to click
+        // Released meanwhile: nothing to click, and the click it was due (pressRight: a right one) is
+        // forgotten too, or the next press after the pointer wakes would go out as a right click.
+        // A "hide" read a loop after the release is too late: the click has gone out by then
+        // (input-relay.py stand_down).
+        if (!active) aimHeld = aimRight = clickPress = pressRight = aimHand = confirmLesson = false;
         if (aimHeld && !aimHand && nudgeMoved < 0.2 && tnow - aimSince >= std::chrono::duration<double>(gazeHold)) {
             aimHeld = false;
             gazeBack = true;

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Frametop Remote Displays
+GenericName=Other computers' monitors in VR
+Comment=Connect to computers running Vibepollo and show their monitors as Frametop screens
+Exec=@REPO@/remote-displays/ft-remote-displays
+Icon=network-workgroup
+Categories=Settings;HardwareSettings;Network;
+Keywords=remote;display;monitor;moonlight;vibepollo;sunshine;stream;pc;frametop;

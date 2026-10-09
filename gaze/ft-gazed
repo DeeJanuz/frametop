@@ -103,8 +103,11 @@ Control socket: abstract unix datagram "@ft_gazed":
   quickcal                         the one-dot check now (the calibration if there's none)
   calibrate                        the full calibration in the panel
   fitcheck                         the headset fit check in the panel
+  fivecheck                        the five-dot check now (it otherwise follows a quick check
+                                   that didn't fix the tracker)
   calaccept | calquit              from the pointer helper while the panel is up: take this dot
-                                   now (a left click, Meta+J) | close it (a right click, Meta+K)
+                                   now (a left click, Meta+J, or a gaze precision or gaze drag
+                                   press) | close it (a right click, Meta+K)
 
 Options: --source action|mmap1|mmap2 (the older one-source path with that source, whatever
 the settings say; set 2 was a little quieter in the probe, but loses the pointer whenever
@@ -129,11 +132,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gazecal import (DEFAULT_MODEL, EYE_FOUND, EYE_LOST, MODELS, STATE, Correction, EyeFallback,  # noqa: E402
-                     EyeWeights, Fixation, LiveCorrection, SteamEyeLog)
+                     EyeWeights, Fixation, LiveCorrection, SteamEyeLog, TrackedEye)
 from gazecheck import Checks  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
 HELPER = REPO / "gaze" / "build" / "ft-gaze"
+IN_BOX = REPO / "scripts" / "in-box"  # runs a program in the container it was built in
 ME = "\0ft_gazed"
 POINTER = "\0ft_pointer_helper"
 EYES_PROG = REPO / "gaze" / "tracker" / "ft-eyes"  # our own tracker
@@ -236,6 +240,9 @@ class Service:
         self.opens = (deque(maxlen=90), deque(maxlen=90))  # left, right
         self.vergence = deque(maxlen=90)
         self.fallback = EyeFallback()
+        # SteamVR's tracker following one eye only (gazecal.tracked_eye): 0 left, 1 right, or None.
+        self.tracked = TrackedEye()
+        self.one_eye = self.tracked()
         self.lost = [False, False]
         self.bad_at = [0.0, 0.0]    # sample time an eye was last lost or closed
         self.counts = {"samples": 0, "sent": 0, "blinks": 0, "one_eye": 0, "one_eye_used": 0, "lost_left": 0,
@@ -267,6 +274,7 @@ class Service:
         self.checks = Checks(self, self.sel)
         self.proc = None
         self.proc_sources = None  # what ft-gaze was last told to print
+        self.mmap_unknown = False  # ft-gaze said SteamVR's eye-server.mmap has a layout it doesn't know
         self.buf = b""
         self.restart_at = 0.0
         self.running = True
@@ -279,7 +287,9 @@ class Service:
             return "source"
         if self.tracker == "own":
             return "own"
-        return "eyes" if all(self.models[e].samples for e in SIDES) else "source"
+        # With one eye tracked, that eye's own calibration is enough.
+        sides = SIDES if self.one_eye is None else (SIDES[self.one_eye],)
+        return "eyes" if all(self.models[e].samples for e in sides) else "source"
 
     # --- Settings, calibration and lessons ---
 
@@ -290,6 +300,9 @@ class Service:
             auto = ""
             if self.tracker_setting == "auto":
                 auto = " (auto: ours is installed)" if tracker == "own" else " (auto: ours isn't installed)"
+                if tracker == "steam" and EYEGRAB[1].exists() and not EYEGRAB[0].exists():
+                    auto = (f" (auto: ours lost {EYEGRAB[0]}, which SteamOS updates delete unless it's kept;"
+                            " reinstall it with gaze/tracker/install.sh)")
             log(f"tracker {tracker}{auto}, eye bias {bias}" + (f" (--source {self.override} wins)" if self.override else ""))
             self.tracker, self.bias = tracker, bias
             for w in self.weights.values():
@@ -498,19 +511,18 @@ class Service:
             return
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"  # podman needs the real one
-        subprocess.run([str(REPO / "scripts" / "container-up.sh")], env=env, check=False)
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
         # ft-gaze quits when its stdin closes: the one thing distrobox passes on.
         sources = self.wanted_sources()
-        self.proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(HELPER), "--watch-stdin",
-                                      "--sources", sources], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, start_new_session=True)
+        self.proc = subprocess.Popen([str(IN_BOX), str(HELPER), "--watch-stdin", "--sources", sources], env=env,
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     start_new_session=True)
         self.proc_sources = sources
         os.set_blocking(self.proc.stdout.fileno(), False)
         os.set_blocking(self.proc.stderr.fileno(), False)
         self.sel.register(self.proc.stdout, selectors.EVENT_READ, "stdout")
         self.sel.register(self.proc.stderr, selectors.EVENT_READ, "stderr")
         self.buf = b""
+        self.mmap_unknown = False
         log("ft-gaze started")
 
     def stop_helper(self):
@@ -531,12 +543,13 @@ class Service:
             except ProcessLookupError:
                 pass
         self.proc = None
+        self.mmap_unknown = False
 
     def eyes_wanted(self):
         return (self.tracker == "own" and not self.override and self.awake) or time.monotonic() < self.eyes_until
 
     def start_eyes(self):
-        """Our own tracker, in the dev container, with build/venv's numpy and OpenCV. Like
+        """Our own tracker, in the container, with build/venv's numpy and OpenCV. Like
         ft-gaze, it quits when its stdin closes."""
         if not EYES_PYTHON.exists():
             log(f"ft-eyes isn't built: run {REPO}/gaze/tracker/build.sh")
@@ -544,11 +557,9 @@ class Service:
             return
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
-        subprocess.run([str(REPO / "scripts" / "container-up.sh")], env=env, check=False)
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
-        self.eyes_proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(EYES_PYTHON), str(EYES_PROG), "-v",
-                                           "--watch-stdin"], env=env, stdin=subprocess.PIPE,
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+        self.eyes_proc = subprocess.Popen([str(IN_BOX), str(EYES_PYTHON), str(EYES_PROG), "-v", "--watch-stdin"],
+                                          env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.PIPE, start_new_session=True)
         os.set_blocking(self.eyes_proc.stderr.fileno(), False)
         self.sel.register(self.eyes_proc.stderr, selectors.EVENT_READ, "eyes")
         log("ft-eyes started" + ("" if EYES_CAMS.exists() else
@@ -613,6 +624,11 @@ class Service:
         for line in data.decode("utf-8", "replace").splitlines():
             if line.strip():
                 log(line)
+            # For the Gaze page (gazecheck's problem): ft-gaze can't read SteamVR's tracker.
+            if "layout is not recognized" in line:
+                self.mmap_unknown = True
+            elif "eye-server.mmap layout:" in line:
+                self.mmap_unknown = False
 
     def judge_eyes(self, m1, down):
         """Which eyes (left, right) are closed, from SteamVR's openness (set 1); updates
@@ -633,11 +649,17 @@ class Service:
             for k in (0, 1):
                 self.lost[k] = unc[k] > (EYE_FOUND if self.lost[k] else EYE_LOST)
             if not down:
-                self.counts["lost_left"] += self.lost[0]
-                self.counts["lost_right"] += self.lost[1]
+                self.counts["lost_left"] += self.lost[0] and self.one_eye != 1
+                self.counts["lost_right"] += self.lost[1] and self.one_eye != 0
         return low
 
     def on_sample(self, s):
+        one = self.tracked()
+        if one != self.one_eye:
+            log("SteamVR now tracks both eyes" if one is None else
+                f"SteamVR tracks the {SIDES[one]} eye only (Track Dominant Eye Only): going by that eye")
+            self.one_eye = one
+            self.fix.reset()
         self.checks.on_sample(s)
         kind = self.kind
         if kind != self.last_kind:
@@ -664,7 +686,8 @@ class Service:
             eyes = [(p["hy"], p["hp"]) if "hy" in p else None for p in per]
             if not any(eyes):
                 return
-            hp, hit = next(e[1] for e in eyes if e), m1.get("hit")
+            one = self.one_eye
+            hp, hit = (eyes[one] if one is not None and eyes[one] else next(e for e in eyes if e))[1], m1.get("hit")
         self.counts["samples"] += 1
         self.last_sample = time.monotonic()
         down = hp < KEYBOARD_PITCH and not hit
@@ -672,8 +695,14 @@ class Service:
         if down:
             self.counts["looking_down"] += 1
             return
+        if own and self.one_eye is not None:
+            # SteamVR judges only that eye's openness, and a blink closes both: ours still
+            # sees the other, so it stays in.
+            low[1 - self.one_eye] = low[self.one_eye]
         # Our tracker finds the pupils itself; SteamVR's openness still marks the blinks.
         bad = [eyes[k] is None or low[k] or (not own and self.lost[k]) for k in (0, 1)]
+        if not own and self.one_eye is not None:
+            bad[1 - self.one_eye] = True  # SteamVR ignores that eye
         if all(bad):
             self.counts["blinks"] += 1
             return
@@ -708,11 +737,27 @@ class Service:
                 self.bad_at[k] = s["t"]  # the fallback doesn't learn from these either
             return
         bad = [low[k] or self.lost[k] for k in (0, 1)]
+        hy, hp = src["hy"], src["hp"]
+        eyes = (s["src"].get("mmap2") or {}).get("eyes")
+        one = self.one_eye
+        if one is not None:
+            # SteamVR's combined gaze already follows that eye alone; set 2's averages the
+            # ignored one in, so mmap2 takes the eye's own reading. No fallback to learn.
+            if bad[one]:
+                self.counts["blinks"] += 1
+                return
+            if self.source == "mmap2":
+                if not eyes:
+                    self.counts["dropped"] += 1
+                    return
+                hy, hp = eyes[one]
+            fy, fp = self.fix(hy, hp, s["t"], 1.0)
+            cy, cp = self.correction(self.source, fy, fp)
+            self.send(s["t"], fy + cy, fp + cp, fy, fp, None)
+            return
         if all(bad):
             self.counts["blinks"] += 1
             return
-        hy, hp = src["hy"], src["hp"]
-        eyes = (s["src"].get("mmap2") or {}).get("eyes")
         for k in (0, 1):
             if bad[k]:
                 self.bad_at[k] = s["t"]
@@ -783,7 +828,8 @@ class Service:
             elif words[:1] == ["forget"]:
                 self.forget_lessons()
                 reply = "ok"
-            elif words[:1] and words[0] in ("quickcal", "calibrate", "fitcheck", "calaccept", "calquit", "recheck"):
+            elif words[:1] and words[0] in ("quickcal", "calibrate", "fitcheck", "fivecheck", "calaccept", "calquit",
+                                            "recheck"):
                 reply = self.checks.command(words)
             elif words[:1] == ["eyes"] and len(words) == 2:
                 try:
@@ -899,6 +945,8 @@ class Service:
                     self.on_control()
                 elif key.data == "checks":
                     self.checks.on_readable()
+                elif key.data == "eyes_reply":
+                    self.checks.on_eyes_reply(key.fileobj)
                 elif key.data == "panel" and self.checks.panel_proc:
                     self.checks.read_panel()
                 elif key.data == "own":

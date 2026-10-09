@@ -487,7 +487,8 @@ Kirigami.ApplicationWindow {
                           + "Each step waits until you're ready: press the button on the right side of the headset, "
                           + "or Space or Next in this window. A 3-2-1 "
                           + "countdown follows, then hold the pose until the bar runs out. Nothing is recorded while "
-                          + "a step waits. The headset button also pauses and resumes a recording. In this window P "
+                          + "a step waits. The headset button also pauses and resumes a recording; press it twice "
+                          + "to record a step again, or hold it to stop. In this window P "
                           + "pauses, R records the last step again, S skips a section and Esc stops.\n\n"
                           + "Nothing leaves the headset. Afterwards you watch the takes in Review, delete anything "
                           + "you don't want to share, and only then export."
@@ -920,7 +921,8 @@ Kirigami.ApplicationWindow {
                     opacity: 0.7
                     text: "The instructions appear in the headset. "
                           + (sessionView.st.button ? "The button on the right side of the headset: "
-                             + (sessionView.stepMode ? "next, " : "") + "pause or resume. " : "")
+                             + (sessionView.stepMode ? "next, " : "") + "pause or resume; twice: record "
+                             + "the last step again; hold: stop. " : "")
                           + "While this window has focus: "
                           + (sessionView.stepMode ? "Space: next · " : "")
                           + "P: pause or resume · R: record the last step again · S: skip section · Esc: stop. "

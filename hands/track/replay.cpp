@@ -14,6 +14,7 @@
 // --timeline: per processed set, a line per hand (time, id, side, views, wrist) and per view
 //             (hand, camera, presence, next crop, set index).
 // --keep-presence P: landmark presence a tracked view needs to stay (default 0.5, as new ones).
+// --misread-guard: the tracker's guards for fine-tuned landmark models (Tracker::set_misread_guard).
 // --pinch-begin M, --pinch-end M, --pinch-triangulated, --pinch-palm-down MAX: the pinch detector (track/pinch.h);
 //             the timeline gets its begin/end/lost events and both distance measures per set.
 // --grip-begin R, --grip-end R: the grip detector (a closed hand; track/pinch.h); the timeline
@@ -86,6 +87,7 @@ int main(int argc, char **argv) {
     bool cost = false;
     Contrast palm_contrast, hand_contrast{Contrast::None};   // as ft-hands's
     double keep_presence = 0.5;   // landmark presence a tracked view needs to stay
+    bool misread_guard = false;
     PinchParams pinch_params;
     GripParams grip_params;
     std::string use = "mono", color_left = "color_video0", color_crop = "subtract", sides = "file";
@@ -102,6 +104,7 @@ int main(int argc, char **argv) {
         else if (a == "--models" && more) models = argv[++i];
         else if (a == "--cost") cost = true;
         else if (a == "--keep-presence" && more) keep_presence = std::atof(argv[++i]);
+        else if (a == "--misread-guard") misread_guard = true;
         else if (a == "--cams" && more) use = argv[++i];
         else if (a == "--sides" && more) sides = argv[++i];
         else if (a == "--pinch-begin" && more) pinch_params.begin_m = std::atof(argv[++i]);
@@ -183,6 +186,7 @@ int main(int argc, char **argv) {
         return n == "slam_left" ? "slam_right" : n == "slam_right" ? "slam_left" : n;
     };
     tracker.set_keep_presence(keep_presence);
+    tracker.set_misread_guard(misread_guard);
     FILE *dp = depth.empty() ? nullptr : std::fopen(depth.c_str(), "w");
     FILE *pp = poses.empty() ? nullptr : std::fopen(poses.c_str(), "w");
     if (dp)

@@ -32,6 +32,7 @@ Both settings reset whenever bluetoothd restarts or the Frame reboots, so they h
 | --- | --- |
 | `/etc/steamframe/bt-fixups.sh` | Turns controller privacy off, then sets the `ADDRESS_RESOLUTION` flags (`0x6`) on every bonded LE device that has an identity key |
 | `/etc/systemd/system/steamframe-bt-fixups.service` | Runs the script after every Bluetooth start |
+| `/etc/atomic-update.conf.d/frametop-bluetooth.conf` | Keeps the script through SteamOS updates |
 
 The service runs after Bluetooth has started and never makes Bluetooth wait for it, because SteamOS's `set-bluetooth-mac-address.service`, which gives the Bluetooth chip its address, needs `bluetooth.service` to finish starting first. SteamOS's own files, including `main.conf`, are left untouched, so system updates won't conflict.
 
@@ -54,7 +55,7 @@ The install writes to `/etc`, so it needs `sudo` and the `steamos` user's passwo
 setup/bluetooth/install.sh install
 ```
 
-It copies the files above into place (`/etc` survives SteamOS updates) and enables the service. `./install.sh` offers this same step.
+It copies the files above into place and enables the service. A SteamOS update deletes every `/etc` file that SteamOS's keep list (`/usr/lib/rauc/atomic-update-keep.conf`) doesn't name. That list keeps the service but not the script, so the third file adds the script to it. `./install.sh` offers this same step.
 
 ### Step 3: pair your mouse or keyboard
 
@@ -87,6 +88,17 @@ The real test is to reboot the Frame, then move or click the device. It should r
 #### The device paired but won't reconnect
 
 Run `setup/bluetooth/install.sh run` again, then wake the device. Check that its address appears in the service log. The script only flags devices that have an identity key: look for `[IdentityResolvingKey]` in `/var/lib/bluetooth/<controller>/<device>/info` (readable as root).
+
+#### Devices stopped reconnecting after a SteamOS update
+
+Fixes installed before the keep entry existed lose their script in the update, and the service fails with `Unable to locate executable '/etc/steamframe/bt-fixups.sh'`. `scripts/doctor.sh` reports it too. Install again, which adds the keep entry, then start the service:
+
+```
+setup/bluetooth/install.sh install
+sudo systemctl restart steamframe-bt-fixups.service
+```
+
+The update keeps a copy of the deleted files in `/etc/previous`.
 
 #### No Bluetooth at all after a boot
 

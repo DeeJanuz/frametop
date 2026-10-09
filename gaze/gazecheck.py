@@ -14,7 +14,8 @@ directions: look at each one.
           on is seen only while the gaze service is awake (gaze mode on, someone wearing it: see
           ft-gazed), so it also opens when gaze mode comes on after the service idled.
   five    the middle and four around it, when the first FIVE_COUNT lessons after a quick check
-          were all over FIVE_LIMIT degrees off: the quick check didn't fix it.
+          were all over FIVE_LIMIT degrees off: the quick check didn't fix it. Its panel is
+          wider than quick's, to hold them (PANEL_DEG).
   full    the calibration, as the gaze probe's: three rounds, dark, medium and bright (pupil
           size, and the tracker's error with it, changes with brightness), each the middle and
           a ring of six (SteamVR's tracker) or eight (ours, whose fit goes wrong past its dots)
@@ -45,8 +46,10 @@ the dot), and the gaze held still up to then is taken (ACCEPT_SPREAD). They wait
 it takes, up to CLICK_IDLE. A dot not taken says why in the panel's note line (reject_reason:
 gazecal.steady_samples' drop counts for SteamVR's tracker, ft-eyes' reply for ours), as does a
 click with nothing taken after ACCEPT_WAIT, and a failed calibration names its most common
-reason there and in the status. A right click or Meta+K ("calquit") closes the panel. The pointer hides meanwhile ("calpanel 1",
-renewed every second; the helper shows it again by itself when that stops).
+reason there and in the status. A right click or Meta+K ("calquit") closes the panel. A press
+mapped to gaze precision or gaze drag counts as the left click (pointer/helper/calpanel.h). The
+pointer hides meanwhile ("calpanel 1", renewed every second; the helper shows it again by itself
+when that stops).
 
 Our tracker's first calibration: before it has one, ft-eyes publishes no gaze (it maps pupils
 to a gaze only with a calibration), so there's no gaze to hold still. Its calibration runs
@@ -54,6 +57,12 @@ anyway ("blind"): someone in the headset (SteamVR's tracker sees an eye) and ft-
 are enough to start it, each dot stands in for the gaze, and a click takes the CHECK_WINDOW up
 to it. ft-eyes then checks that each pupil was seen and held still in that window (calib-point)
 and says why not. Without this, a fresh install could never calibrate our tracker.
+
+The service doesn't wait for ft-eyes' answers to calib-point and calib-fit (ask_eyes): the dot
+shows its ring full, and further clicks do nothing until the answer comes, or its deadline
+passes; while it fits, a right click doesn't close the panel either. Until 2026-10-09 it waited, up to 3 s a dot and 10 s for the fit, so the gaze stopped,
+the helper's panel lease ran out (the pointer came back, and a click went to the desktop
+behind the panel), and an answer over EYES_GONE closed the calibration as the headset coming off.
 
 What a capture teaches:
   our tracker   quick and five: a click ("click T YAW PITCH", like a pointer lesson); full:
@@ -172,6 +181,26 @@ def reject_reason(reply, why):
     return text[:24], f"our tracker said: {text}", False
 
 
+# The panel's sizes for each check (ft-gazepanel.cpp's kQuickDeg, kFiveDeg, kFullDeg): width in
+# degrees, and height / width. Every dot of a check must fit its panel (off_panel).
+PANEL_DEG = {"quick": (16.0, 1.0), "five": (40.0, 0.75), "full": (64.0, 0.75)}
+
+
+def off_panel(kind, own):
+    """The dots of a check that wouldn't show whole on its panel: the panel's projection
+    (ft-gazepanel's ToPixel), with a degree to spare for the dot's ring."""
+    wdeg, aspect = PANEL_DEG[kind]
+    half = math.tan(math.radians(wdeg / 2))
+    m = math.tan(math.radians(1.0)) / (2 * half)
+    out = []
+    for yaw, pitch, _ in check_dots(kind, own):
+        x = 0.5 - math.tan(math.radians(yaw)) / (2 * half)
+        y = 0.5 - math.tan(math.radians(pitch)) / math.cos(math.radians(yaw)) / (2 * half) / aspect
+        if not (m <= x <= 1 - m and m / aspect <= y <= 1 - m / aspect):
+            out.append((yaw, pitch))
+    return out
+
+
 def spread(points):
     """The median point and the spread around it (1.4826 x the median distance: a standard
     deviation that one stray sample can't move far)."""
@@ -239,6 +268,7 @@ class Checks:
         self.panel_restart_at = 0.0
         self.screens_shown = None
         self.last_progress = 0.0
+        self.asking = None       # (socket, deadline, done): a command to ft-eyes waiting for its reply
 
     @property
     def active(self):
@@ -253,8 +283,7 @@ class Checks:
             return
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
-        self.panel_proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(PANEL_PROG), "--watch-stdin"],
+        self.panel_proc = subprocess.Popen([str(REPO / "scripts" / "in-box"), str(PANEL_PROG), "--watch-stdin"],
                                            env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                            stderr=subprocess.PIPE, start_new_session=True)
         os.set_blocking(self.panel_proc.stderr.fileno(), False)
@@ -325,6 +354,48 @@ class Checks:
                 if was != (on, headset):
                     self.svc.update_awake()
 
+    def ask_eyes(self, command, timeout, done):
+        """A command to ft-eyes whose reply comes later: done(reply) runs from on_eyes_reply, or with
+        "" after `timeout` (tick), as ask() gives without one. ask() held the whole service up to 3 s
+        a dot (calib-point) and 10 s at the end (calib-fit): the gaze stopped, and the helper's 3 s
+        calpanel lease ran out, so the pointer came back and a click went to the desktop behind the
+        panel. Each command has its own socket, so a late reply can't be taken for the next one."""
+        self.drop_ask()
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC | socket.SOCK_NONBLOCK)
+        try:
+            s.bind("")
+            s.sendto(command.encode(), EYES)
+        except OSError:
+            s.close()
+            done("")
+            return
+        self.sel.register(s, selectors.EVENT_READ, "eyes_reply")
+        self.asking = (s, time.monotonic() + timeout, done)
+
+    def on_eyes_reply(self, sock):
+        if not self.asking or self.asking[0] is not sock:
+            return  # dropped already (closed, or timed out in this loop)
+        try:
+            reply = sock.recv(4096).decode("utf-8", "replace")
+        except BlockingIOError:
+            return
+        except OSError:
+            reply = ""
+        done = self.asking[2]
+        self.drop_ask()
+        done(reply)
+
+    def drop_ask(self):
+        if not self.asking:
+            return
+        s = self.asking[0]
+        self.asking = None
+        try:
+            self.sel.unregister(s)
+        except (KeyError, ValueError):
+            pass
+        s.close()
+
     # --- State ---
 
     def calibrated(self):
@@ -389,7 +460,16 @@ class Checks:
     def problem(self):
         """Why gaze mode, on, can't follow your eyes yet, or None. Our tracker not having said
         yet is None: Input Settings has its own line for our tracker."""
-        if not self.gaze_on or self.calibrated() is not False:
+        if not self.gaze_on:
+            return None
+        own = self.svc.kind == "own"
+        if self.svc.mmap_unknown and (not own or self.calibrated() is False):
+            # ft-gaze can't read SteamVR's tracker (EyeFile::Detect in ft-gaze.cpp): not its gaze,
+            # and not the eyes it sees, which our tracker's calibration waits for.
+            return ("SteamVR's eye data has a layout Frametop doesn't know (after a SteamOS update?), so "
+                    + ("the calibration can't open" if own else "SteamVR's eye tracker can't be used")
+                    + ". A newer Frametop may know it")
+        if self.calibrated() is not False:
             return None
         if self.check and self.check["kind"] == "full":
             return "Not calibrated yet: the calibration is open in the headset"
@@ -444,7 +524,10 @@ class Checks:
                 self.screens_shown = (st[2] == "0") if st[1] == "always" else (st[2] == "1")
                 ask(SCREENS, "hide", 0.5)
         self.to_helper("calpanel 1")
-        self.to_panel(f"show {'full' if kind == 'full' else 'quick'}")
+        off = off_panel(kind, own)
+        if off:
+            log(f"{kind} check: {len(off)} dots off its panel: {off}")
+        self.to_panel(f"show {kind}")
         self.show_dot()
         if kind == "quick":
             self.last_quick = now
@@ -455,9 +538,10 @@ class Checks:
         if time.monotonic() - self.sample_at > 2:
             return "error the headset is off or the eye tracker isn't sending"
         now = time.monotonic()
+        ignore = None if self.svc.one_eye is None else 1 - self.svc.one_eye  # the eye SteamVR ignores
         self.check = {"kind": "fit", "reason": reason, "own": False, "dots": [], "i": 0, "started": now, "shown": now,
                       "run": [], "accept": False, "done_at": None, "tries": 0, "skipped": 0, "captured": 0,
-                      "points": {}, "fit": FitCheck(), "drawn": {}, "drawn_at": 0.0, "step": None}
+                      "points": {}, "fit": FitCheck(ignore=ignore), "drawn": {}, "drawn_at": 0.0, "step": None}
         log(f"fit check: {reason}")
         self.to_helper("calpanel 1")
         self.to_panel("show fit")
@@ -527,7 +611,8 @@ class Checks:
         if self.pending:
             self.run_pending()
         unc = (s["src"].get("mmap1") or {}).get("unc")
-        if unc and min(unc) <= EYE_LOST:
+        one = self.svc.one_eye
+        if unc and (min(unc) if one is None else unc[one]) <= EYE_LOST:
             self.seen_at = time.monotonic()
             if self.away and self.back_since is None:
                 self.back_since = self.seen_at
@@ -535,8 +620,8 @@ class Checks:
         if c and c["kind"] == "fit":
             c["fit"].feed(s, self.sample_at)
             return
-        if not c or c["done_at"]:
-            return
+        if not c or c["done_at"] or self.asking:
+            return  # (asking: ft-eyes has this dot's look, or the fit)
         if c["own"]:
             src = s["src"].get("own") or {}
             if c["blind"]:
@@ -604,9 +689,12 @@ class Checks:
             rec.update(eyes=eyes, miss=miss)
             t0, t1 = samples[0]["t"], samples[-1]["t"]
             if c["kind"] == "full":
-                reply = ask(EYES, f"calib-point {t0:.6f} {t1:.6f} {yaw:.4f} {pitch:.4f}", 3.0)
-                rec["reply"] = reply
-                ok = reply.startswith("ok")
+                # ft-eyes checks the pupils held still: its answer takes the dot or not (point_done).
+                # The ring shows it full meanwhile, so the click is seen to have landed.
+                self.to_panel(f"dot {yaw:.3f} {pitch:.3f} capture 1.00")
+                self.ask_eyes(f"calib-point {t0:.6f} {t1:.6f} {yaw:.4f} {pitch:.4f}", 3.0,
+                              lambda reply: self.point_done(rec, miss, reply))
+                return
             else:
                 try:
                     svc.eyes_sock.sendto(f"click {t1:.6f} {yaw:.4f} {pitch:.4f}".encode(), EYES)
@@ -616,7 +704,8 @@ class Checks:
                 svc.weights["own"].add(miss)
         else:
             why = {}
-            steady = steady_samples(samples, why=why)
+            one = svc.one_eye
+            steady = steady_samples(samples, why=why, eye=one)
             rec["dropped"] = why
             reads = {}
             for name in ("action", "mmap1", "mmap2", "left", "right"):
@@ -624,11 +713,20 @@ class Checks:
                        if "hy" in (smp["src"].get(name) or {})]
                 if len(pts) >= 15:
                     reads[name] = (statistics.median(p[0] for p in pts), statistics.median(p[1] for p in pts))
+            if one is not None:
+                # SteamVR tracks one eye (gazecal.tracked_eye): the other's reading isn't where
+                # you look, and set 2's average has it in, so mmap2 is that eye's own (as ft-gazed
+                # sends it then).
+                reads.pop(("left", "right")[1 - one], None)
+                reads.pop("mmap2", None)
+                if ("left", "right")[one] in reads:
+                    reads["mmap2"] = reads[("left", "right")[one]]
             rec["reads"] = reads
-            main = ("left", "right") if svc.kind == "eyes" else (svc.source,)
+            main = (("left", "right") if one is None else (("left", "right")[one],)) if svc.kind == "eyes" else (svc.source,)
             if not all(n in reads for n in main):
                 ok = False
-                rec["reply"] = f"only {len(steady)} of {len(samples)} samples had both eyes"
+                rec["reply"] = f"only {len(steady)} of {len(samples)} samples had " + (
+                    "both eyes" if one is None else f"your {('left', 'right')[one]} eye")
             elif c["kind"] == "full":
                 for name, (hy, hp) in reads.items():
                     c["points"].setdefault(name, []).append((hy, hp, yaw - hy, pitch - hp))
@@ -648,9 +746,23 @@ class Checks:
                     svc.lives[name].add({"time": time.time(), "hy": hy, "hp": hp, "dy": yaw - hy, "dp": pitch - hp,
                                          "wy": 1.0, "wp": 1.0, "how": "check"}, svc.models[name], svc.mode)
                 rec["miss"] = miss
-                if svc.kind == "eyes":
+                if svc.kind == "eyes" and len(miss) == 2:  # (one eye tracked: nothing to weigh)
                     svc.weights["steam"].add(miss)
                 svc.dirty = True
+        self.captured(rec, ok)
+
+    def point_done(self, rec, miss, reply):
+        """ft-eyes' answer to a full calibration dot's calib-point ("" without one)."""
+        rec["reply"] = reply
+        ok = reply.startswith("ok")
+        if ok:
+            self.svc.weights["own"].add(miss)
+        self.captured(rec, ok)
+
+    def captured(self, rec, ok):
+        """A capture is over: the dot is taken, tried again, or skipped."""
+        c = self.check
+        yaw, pitch, _ = c["dots"][c["i"]]
         if not ok:
             short, long, fit = reject_reason(rec.get("reply", "") if c["own"] else None, rec.get("dropped"))
             rec["reason"] = long
@@ -662,9 +774,9 @@ class Checks:
         if not ok:
             c["tries"] += 1
             log(f"{c['kind']} check dot {c['i'] + 1}: not taken: {rec['reason']} ({rec.get('reply', '')})")
-            full = c["kind"] == "full"
+            full, big = c["kind"] == "full", c["kind"] != "quick"  # quick's panel holds only short notes
             if c["tries"] >= 2 or not full:
-                self.note(f"Dot skipped: {long}" + (f" ({FIT_HINT})" if fit else "") if full else f"Skipped: {short}")
+                self.note(f"Dot skipped: {long}" + (f" ({FIT_HINT})" if fit else "") if big else f"Skipped: {short}")
                 self.skip()
             else:
                 self.note(f"Not taken: {long}. Look at the dot and click again")
@@ -729,8 +841,15 @@ class Checks:
             return
         self.full_failed = None
         if c["own"]:
-            reply = ask(EYES, "calib-fit", 10.0)
-            log(f"calibration ({c['captured']} of {n} dots): our tracker says {reply or 'nothing'}")
+            def fitted(reply):
+                log(f"calibration ({c['captured']} of {n} dots): our tracker says {reply or 'nothing'}")
+                self.close()
+
+            self.to_panel("text Saving the calibration")
+            c["done_at"] = None  # (tick would advance past the last dot again)
+            c["fitting"] = True
+            self.ask_eyes("calib-fit", 10.0, fitted)
+            return
         else:
             mode = svc.mode if svc.mode != "none" else DEFAULT_MODEL
             for name, pts in c["points"].items():
@@ -753,6 +872,7 @@ class Checks:
             return
         if why:
             log(f"{self.check['kind']} check closed: {why}")
+        self.drop_ask()
         self.to_panel("hide")
         self.to_helper("calpanel 0")
         if self.check["kind"] == "full" and self.screens_shown:
@@ -762,8 +882,8 @@ class Checks:
 
     def quit(self):
         c = self.check
-        if not c:
-            return
+        if not c or c.get("fitting"):
+            return  # (fitting: ft-eyes has every dot; the panel closes once it answers)
         self.close("quit")
         if c["kind"] == "full" and self.calibrated() is False:
             # No calibration still: gaze mode can't work, so it goes off until it's turned on again.
@@ -799,9 +919,9 @@ class Checks:
             log(f"{words[0]}, asked for while idle: {reply.removeprefix('error ')}")
 
     def command(self, words, queue=True):
-        """quickcal, calibrate, calaccept, calquit -> a reply."""
+        """quickcal, calibrate, fitcheck, fivecheck, calaccept, calquit -> a reply."""
         cmd = words[0]
-        if cmd in ("quickcal", "calibrate", "fitcheck") and queue and self.svc.waking() and not self.check:
+        if cmd in ("quickcal", "calibrate", "fitcheck", "fivecheck") and queue and self.svc.waking() and not self.check:
             # The tracker isn't running (or only just started): wake it, and do this once it sends.
             self.pending = (words, time.monotonic())
             self.svc.update_awake()
@@ -812,10 +932,12 @@ class Checks:
             return self.start("full", "asked for")
         if cmd == "fitcheck":
             return self.start("fit", "asked for")
+        if cmd == "fivecheck":
+            return self.start("five", "asked for")
         if cmd == "calaccept":
             if self.check and self.check["kind"] == "fit":
                 self.check["fit"].toggle_guide(time.monotonic())
-            elif self.check:
+            elif self.check and not self.asking:  # (asking: this dot's click landed already)
                 if not self.check["accept"]:
                     self.check["accept_at"] = time.monotonic()
                 self.check["accept"] = True
@@ -853,6 +975,13 @@ class Checks:
             else:
                 self.fit_tick(now)
             return
+        if self.asking:
+            # ft-eyes has a dot's look or the fit: wait for its answer, at most to the deadline.
+            if now >= self.asking[1]:
+                done = self.asking[2]
+                self.drop_ask()
+                done("")
+            return
         if c["done_at"] and now >= c["done_at"]:
             if c.get("closing"):
                 self.close()
@@ -866,11 +995,11 @@ class Checks:
             return
         if c["accept"] and c["accept_at"] and now - c["accept_at"] > ACCEPT_WAIT:
             # Clicked, but no capture yet (see on_sample): say what it's waiting for.
-            full = c["kind"] == "full"
+            big = c["kind"] != "quick"
             if now - c.get("gaze_at", 0.0) > 0.5:
-                self.note("Waiting: the eye tracker isn't sending a gaze" if full else "Waiting: no gaze")
+                self.note("Waiting: the eye tracker isn't sending a gaze" if big else "Waiting: no gaze")
             else:
-                self.note("Waiting for your gaze to hold still on the dot" if full else "Hold your look still")
+                self.note("Waiting for your gaze to hold still on the dot" if big else "Hold your look still")
         if c["kind"] == "quick" and now - c["started"] > QUICK_TIMEOUT:
             self.close("ignored")
         elif c["kind"] != "quick" and now - c["shown"] > CLICK_IDLE:

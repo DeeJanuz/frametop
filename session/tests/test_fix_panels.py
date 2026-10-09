@@ -7,6 +7,7 @@ kwriteconfig6 on a copy. Nothing here touches the running desktop or its config.
 """
 import importlib.util
 import os
+import resource
 import subprocess
 import sys
 import tempfile
@@ -143,19 +144,79 @@ class Run(unittest.TestCase):
         self.assertEqual(groups[("Containments", "11")]["lastScreen"], "0")
         self.assertEqual(groups[("Containments", "10", "Applets", "101")]["plugin"], "org.kde.plasma.kickoff")
         self.assertEqual(groups[("Containments", "25")]["lastScreen"], "8")  # a spare's desktop
-        with open(self.path + ".ft-bak") as f:
-            self.assertEqual(f.read(), ISSUE_18)
-        # A second run finds nothing to do and leaves the backup alone.
+        for bak in (".ft-bak", ".ft-bak.last"):
+            with open(self.path + bak) as f:
+                self.assertEqual(f.read(), ISSUE_18, bak)
+        # A second run finds nothing to do and makes no backup.
         os.remove(self.path + ".ft-bak")
+        os.remove(self.path + ".ft-bak.last")
         r = self.run_script()
         self.assertEqual((r.returncode, r.stderr), (0, ""))
-        self.assertFalse(os.path.exists(self.path + ".ft-bak"))
+        self.assertEqual(os.listdir(self.dir.name), [os.path.basename(self.path)])
         self.assertEqual(self.run_script("--check").returncode, 0)
 
     def test_no_config_yet(self):
         os.remove(self.path)
         self.assertEqual(self.run_script().returncode, 0)
         self.assertEqual(self.run_script("--check").returncode, 0)
+
+    def test_backup_is_written_once(self):
+        """A backup that's already there, the config before an earlier repair, stays as it
+        was, and the repair still goes ahead."""
+        with open(self.path + ".ft-bak", "w") as f:
+            f.write("the config before an earlier repair\n")
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.path + ".ft-bak") as f:
+            self.assertEqual(f.read(), "the config before an earlier repair\n")
+        with open(self.path) as f:
+            groups = fp.parse(f.read())
+        self.assertEqual(groups[("Containments", "10")]["lastScreen"], "0")
+        self.assertEqual(groups[("Containments", "11")]["lastScreen"], "0")
+
+    def test_last_backup_is_from_before_each_repair(self):
+        """<file>.ft-bak.last is the config as it was just before the latest repair, so that
+        repair can be undone without losing what changed since the first; <file>.ft-bak stays
+        the config before the first repair. The log names both."""
+        bak = self.path + ".ft-bak"
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # The panel is lost again later, after a change of the user's own (another widget).
+        changed = ISSUE_18.replace("org.kde.plasma.kickoff", "org.kde.plasma.trash")
+        with open(self.path, "w") as f:
+            f.write(changed)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(bak + ".last") as f:
+            self.assertEqual(f.read(), changed)
+        with open(bak) as f:
+            self.assertEqual(f.read(), ISSUE_18)
+        with open(self.path) as f:
+            self.assertEqual(fp.parse(f.read())[("Containments", "10")]["lastScreen"], "0")
+        self.assertIn(bak + ".last ", r.stderr)
+        self.assertIn(bak + " ", r.stderr)
+
+    def test_failed_backup_leaves_nothing(self):
+        """A backup cut off partway (a full disk; here a 1 KiB limit on file size) leaves no
+        backup and no temporary file behind, and the panels aren't touched without one. The
+        next start, with room, makes the backup and repairs."""
+        self.assertGreater(len(ISSUE_18), 1024)
+
+        def small_files():
+            resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024))
+        r = subprocess.run([sys.executable, SCRIPT, "--file", self.path, "--screens", "3"],
+                           capture_output=True, text=True, preexec_fn=small_files)
+        self.assertEqual(os.listdir(self.dir.name), [os.path.basename(self.path)])
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("couldn't back up", r.stderr)
+        with open(self.path) as f:
+            self.assertEqual(f.read(), ISSUE_18)
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.path + ".ft-bak") as f:
+            self.assertEqual(f.read(), ISSUE_18)
+        with open(self.path) as f:
+            self.assertEqual(fp.parse(f.read())[("Containments", "10")]["lastScreen"], "0")
 
 
 if __name__ == "__main__":

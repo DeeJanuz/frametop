@@ -7,7 +7,9 @@
 # "Launch a program", which runs apps outside it; the standalone recorder is for that).
 # It doesn't turn on Frametop's live hand tracking (that's hands/run.sh install, still deferred).
 # Usage: hands/rec/install.sh            install or update
-#        hands/rec/install.sh uninstall  remove the menu entry (recordings stay where they are)
+#        hands/rec/install.sh uninstall  remove the menu entry, and ft-camd's capabilities unless
+#                                        hand tracking's services use them (hands/run.sh uncaps).
+#                                        Recordings stay where they are.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 . "$root/scripts/_env.sh"
@@ -32,7 +34,9 @@ case ${1:-install} in
     ;;
   uninstall)
     on_frame "rm -f $entry"
-    echo "Removed the menu entry. Your recordings are still in ~/.local/share/frametop/hands/contrib:"
+    echo "Removed the menu entry."
+    "$root/hands/run.sh" uncaps  # after the entry, which counts as a user of the capabilities
+    echo "Your recordings are still in ~/.local/share/frametop/hands/contrib:"
     echo "delete that folder to remove them."
     ;;
   *) echo "usage: $0 [install|uninstall]" >&2; exit 2 ;;

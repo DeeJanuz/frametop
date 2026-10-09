@@ -83,7 +83,8 @@ if [ "${1:-}" != --inner ]; then
   # Arrange the screens once they're up: in the profile this desktop starts with (FT_PROFILE,
   # from a profile's launcher entry, or the default profile), which also opens its apps, or
   # else in the saved layout (skipped when auto-arrange is off). docs/profiles.md.
-  setsid "$here/../layout/ft-layout" start --wait 90 > /tmp/frametop-layout.log 2>&1 < /dev/null &
+  # The log starts fresh here; ft-screens appends its later ft-layout runs to it.
+  setsid "$here/../layout/ft-layout" start --wait 90 > "$XDG_RUNTIME_DIR/frametop-layout.log" 2>&1 < /dev/null &
 
   if [ "$backend" = gamescope ]; then
     export ENABLE_GAMESCOPE_WSI=1 GAMESCOPE_MANGOAPP_SOCKET_DISABLE=1
@@ -98,13 +99,13 @@ if [ "${1:-}" != --inner ]; then
       -- "$0" --inner
   fi
 
-  # ft-screens runs in the dev container (it's built against Fedora's wlroots); KWin and
-  # Plasma stay on the host and connect to its socket.
+  # ft-screens runs in Frametop's container (it's built against Fedora's wlroots); KWin and
+  # Plasma stay on the host and connect to its socket. in-box starts the container in a scope
+  # of its own, not this desktop's, or stopping the desktop would stop the container.
   socket=ft-screens-0
   read -ra screen_args <<< "$("$here/../layout/ft-layout" screen-args)"
   export FT_SCREEN_COUNT=$(( ${#screen_args[@]} / 2 )) FT_FLOAT_SLOTS=$float_slots
-  "$here/../scripts/container-up.sh"  # not owned by this desktop, or stopping it would stop the container
-  "$HOME/.local/bin/distrobox" enter dev -- "$here/../screens/build/ft-screens" --socket "$socket" \
+  "$here/../scripts/in-box" "$here/../screens/build/ft-screens" --socket "$socket" \
     "${screen_args[@]}" --spares "$float_slots" > /tmp/frametop-screens.log 2>&1 < /dev/null &
   stop_screens() { pkill -x ft-screens 2>/dev/null || true; }
   trap stop_screens EXIT
@@ -176,6 +177,16 @@ export XDG_RUNTIME_DIR=$runtime
 export XDG_CONFIG_HOME=$HOME/.config/frametop
 export XDG_STATE_HOME=$HOME/.local/state/frametop
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
+
+# The cursor: the Steam client's XCURSOR_THEME=steam comes along in the environment, and
+# KWin and the apps take it over this desktop's own setting. SteamOS had no theme of that
+# name, so they fell back to Breeze; SteamOS 0.4 has one (holo-cursors: Steam's arrow, the
+# rest Breeze Light). The theme is this desktop's own (System Settings, Breeze unless
+# changed there); the size stays what it was, unless one is set there too.
+cursor_theme=$(kreadconfig6 --file kcminputrc --group Mouse --key cursorTheme)
+cursor_size=$(kreadconfig6 --file kcminputrc --group Mouse --key cursorSize)
+export XCURSOR_THEME=${cursor_theme:-breeze_cursors}
+[ -z "$cursor_size" ] || export XCURSOR_SIZE=$cursor_size
 
 # Remote desktop over VNC: session/remote-desktop.sh captures the desktop with
 # krdp on 127.0.0.1, and session/vnc-bridge.sh re-serves its primary screen over VNC. krdpserver runs from the container, so KWin can't
@@ -272,15 +283,24 @@ fi
 # 600 MB and a share of a core, with Flatpak's helper and AppStream behind it); updates
 # come with SteamOS and from Discover in the stock desktop. IBus can't reach the
 # desktop's apps: KWin's input method is ft-textinput, and the session drops the
-# variables that point apps at IBus or XIM. Deleting the copy brings an entry back.
-if [ "$(kreadconfig6 --file "$frametoprc" --group Defaults --key autostart)" != 1 ]; then
-  for entry in org.kde.discover.notifier ibus; do
+# variables that point apps at IBus or XIM. Steam is already running (the desktop starts
+# from it), so its entry's `steam -silent` only reaches that client as a command line it
+# runs; SteamOS 0.4 adds -vrdisable -deckard to it, meant for Desktop Mode's own Steam.
+# Deleting the copy brings an entry back. The marker is the last list done, so an entry
+# added later is hidden once on desktops that did the first list, and none comes back.
+case $(kreadconfig6 --file "$frametoprc" --group Defaults --key autostart) in
+  2) hide= ;;
+  1) hide=steam ;;
+  *) hide="org.kde.discover.notifier ibus steam" ;;
+esac
+if [ -n "$hide" ]; then
+  for entry in $hide; do
     src=/etc/xdg/autostart/$entry.desktop dst=$XDG_CONFIG_HOME/autostart/$entry.desktop
     [ -r "$src" ] && [ ! -e "$dst" ] || continue
     mkdir -p "$(dirname "$dst")"
     sed '/^\[Desktop Entry\]$/a Hidden=true' "$src" > "$dst"
   done
-  kwriteconfig6 --file "$frametoprc" --group Defaults --key autostart 1
+  kwriteconfig6 --file "$frametoprc" --group Defaults --key autostart 2
 fi
 
 # Profiles reopen apps (docs/profiles.md), so Plasma's own session restore stays off here;

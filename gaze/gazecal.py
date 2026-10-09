@@ -7,6 +7,7 @@ the tracker has lost the other), EyeWeights (how much each eye counts), and Stea
 reports them.
 """
 
+import json
 import math
 import os
 import statistics
@@ -397,6 +398,63 @@ class LiveCorrection:
 EYE_LOST = 0.004
 EYE_FOUND = 0.0025
 
+# SteamOS 0.4's "Track Dominant Eye Only" (SteamVR's settings, General, advanced): SteamVR's
+# tracker ignores the other eye, for someone whose eyes don't look at the same spot. Its
+# settings: steamvr.eyeTrackingDominantEyeOnly, and steamvr.dominantEye (0 left, 1 right,
+# SteamVR's default). Frametop then goes by that eye alone: a calibration that waits for both
+# eyes would never take a dot, and the other eye's reading isn't where the person looks.
+STEAMVR_SETTINGS = (Path.home() / ".config" / "openvr" / "config" / "steamvr.vrsettings",
+                    Path.home() / ".steam" / "steam" / "config" / "steamvr.vrsettings")
+
+
+def tracked_eye(paths=STEAMVR_SETTINGS):
+    """The one eye SteamVR's tracker follows (0 left, 1 right), or None for both. The first
+    of the settings files that exists counts (SteamVR keeps only settings changed from its
+    defaults, so a missing key is the default)."""
+    for path in paths:
+        try:
+            text = Path(path).read_text()
+        except OSError:
+            continue
+        try:
+            steamvr = json.loads(text).get("steamvr")
+        except (ValueError, AttributeError):
+            return None
+        if not isinstance(steamvr, dict) or steamvr.get("eyeTrackingDominantEyeOnly") is not True:
+            return None
+        return 0 if steamvr.get("dominantEye", 1) == 0 else 1
+    return None
+
+
+class TrackedEye:
+    """tracked_eye(), read again when SteamVR's settings file changes (looked at no more than
+    every CHECK seconds), since the setting can change while a service runs."""
+
+    CHECK = 2.0
+
+    def __init__(self, paths=STEAMVR_SETTINGS):
+        self.paths = paths
+        self.eye = None
+        self.stamp = None
+        self.checked = None
+
+    def __call__(self, now=None):
+        now = time.monotonic() if now is None else now
+        if self.checked is not None and now - self.checked < self.CHECK:
+            return self.eye
+        self.checked = now
+        stamp = []
+        for path in self.paths:
+            try:
+                st = os.stat(path)
+                stamp.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                stamp.append(None)
+        if stamp != self.stamp:
+            self.stamp = stamp
+            self.eye = tracked_eye(self.paths)
+        return self.eye
+
 
 class EyeFallback:
     """The gaze from one eye, while the tracker has lost the other.
@@ -640,7 +698,7 @@ def cross_validate(points, mode):
     return errs
 
 
-def steady_samples(samples, vergence_jump=1.5, why=None):
+def steady_samples(samples, vergence_jump=1.5, why=None, eye=None):
     """The samples of one look at one spot where the tracker had both eyes: none in a blink
     (openness under half its median over the samples), none where it had lost an eye (its
     variance over EYE_LOST), and none where the angle between the eyes' directions (`lr`, the
@@ -648,28 +706,37 @@ def steady_samples(samples, vergence_jump=1.5, why=None):
     vergence itself depends on distance (about 2.8 degrees for a screen 1.3 m away, a
     fraction of one far off), so only a jump away from what it was during this look means
     the tracker lost an eye. Without the mmap there's nothing to judge by: all are kept.
+    `eye` (0 left, 1 right; see tracked_eye) judges that eye alone: the other one's loss,
+    openness and the vergence don't count.
     `why`, a dict, gets how many were dropped for each reason: "lost_left", "lost_right",
     "lost_both", "blink" and "vergence" (each sample once, for the first that applies)."""
     if why is None:
         why = {}
+
+    def openness(o):
+        return o[eye] if eye is not None else min(o)
     # Openness: a blink is a sharp drop from what it was during this look. Not a fixed
     # level: looking down, the upper lids come down with the eyes, and in bright light you
     # squint, so the reading can stay under 0.5 for the whole look while the tracker follows
     # the eyes fine (a calibration dot at the bottom of the bright round failed that way).
-    opens = [min(o) for o in ((smp["src"].get("mmap1") or {}).get("open") for smp in samples) if o]
+    opens = [openness(o) for o in ((smp["src"].get("mmap1") or {}).get("open") for smp in samples) if o]
     floor = max(0.12, 0.5 * statistics.median(opens)) if len(opens) >= 5 else 0.12
     seen = []
     for smp in samples:
         m1 = smp["src"].get("mmap1") or {}
         o = m1.get("open")
         lost = [u > EYE_LOST for u in m1.get("unc") or [0, 0]]
+        if eye is not None:
+            lost[1 - eye] = False
         # A lost eye's openness reads 0 too, so a lost eye is named before a blink.
         key = ("lost_both" if all(lost) else "lost_left" if lost[0] else "lost_right") if any(lost) else \
-            "blink" if o and min(o) < floor else None
+            "blink" if o and openness(o) < floor else None
         if key:
             why[key] = why.get(key, 0) + 1
         else:
             seen.append(smp)
+    if eye is not None:
+        return seen
 
     def vergence(smp):
         return (smp["src"].get("mmap1") or {}).get("lr", (smp["src"].get("mmap2") or {}).get("lr"))

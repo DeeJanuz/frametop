@@ -27,7 +27,7 @@ For now the recorder runs inside Frametop's desktop, so these steps install Fram
 ## 1. Install Frametop
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- --stable
+curl -fsSL https://frametop.github.io/frametop/get.sh | bash -s -- --stable
 ```
 
 This clones Frametop into `~/frametop` and runs its installer. The first run downloads 1–2 GB. The installer asks a few questions (gaze mode, the eye tracker, the Bluetooth fixes); the defaults are fine. At the end SteamVR restarts, which closes Konsole. If Frametop is already installed, this updates it.
@@ -49,7 +49,7 @@ Open Frametop Hand Recorder from the desktop's application menu. It walks you th
 ## Update
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash -s -- --stable
+curl -fsSL https://frametop.github.io/frametop/get.sh | bash -s -- --stable
 ~/frametop/hands/rec/install.sh
 ```
 
@@ -61,7 +61,7 @@ Run the second command after SteamVR has restarted, as in the install.
 ~/frametop/hands/rec/install.sh uninstall
 ```
 
-This removes the menu entry. Your recordings stay in `~/.local/share/frametop/hands/contrib`; delete that folder to remove them. To remove Frametop as well, follow [Uninstall](https://github.com/DeeJanuz/frametop#uninstall) in the README.
+This removes the menu entry. With your `sudo` password, it also takes back the camera broker's permission to read the cameras. If you also installed Frametop's live hand tracking, the camera broker keeps that permission, because live hand tracking still uses it. Your recordings stay in `~/.local/share/frametop/hands/contrib`; delete that folder to remove them. To remove Frametop as well, follow [Uninstall](https://github.com/DeeJanuz/frametop#uninstall) in the README.
 
 ## Help
 

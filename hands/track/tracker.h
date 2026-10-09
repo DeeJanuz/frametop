@@ -93,6 +93,13 @@ public:
     // bright rooms the camera exposes for the room, the hands come out dim, and presence
     // dips under 0.5 for a frame at a time.
     void set_keep_presence(double p) { keep_presence_ = p; }
+    // Misread guards, for fine-tuned landmark models (frame-hands' students): they stay sure of a
+    // hand when two hands touch and can read the held hand as the other side, which made a split /
+    // hand-over / duplicate loop. On: a reading of an established hand (5+ frames) whose side is
+    // more than 0.7 off the hand's own is dropped (the hand-over crops it afresh next frame), and a
+    // view split off where its hand already is in that camera is dropped instead of starting a new
+    // hand. Off by default: the stock model's side is noisier and the first guard costs it tracking.
+    void set_misread_guard(bool on) { misread_guard_ = on; }
     // One view's 3D hand: each landmark along its ray, as far as how big the palm looks says
     // for a hand `scale` times the model's (Hand::scale). False if the palm is degenerate.
     static bool single_view(const Camera &cam, const Landmarks &lm, double scale, V3 out[21]);
@@ -130,6 +137,7 @@ private:
     Pool &pool_;
     int max_views_, hand_budget_ = 4, search_budget_ = 3;
     double min_presence_ = 0.5, keep_presence_ = 0.5;
+    bool misread_guard_ = false;
     std::vector<View> views_;
     std::map<int, Hand> hands_;
     std::vector<Tile> tiles_;

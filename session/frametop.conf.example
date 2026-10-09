@@ -48,6 +48,7 @@ HANDS_BRIGHT_ON=40         # hand tracking, auto: the colour frames' mean bright
 HANDS_BRIGHT_OFF=25        # ... and back to the mono cameras under this
 HANDS_COLOR_LEFT=color_video0  # hand tracking: which colour camera is passthrough_left (hands/tools/check_color.py tells)
 HANDS_COLOR_CROP=subtract  # hand tracking: how the colour calibration's crop applies, subtract | none (check_color.py tells)
+#HANDS_MODELS=            # hand tracking: a folder of palm.ncnn.* and hand.ncnn.* to use instead of the stock models (hands/models/ncnn)
 POINTER_HANDS=0            # 1 = pinches click (on the release; hold and move to nudge the pointer first) and grips press and drag, with hand tracking
 POINTER_PINCH_GAIN=0.5     # hands: the pointer moves this times the pinching hand's angle (precision)
 POINTER_PINCH_DEADZONE=1.5 # hands: degrees the pinching hand moves before the pointer does (a tap's jitter)

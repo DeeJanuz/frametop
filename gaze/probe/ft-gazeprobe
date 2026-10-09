@@ -161,11 +161,10 @@ class GazeReader:
         env = dict(os.environ)
         # The Frametop desktop has its own runtime dir; podman needs the real one.
         env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
-        subprocess.run([str(REPO / "scripts" / "container-up.sh")], env=env, check=False)
-        distrobox = Path.home() / ".local" / "bin" / "distrobox"
         # ft-gaze quits when its stdin closes, which is the one thing distrobox passes on
-        # when we go away (even if we're killed).
-        self.proc = subprocess.Popen([str(distrobox), "enter", "dev", "--", str(HELPER), "--watch-stdin"], env=env,
+        # when we go away (even if we're killed). in-box starts the container first, and picks
+        # the release's own on a release install.
+        self.proc = subprocess.Popen([str(REPO / "scripts" / "in-box"), str(HELPER), "--watch-stdin"], env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      start_new_session=True)
         out = Gio.UnixInputStream.new(self.proc.stdout.fileno(), False)
@@ -203,7 +202,7 @@ class GazeReader:
                 return
             print(line, file=sys.stderr)
             text = line.removeprefix("ft-gaze: ")
-            if not text.startswith(("action manifest", "eye-server.mmap open")):
+            if not text.startswith(("action manifest", "eye-server.mmap open", "eye-server.mmap layout:")):
                 self.last_err = text  # worth repeating if ft-gaze stops (not the startup lines)
             self.on_status(text)
             stream.read_line_async(GLib.PRIORITY_DEFAULT, self.cancel, got)

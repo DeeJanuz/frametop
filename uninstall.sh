@@ -2,7 +2,7 @@
 # Uninstall Frametop from the Steam Frame. In a terminal on the headset (Konsole in the desktop,
 # or over SSH):
 #
-#   curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash
+#   curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash
 #
 # or ~/frametop/uninstall.sh. It doesn't use the rest of the repo, so it also works when
 # ~/frametop is gone or broken.
@@ -10,10 +10,12 @@
 # It never stops what you're using now: the input relay carries the keyboard and mouse, and the
 # desktop runs from the repo. So it goes in two steps:
 #   1. Frametop stops starting. The launcher's Desktop entry goes back to the stock desktop, and
-#      Frametop's services, SteamVR driver, menu entries, and system files (our eye tracker's
-#      frame grabber and the Bluetooth fixes, with sudo) are removed. What runs now keeps running
-#      until you restart the headset.
-#   2. After the restart, run it again. It deletes the code (~/frametop) and, if you want, your
+#      Frametop's Native Desktop entry, services, SteamVR driver, menu entries, and system files
+#      (our eye tracker's frame grabber and the Bluetooth fixes, with sudo) are removed, and so
+#      are the file capabilities of hand tracking's camera broker (ft-camd, with sudo). What runs
+#      now keeps running until you restart the headset.
+#   2. After the restart, run it again. It deletes the code (~/frametop, or the releases in
+#      ~/.local/share/frametop/releases with their containers and images) and, if you want, your
 #      settings and the build container.
 # When nothing of Frametop is running, one run does both.
 #
@@ -26,20 +28,23 @@ shopt -s nullglob
 usage() {
   cat <<'EOF'
 usage: uninstall.sh [--dir DIR] [--dry-run]
-piped: curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash -s -- [options]
+piped: curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash -s -- [options]
 EOF
 }
 
 dry=0
 apps=$HOME/.local/share/applications
 override=$apps/deckard-nested-desktop.desktop
+native_copy=$apps/native-deckard-nested-desktop.desktop
 relay_unit=$HOME/.config/systemd/user/frametop-input-relay.service
 driver=$HOME/.local/share/frametop/ft_pointer
+releases=$HOME/.local/share/frametop/releases  # pack/install-release.sh
 vrpathreg=/opt/steamvr/bin/linuxarm64/vrpathreg
 handsctl=$HOME/.local/bin/ft-handsctl
-eyegrab_files=(/etc/systemd/system/frametop-eyegrab.service /etc/frametop/ft-eyegrab)
+eyegrab_files=(/etc/systemd/system/frametop-eyegrab.service /etc/frametop/ft-eyegrab
+               /etc/atomic-update.conf.d/frametop-eyegrab.conf)
 bt_files=(/etc/systemd/system/steamframe-bt-fixups.service /etc/systemd/system/bluetooth.service.d/steamframe.conf
-          /etc/steamframe/bt-fixups.sh)
+          /etc/steamframe/bt-fixups.sh /etc/atomic-update.conf.d/frametop-bluetooth.conf)
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 run() {  # run a command, or with --dry-run, show it
@@ -102,11 +107,14 @@ main() {
   fi
   [ "$dry" = 1 ] && echo "Dry run: nothing changes."
   repo=$(find_repo)
+  camd=$repo/hands/build/ft-camd
+  camd_caps=$(getcap "$camd" 2>/dev/null || true)
 
   # Step 1: what makes Frametop start. Nothing here stops a running program.
   [ -f "$override" ] && grep -q 'Frametop' "$override" || override=
+  [ -f "$native_copy" ] || native_copy=
   units=("$HOME"/.config/systemd/user/frametop-*.service)
-  for f in ft-input-settings ft-display-settings ft-layout-reset ft-screens-toggle ft-remote-settings ft-gazeprobe; do
+  for f in ft-input-settings ft-display-settings ft-remote-displays ft-layout-reset ft-screens-toggle ft-remote-settings ft-gazeprobe; do
     [ -e "$apps/$f.desktop" ] && entries+=("$apps/$f.desktop")
   done
   [ -e "$apps/frametop-handrec.desktop" ] && entries+=("$apps/frametop-handrec.desktop")
@@ -114,15 +122,17 @@ main() {
   [ -L "$handsctl" ] || handsctl=
   exists "${eyegrab_files[@]}" "${bt_files[@]}" && sys=1
 
-  if [ -n "$override" ] || [ ${#units[@]} -gt 0 ] || [ ${#entries[@]} -gt 0 ] || [ -d "$driver" ] ||
-     [ -n "$handsctl" ] || [ "$sys" = 1 ]; then
+  if [ -n "$override" ] || [ -n "$native_copy" ] || [ ${#units[@]} -gt 0 ] || [ ${#entries[@]} -gt 0 ] ||
+     [ -d "$driver" ] || [ -n "$handsctl" ] || [ "$sys" = 1 ] || [ -n "$camd_caps" ]; then
     step "Step 1 of 2: stop Frametop from starting"
     echo "This removes:"
     [ -n "$override" ] && echo "  - the launcher's Desktop entry (Launch a program -> Desktop opens the stock desktop again)"
+    [ -n "$native_copy" ] && echo "  - the launcher's Native Desktop entry (Desktop opens the same stock desktop then)"
     for f in "${units[@]}"; do echo "  - the service $(basename "$f")"; done
     [ -d "$driver" ] && echo "  - the 3D mouse's SteamVR driver (ft_pointer)"
     [ ${#entries[@]} -gt 0 ] && echo "  - ${#entries[@]} menu entries (Frametop Display Settings, Input Settings, ...)"
     [ -n "$handsctl" ] && echo "  - $handsctl"
+    [ -n "$camd_caps" ] && echo "  - the hand camera broker's file capabilities (needs your password)"
     exists "${eyegrab_files[@]}" && echo "  - our eye tracker's frame grabber (a system service: needs your password)"
     exists "${bt_files[@]}" && echo "  - the Bluetooth fixes (system files: needs your password)"
     echo "What runs now keeps running until you restart the headset, so your keyboard, mouse, and"
@@ -130,6 +140,7 @@ main() {
     ask "Uninstall Frametop?" n || { echo "Nothing changed."; return 0; }
 
     [ -n "$override" ] && run rm -f "$override"
+    [ -n "$native_copy" ] && run rm -f "$native_copy"
     if [ ${#units[@]} -gt 0 ]; then
       for f in "${units[@]}"; do names+=("$(basename "$f")"); done
       run systemctl --user disable "${names[@]}" 2>/dev/null || true
@@ -147,13 +158,20 @@ main() {
     [ -n "$handsctl" ] && run rm -f "$handsctl"
     if [ "$sys" = 1 ]; then
       echo "The system files need your password (sudo)."
+      # $1 is ft-camd when it has capabilities to remove, else empty; the system files follow.
       if ! run sudo bash -c '
+        camd=$1; shift
         for u in frametop-eyegrab steamframe-bt-fixups; do systemctl disable $u.service 2>/dev/null; done
         rm -f "$@"
         rmdir /etc/frametop /etc/steamframe /etc/systemd/system/bluetooth.service.d 2>/dev/null
-        systemctl daemon-reload; true' sys "${eyegrab_files[@]}" "${bt_files[@]}"; then
+        [ -n "$camd" ] && [ -x "$camd" ] && setcap -r "$camd" 2>/dev/null
+        systemctl daemon-reload; true' sys "${camd_caps:+$camd}" "${eyegrab_files[@]}" "${bt_files[@]}"; then
         echo "warning: the system files weren't removed (no password?). Run this again to retry." >&2
       fi
+    elif [ -n "$camd_caps" ]; then
+      echo "ft-camd's file capabilities need your password (sudo) to remove."
+      run sudo setcap -r "$camd" ||
+        echo "warning: ft-camd keeps its capabilities (no password?). Run this again to retry." >&2
     fi
     [ "$dry" = 1 ] || echo "Frametop no longer starts."
   fi
@@ -167,9 +185,9 @@ main() {
     echo "($repo) and, if you want, your settings and the build container:"
     echo
     if [ "$repo" = "$HOME/frametop" ]; then
-      echo "  curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash"
+      echo "  curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash"
     else
-      echo "  curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash -s -- --dir $(printf %q "$repo")"
+      echo "  curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash -s -- --dir $(printf %q "$repo")"
     fi
     echo
     if ask "Restart the headset now? This closes everything open, in VR and on the desktop." n; then
@@ -180,7 +198,27 @@ main() {
   fi
 
   step "Step 2 of 2: delete what's left"
-  if [ -d "$repo" ] && is_repo "$repo"; then
+  if [ -d "$releases" ]; then
+    local boxes=() images=() b
+    for f in "$releases"/*/.frametop-release; do
+      boxes+=("$(sed -n 's/^BOX=//p' "$f")")
+      images+=("$(sed -n 's/^IMAGE=//p' "$f")")
+    done
+    echo "Frametop's releases: their files in $releases ($(size "$releases")), and the container and"
+    echo "image of each (${#boxes[@]}; an image is about 3 GB). A downloaded Frametop.zip stays where it is."
+    if ask "Delete the releases, their containers, and their images?" y; then
+      for b in "${boxes[@]}"; do
+        [[ $b =~ ^frametop-[A-Za-z0-9_.-]+$ ]] && { run podman rm -f "$b" 2>/dev/null || true; }
+      done
+      for b in "${images[@]}"; do
+        [[ $b == localhost/frametop:* ]] && { run podman rmi "$b" 2>/dev/null || true; }
+      done
+      run rm -rf "$releases"
+    fi
+  fi
+  if [[ $repo == "$releases"/* ]]; then
+    :  # a release: above
+  elif [ -d "$repo" ] && is_repo "$repo"; then
     if [ -f "$repo/.git" ]; then
       echo "Leaving $repo: it's a git worktree. Remove it with git worktree remove."
     else
@@ -204,12 +242,14 @@ main() {
     "$HOME/.cache/frametop"
 
   local settings=("$HOME"/.config/frametop.conf* "$HOME"/.config/frametop-*.json* "$HOME/.config/frametop-remote"
-                  "$HOME/.config/frametop" "$HOME/.local/state/frametop")
+                  "$HOME/.config/frametop" "$HOME/.local/state/frametop" "$HOME/.local/share/frametop-stream")
   local kept=()
   for f in "${settings[@]}"; do [ -e "$f" ] && kept+=("$f"); done
   if [ ${#kept[@]} -gt 0 ]; then
     echo "Your settings: the screen layout and profiles, button maps, gaze calibration, the remote"
-    echo "desktop password, and the Frametop desktop's own Plasma setup (${kept[*]/#$HOME/\~})."
+    echo "desktop password, the remote displays' pairings and sign-ins (their computers keep Frametop's"
+    echo "clients and token until you remove them in their Web UI), and the Frametop desktop's own Plasma"
+    echo "setup (${kept[*]/#$HOME/\~})."
     ask "Delete your settings too? Keep them to pick up where you left off if you reinstall." n &&
       run rm -rf "${kept[@]}"
   fi

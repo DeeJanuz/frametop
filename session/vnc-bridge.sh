@@ -37,6 +37,7 @@ fi
 
 # The VNC password is limited to 8 characters by the protocol. The traffic is
 # still encrypted by the tailnet (WireGuard).
+mkdir -m 0700 -p "$creds"  # remote-desktop.sh normally creates it; we may get here first
 if [ ! -s "$creds/vnc-password" ]; then
   (umask 077; head -c 12 /dev/urandom | base64 | tr -d '/+=' | cut -c1-8 > "$creds/vnc-password")
 fi
@@ -62,7 +63,7 @@ fi
 read -r _ _ w h _ _ <<< "$v"
 
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
-box() { "$HOME/.local/bin/distrobox" enter dev -- "$@"; }
+box() { "$here/../scripts/in-box" "$@"; }
 stop_rdp() { pkill -f "[x]freerdp /v:127.0.0.1:$rdp_port " 2>/dev/null || true; }
 trap 'stop_rdp; pkill -f "[X]vnc $display " 2>/dev/null || true' EXIT
 

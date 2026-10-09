@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# ft — build and run Frametop out of its OCI image (pack/Containerfile).
+#
+# The image is the product: one container that holds the frozen toolchain, the
+# native binaries, and the locked Python environment. Everything Frametop runs
+# goes through this wrapper, so the integration points (mounts, IPC, devices)
+# live in exactly one place.
+#
+# The wrapper works from two homes:
+#   Repo mode    the script sits in a checkout (pack/Containerfile beside it):
+#                development commands build from the sources, and runs mount
+#                the repo at /src/frametop
+#   Installed    the script sits in ~/.local/bin (put there by install.sh):
+#                programs run from the image's own copy, no repo needed
+#
+# Image reference, in order: $FT_IMAGE, then ~/.config/frametop/image — which
+# install.sh writes and `ft update` keeps digest-pinned. A moving :latest tag
+# is refused for what gets deployed (the pinned image and the update source):
+# what runs on a headset must be reproducible and rollback-able. Local
+# development is free to use any tag, :latest included.
+#
+# Usage:
+#   ft <prog> [args]    [both]    run a program from /opt/frametop
+#   ft update           [both]    pull the published image, pin its digest
+#   ft clean            [both]    remove frametop's leftover containers and
+#                                 unused frametop images (see below)
+# Development commands live behind "ft dev" (they need a repo checkout):
+#   ft dev build        [repo]    build the image from the repo
+#   ft dev shell        [repo]    interactive shell in the image
+#   ft dev test         [repo]    run the Python test suites inside the image
+#
+# About `ft clean` and the shared podman store: on SteamOS, frametop's
+# containers share one rootless podman store with Valve's (named
+# lepton-<context>). `ft clean` touches ONLY objects that are provably
+# frametop's: containers named frametop-*, and images whose reference
+# contains a /frametop or frametop: component. Everything else — every
+# lepton-* container, every dangling image, every cache layer — is left
+# alone. Never run `podman rm -a`, `podman rmi -a`, or `podman system prune`
+# on a Frame: those are store-wide and would delete Valve's containers.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+[ -f "$root/pack/Containerfile" ] && repo_mode=1 || repo_mode=0
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/frametop
+ref_file=$config_dir/image          # installed: the pinned image reference
+published_file=$config_dir/published  # installed: where updates come from
+
+reject_latest() { # reject_latest <what> <ref>
+  # A reference with neither a tag nor a digest means :latest too. The tag is
+  # after the last "/", so a registry port (host:5000/...) isn't one.
+  local name=${2%%@*} latest=0
+  case ${name##*/} in
+    *:latest) latest=1 ;;
+    *:*) ;;
+    *) [[ $2 == *@sha256:* ]] || latest=1 ;;
+  esac
+  if [ "$latest" = 1 ]; then
+    echo "ft: $2 uses the moving :latest tag — refused for $1." >&2
+    echo "    Pin a version tag or a digest (repo@sha256:...) instead," >&2
+    echo "    e.g. in $published_file or $ref_file." >&2
+    exit 2
+  fi
+}
+
+# The reference updates pull from: $FT_IMAGE_PUBLISHED, then the config file.
+# It must be configured and versioned — there is no silent :latest default,
+# and there is no default that appears when nothing is configured.
+# (Deferred: refreshing the installed wrapper from the image, so wrapper and
+# image ship as one artifact. The wiring broke CI under Docker; revisit after
+# the smoke job tells us exactly where.)
+default_published() {
+  local ref
+  if [ -n "${FT_IMAGE_PUBLISHED:-}" ]; then ref=$FT_IMAGE_PUBLISHED
+  elif [ -r "$published_file" ]; then ref=$(<"$published_file")
+  else
+    echo "ft update: no published reference configured." >&2
+    echo "  Write a versioned reference (never :latest) to:" >&2
+    echo "  $published_file" >&2
+    echo "  e.g.  ghcr.io/0x1f6/frametop:v0.2.1  —  install.sh does this." >&2
+    exit 2
+  fi
+  reject_latest "the update source" "$ref"
+  echo "$ref"
+}
+
+# The reference programs run: $FT_IMAGE, then the pinned file. Installed mode
+# refuses to run without a pin — a headset must never end up on :latest by
+# accident, and must always know exactly what image it is running.
+default_image() {
+  if [ "$repo_mode" = 1 ]; then echo "frametop:local"; return; fi
+  local ref
+  if [ -r "$ref_file" ] && [ -n "$(<"$ref_file")" ]; then ref=$(<"$ref_file")
+  elif [ -n "${FT_IMAGE:-}" ]; then echo "$FT_IMAGE"; return
+  else
+    echo "ft: no image pinned. Nothing has been installed yet." >&2
+    echo "  install.sh writes the pinned reference to:" >&2
+    echo "  $ref_file" >&2
+    exit 2
+  fi
+  reject_latest "the pinned image" "$ref"
+  echo "$ref"
+}
+image=${FT_IMAGE:-}
+published=${FT_IMAGE_PUBLISHED:-}
+
+# FT_ENGINE picks one when both are installed (CI builds with docker, and
+# its runner has podman too).
+engine=${FT_ENGINE:-$(command -v podman || command -v docker || true)}
+[ -n "$engine" ] || { echo "ft: need podman or docker on PATH" >&2; exit 1; }
+
+# Repo mode mounts the checkout; installed mode uses the image's own copy.
+mounts=()
+[ "$repo_mode" = 1 ] && mounts+=(-v "$root":/src/frametop)
+# A container's own network namespace starts with the kernel's datagram queue
+# of 10; systemd sets 512 on the host. The input relay sends without blocking
+# and drops what a full queue refuses, so at 10 its burst of key and button
+# releases loses the last ones (keys-test.py caught this).
+mounts+=(--sysctl net.unix.max_dgram_qlen=512)
+
+# How the programs run on the Frame (mounts, devices, groups, namespaces) is
+# not decided yet: see "The runtime on the Frame" in pack/design.md. Runs here
+# get no access to the host beyond the repo mount.
+
+run_in_image() {
+  [ -n "$image" ] || image=$(default_image)
+  # frametop-<program>-<pid>: podman ps names the program, two runs of one
+  # program (python3 a.py, python3 b.py) don't replace each other, and
+  # ft clean finds the leftovers of crashed runs by the prefix.
+  local name
+  name=frametop-$(printf '%s' "${1##*/}" | tr -c 'a-zA-Z0-9._-' '-')-$$
+  exec "$engine" run --rm --name "$name" ${mounts[@]+"${mounts[@]}"} \
+    --workdir /src/frametop "$image" "$@"
+}
+
+need_repo() {
+  [ "$repo_mode" = 1 ] || { echo "ft $1: only in a repo checkout (this copy runs installed)" >&2; exit 2; }
+}
+
+update() {
+  [ -n "$published" ] || published=$(default_published)
+  reject_latest "the update source" "$published"
+  "$engine" pull "$published"
+  # Pin what was pulled, by digest, so every later run and any bug report
+  # names exactly this image — and rollback is editing one file.
+  local digest
+  if digest=$("$engine" inspect --format '{{index .RepoDigests 0}}' "$published" 2>/dev/null) && [ -n "$digest" ]; then
+    mkdir -p "$config_dir"
+    # Written whole or not at all: an empty pin would stop every run.
+    printf '%s\n' "$digest" > "$ref_file.new" && mv "$ref_file.new" "$ref_file"
+    echo "ft update: pinned $digest"
+  else
+    echo "ft update: could not read a digest for $published — keeping $image." >&2
+  fi
+}
+
+clean() {
+  # Frametop's leftovers, and nothing else. See the header: the podman store
+  # is shared with Valve's lepton-* containers, so this only deletes objects
+  # whose name proves they are ours.
+  local found=0 obj
+  while IFS= read -r obj; do
+    [ -n "$obj" ] || continue
+    found=1
+    echo "removing container $obj"
+    "$engine" rm -f "$obj" >/dev/null
+  done < <("$engine" ps -a --format '{{.Names}}' 2>/dev/null | grep '^frametop-' || true)
+  # Images: only references that name frametop, and only ones no container
+  # uses (podman rmi refuses those anyway — the guard is belt and braces).
+  while IFS= read -r obj; do
+    [ -n "$obj" ] || continue
+    case $obj in *frametop*) ;; *) continue ;; esac
+    found=1
+    echo "removing image $obj"
+    "$engine" rmi "$obj" >/dev/null 2>&1 \
+      || echo "  (in use or already gone — left in place)" >&2
+  done < <("$engine" images --format '{{.Repository}}:{{.Tag}} {{.ID}}' 2>/dev/null \
+            | grep -E '(^|[ /])frametop(:| |$)' | awk '{print $1}' || true)
+  [ "$found" = 1 ] || echo "nothing of frametop's to clean"
+  [ "$found" = 1 ] || exit 0
+}
+
+case "${1:-help}" in
+  dev)
+    shift
+    image=${FT_IMAGE:-frametop:local}   # dev always works against the local build
+    case "${1:-help}" in
+      build)  need_repo build
+              exec "$engine" build -f "$root/pack/Containerfile" -t "$image" "$root" ;;
+      shell)  need_repo shell
+              exec "$engine" run --rm -it ${mounts[@]+"${mounts[@]}"} --workdir /src/frametop "$image" bash ;;
+      test)   need_repo test; run_in_image just test ;;
+      help|-h|--help|"") sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+      *) echo "ft dev: unknown command: $1 (build, shell, test)" >&2; exit 2 ;;
+    esac ;;
+  update)  update ;;
+  clean)   clean ;;
+  help|-h|--help)
+           sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+           [ -z "${1:-}" ] || exit 0 ;;
+  *)       [ -z "${1:-}" ] && { echo "ft: no command given" >&2; exit 2; }
+           run_in_image "$@" ;;
+esac

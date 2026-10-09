@@ -56,8 +56,8 @@
 // The mmap samples are in head space, 17 ms or so old when they appear, so each is turned
 // into the room with the head pose at its own timestamp, from a short pose history.
 //
-// Screens come from ft-screens (@ft_screens: "screens", "get N"), refreshed 4 times a
-// second in the background. A curved screen is a cylinder toward its front (see OnSurface
+// Screens come from ft-screens (@ft_screens: "screens", "remotes" for other machines'
+// displays, "get N"), refreshed 4 times a second in the background. A curved screen is a cylinder toward its front (see OnSurface
 // in screens/vr.cpp).
 #include <openvr.h>
 
@@ -98,6 +98,11 @@ double NowRaw() {
 }
 
 // --- eye-server.mmap (packed, unaligned: read with memcpy) ---
+// SteamOS 0.4 (SteamVR 2.18.2; first on the 0.4.3 beta, the same on 0.4.5, the release)
+// moved every field from the timestamp on by 5 bytes (measured 2026-10-04 with the ftdiag
+// scan: timestamp 0x157 -> 0x15c, the vectors moved with it; the counter at 0x38 kept its
+// place). Which layout is live is detected at runtime (EyeFile::Detect), so one binary
+// serves both generations.
 constexpr size_t kCounter = 0x38;  // u32, one per sample
 constexpr size_t kTime = 0x157;    // f64, CLOCK_MONOTONIC_RAW seconds
 constexpr size_t kLeft1 = 0x15f, kRight1 = 0x16b;  // set 1: unit vectors, head space
@@ -110,11 +115,19 @@ constexpr size_t kVar1 = 0x177, kVar2 = 0x1b3;
 // The measurements the filter is fed: left x, y, right x, y, then the variance of each (left
 // x, y, right x, y). An eye's pair stops changing while the tracker can't see it.
 constexpr size_t kMeas = 0x1d3;
-constexpr size_t kNeed = 0x1f3;
+constexpr size_t kNeed = 0x1f3 + 5;  // enough for either layout
+constexpr size_t kShifts[] = {0, 5};  // the layouts EyeFile::Detect knows: SteamOS 0.3, 0.4
 
 struct EyeFile {
+    // Everything from the timestamp on is read at base + shift: 0 on SteamOS 0.3, 5 on 0.4
+    // (see the constants above). known once Detect has seen that layout's
+    // timestamp tick; before that, reading would yield garbage that still passes
+    // ReadSample's check.
+    size_t shift = 0;
+    bool known = false;
     const uint8_t *p = nullptr;
     size_t size = 0;
+    size_t At(size_t base) const { return base + shift; }
     bool Open() {
         const int fd = open("/dev/shm/eye-server.mmap", O_RDONLY | O_CLOEXEC);
         if (fd < 0) return false;
@@ -130,6 +143,9 @@ struct EyeFile {
         size = st.st_size;
         return true;
     }
+    // The sample counter, or 0 without the mapping: the one read the loop makes whether or
+    // not the file was there (Get, V and ReadSample need it).
+    uint32_t Counter() const { return p ? Get<uint32_t>(kCounter) : 0; }
     template <class T> T Get(size_t off) const {
         T v;
         std::memcpy(&v, p + off, sizeof v);
@@ -140,6 +156,53 @@ struct EyeFile {
         std::memcpy(f, p + off, sizeof f);
         return {f[0], f[1], f[2]};
     }
+    // A live timestamp is near the clock it comes from (its samples are 17 ms or so old).
+    static bool TimePlausible(double t, double now) { return t > now - 2.0 && t <= now + 2.0; }
+    // The eye directions are unit vectors, so their length is a second, independent check
+    // next to the timestamp: a mere coincidence in one field does not confirm a layout.
+    static bool UnitVec(Vec3 v) {
+        const float n = v.x * v.x + v.y * v.y + v.z * v.z;
+        return n > 0.81f && n < 1.21f;  // |v| within 0.9 .. 1.1
+    }
+    bool Fits(size_t layout, double now) const {
+        return TimePlausible(Get<double>(kTime + layout), now) && UnitVec(V(kLeft1 + layout)) &&
+               UnitVec(V(kRight1 + layout));
+    }
+
+    // Which layout is live, a step per pass of the loop, so it never stalls it. A layout
+    // fits when its timestamp is near the clock and its two set-1 directions are unit
+    // vectors; it's taken once its timestamp has moved on too, within kConfirm. That allows
+    // for 2 samples a second: the eye server writes 72 or 90 (15 were seen on the beta).
+    // kWaiting: call again on the next pass. kNone: no layout fits (a server that stopped,
+    // SteamVR's tracker warming up, or a layout we don't know), so the mmap stays unused;
+    // try again later. One detection per run is enough: the layout can't change under a
+    // running ft-gaze, since SteamVR starts the eye server that writes the file, and the
+    // gaze service stops and starts with SteamVR.
+    enum Detection { kWaiting, kFound, kNone };
+    static constexpr double kConfirm = 0.5;
+    static constexpr size_t kLayouts = sizeof kShifts / sizeof kShifts[0];
+    Detection Detect(double now) {
+        if (!fit_) {
+            for (size_t i = 0; i < kLayouts; ++i)
+                if (Fits(kShifts[i], now)) fit_ |= 1u << i, t0_[i] = Get<double>(kTime + kShifts[i]);
+            if (!fit_) return kNone;
+            since_ = now;
+            return kWaiting;
+        }
+        for (size_t i = 0; i < kLayouts; ++i)
+            if ((fit_ >> i & 1) && Get<double>(kTime + kShifts[i]) > t0_[i] && Fits(kShifts[i], now)) {
+                fit_ = 0, shift = kShifts[i], known = true;
+                return kFound;
+            }
+        if (now - since_ <= kConfirm) return kWaiting;
+        fit_ = 0;
+        return kNone;
+    }
+    bool Detecting() const { return fit_ != 0; }
+
+    // Detect's state: the layouts that fit at since_ (a bit each), and their timestamps then.
+    unsigned fit_ = 0;
+    double t0_[kLayouts] = {}, since_ = 0;
 };
 
 struct EyeSample {
@@ -151,20 +214,22 @@ struct EyeSample {
 };
 
 // A consistent copy: the writer has no seqlock we can use, so read until the counter and
-// timestamp are the same before and after.
+// timestamp are the same before and after. Only call this once the layout is known
+// (EyeFile::known): on an unknown layout these reads still pass the consistency check,
+// but yield garbage.
 bool ReadSample(const EyeFile &f, EyeSample &s) {
     for (int attempt = 0; attempt < 4; ++attempt) {
         const uint32_t n0 = f.Get<uint32_t>(kCounter);
-        const double t0 = f.Get<double>(kTime);
+        const double t0 = f.Get<double>(f.At(kTime));
         std::atomic_thread_fence(std::memory_order_acquire);
-        s.left1 = f.V(kLeft1), s.right1 = f.V(kRight1), s.fix1 = f.V(kFix1);
-        s.left2 = f.V(kLeft2), s.right2 = f.V(kRight2);
-        std::memcpy(s.open, f.p + kOpen, sizeof s.open);
-        std::memcpy(s.var1, f.p + kVar1, sizeof s.var1);
-        std::memcpy(s.var2, f.p + kVar2, sizeof s.var2);
-        std::memcpy(s.meas, f.p + kMeas, sizeof s.meas);
+        s.left1 = f.V(f.At(kLeft1)), s.right1 = f.V(f.At(kRight1)), s.fix1 = f.V(f.At(kFix1));
+        s.left2 = f.V(f.At(kLeft2)), s.right2 = f.V(f.At(kRight2));
+        std::memcpy(s.open, f.p + f.At(kOpen), sizeof s.open);
+        std::memcpy(s.var1, f.p + f.At(kVar1), sizeof s.var1);
+        std::memcpy(s.var2, f.p + f.At(kVar2), sizeof s.var2);
+        std::memcpy(s.meas, f.p + f.At(kMeas), sizeof s.meas);
         std::atomic_thread_fence(std::memory_order_acquire);
-        if (f.Get<uint32_t>(kCounter) == n0 && f.Get<double>(kTime) == t0) {
+        if (f.Get<uint32_t>(kCounter) == n0 && f.Get<double>(f.At(kTime)) == t0) {
             s.n = n0, s.t = t0;
             return true;
         }
@@ -303,18 +368,32 @@ private:
             Screen s;
             if (std::sscanf(p, " %d:%dx%d:%lf%n", &s.index, &s.wpx, &s.hpx, &s.metres, &used) != 4) break;
             p += used;
-            // "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve hand"
-            const std::string g = Ask(fd, "get " + std::to_string(s.index));
-            double v[15];
-            if (std::sscanf(g.c_str(), "ok %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", &v[0], &v[1],
-                            &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13],
-                            &v[14]) != 15)
-                continue;
-            s.c = {v[0], v[1], v[2]};
-            s.b = {{v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {v[9], v[10], v[11]}};
-            s.metres = v[12], s.height = v[13], s.curve = v[14];
-            out.push_back(s);
+            if (Place(fd, s)) out.push_back(s);
         }
+        // Other machines' displays (remote.c): "ok <count> <index>:<client>:<state>:<w>x<h> ..."
+        const std::string remotes = Ask(fd, "remotes");
+        if (remotes.rfind("ok ", 0) != 0) return;
+        p = remotes.c_str() + 3;
+        if (std::sscanf(p, "%d%n", &count, &used) != 1) return;
+        p += used;
+        for (int k = 0; k < count; ++k) {
+            Screen s;
+            if (std::sscanf(p, " %d:%*[^:]:%*[^:]:%dx%d%n", &s.index, &s.wpx, &s.hpx, &used) != 3) break;
+            p += used;
+            if (s.wpx > 0 && s.hpx > 0 && Place(fd, s)) out.push_back(s);
+        }
+    }
+    static bool Place(int fd, Screen &s) {
+        // "ok x y z  xx xy xz  yx yy yz  zx zy zz  width height curve hand"
+        const std::string g = Ask(fd, "get " + std::to_string(s.index));
+        double v[15];
+        if (std::sscanf(g.c_str(), "ok %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf", &v[0], &v[1], &v[2],
+                        &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11], &v[12], &v[13], &v[14]) != 15)
+            return false;
+        s.c = {v[0], v[1], v[2]};
+        s.b = {{v[3], v[4], v[5]}, {v[6], v[7], v[8]}, {v[9], v[10], v[11]}};
+        s.metres = v[12], s.height = v[13], s.curve = v[14];
+        return true;
     }
 
     std::thread thread_;
@@ -525,7 +604,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "ft-gaze: action manifest %s: error %d\n", manifest.c_str(), int(me));
 
     EyeFile eyes;
-    const bool haveMmap = eyes.Open();
+    bool haveMmap = eyes.Open();
     std::fprintf(stderr, "ft-gaze: eye-server.mmap %s\n", haveMmap ? "open" : "not available");
 
     OwnFile ownFile;
@@ -544,6 +623,19 @@ int main(int argc, char **argv) {
     // over the dashboard. Games are told apart the way ft-screens does it, by the scene app.
     bool inGame = false;
     double nextGameCheck = 0;
+    // The mmap's layout (EyeFile::Detect) is looked for while it isn't known and the eye
+    // server writes: the counter (0x38 in both layouts) ticks once per sample, so a silent
+    // server (headset off) costs nothing and logs nothing. Until a layout is known, SteamVR's
+    // tracker counts as unavailable. "Not recognized" waits until no layout has fitted for
+    // kUnknownAfter of writing, longer than SteamVR's tracker takes to warm up after the
+    // headset goes on (about 20 s), then goes to the journal at most once a minute; ft-gazed
+    // shows it on the Gaze page.
+    constexpr double kUnknownAfter = 30;
+    double nextLayoutCheck = 0, nextLayoutLog = 0, lastWrite = 0, missSince = 0;
+    uint32_t lastCounterSeen = eyes.Counter();
+    // SteamVR's eye tracker creates the mmap a second or two after SteamVR starts, so it can
+    // be missing when we start: look for it again every 2 s until it's there.
+    double nextOpen = NowRaw() + 2.0;
 
     while (true) {
         const double now = NowRaw();
@@ -559,11 +651,43 @@ int main(int argc, char **argv) {
         sys->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, 0, &hp, 1);
         if (hp.bPoseIsValid) history.Add(now, hp.mDeviceToAbsoluteTracking);
 
-        // One line per new eye sample, or at 90 Hz without the mmap.
+        if (!haveMmap && now >= nextOpen) {
+            nextOpen = now + 2.0;
+            if ((haveMmap = eyes.Open())) {
+                std::fprintf(stderr, "ft-gaze: eye-server.mmap open\n");
+                lastCounterSeen = eyes.Counter();
+            }
+        }
+
+        // One line per new eye sample, or at 90 Hz without a usable mmap: none, or one whose
+        // layout isn't known (yet). Our own tracker needs nothing from the mmap, so it keeps
+        // going then; the mmap's sources print as {"ok":0} and "eye" as null.
         EyeSample s;
         bool fresh = false;
-        if (haveMmap && ReadSample(eyes, s) && s.n != lastN) fresh = true, lastN = s.n;
-        if (!haveMmap && now - lastEmit >= 1.0 / 90) fresh = true, s.t = now;
+        const uint32_t counter = eyes.Counter();
+        const bool writing = haveMmap && counter != lastCounterSeen;
+        lastCounterSeen = counter;
+        if (writing) {
+            if (now - lastWrite > 2.0) missSince = 0;  // it was silent: start counting again
+            lastWrite = now;
+        }
+        if (haveMmap && !eyes.known && (eyes.Detecting() || (writing && now >= nextLayoutCheck))) {
+            const EyeFile::Detection d = eyes.Detect(now);
+            if (d == EyeFile::kFound) {
+                std::fprintf(stderr, "ft-gaze: eye-server.mmap layout: %s\n", eyes.shift ? "SteamOS 0.4 (+5)" : "SteamOS 0.3");
+            } else if (d == EyeFile::kNone) {
+                nextLayoutCheck = now + 1.0;
+                if (!missSince) missSince = now;
+                if (now - missSince >= kUnknownAfter && now >= nextLayoutLog) {
+                    nextLayoutLog = now + 60.0;
+                    std::fprintf(stderr, "ft-gaze: eye-server.mmap has eye data, but its layout is not recognized: "
+                                         "SteamVR's eye tracking is unavailable\n");
+                }
+            }
+        }
+        const bool mmapOk = haveMmap && eyes.known;
+        if (mmapOk && ReadSample(eyes, s) && s.n != lastN) fresh = true, lastN = s.n;
+        if (!mmapOk && now - lastEmit >= 1.0 / 90) fresh = true, s.t = now;
 
         if (fresh && hp.bPoseIsValid) {
             lastEmit = now;
@@ -571,7 +695,7 @@ int main(int argc, char **argv) {
             const auto list = screens.Get();
             const vr::HmdMatrix34_t &headNow = hp.mDeviceToAbsoluteTracking;
             vr::HmdMatrix34_t headThen = headNow;
-            if (haveMmap) history.At(s.t, headThen);
+            if (mmapOk) history.At(s.t, headThen);
 
             // SteamVR's action: a room-space origin and fixation point, turned into the head
             // frame so every source reports the same kind of angles.
@@ -599,7 +723,8 @@ int main(int argc, char **argv) {
             }
 
             std::string m1 = "{\"ok\":0}", m2 = m1, left = m1, right = m1, eye = "null";
-            if (haveMmap) {
+            // Only from a known layout: the unread sample's zeros would print an "unc" of 0 (eyes seen).
+            if (mmapOk) {
                 // lr: the angle between the two eyes' directions. It's a fraction of a degree
                 // normally; when the tracker loses one eye (or during a blink) it jumps.
                 auto lr = [](Vec3 l, Vec3 r) {

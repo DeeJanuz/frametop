@@ -27,7 +27,7 @@ look; held, the pointer stops there and your head steers it (it stays put in you
 the release clicks; held still for half a second, it's a real press that your head drags
 ("gazekey left|right 1|0" to the helper; by default Meta+J and Meta+K, DEFAULT_KEY_BINDINGS),
 gaze_quickcal = the gaze service's one-dot check ("quickcal" to @ft_gazed), sens_up, sens_down,
-layout_reset = put the desktop screens back in their saved layout, screens_toggle = hide or show the desktop screens,
+layout_reset = open the profile in use again, or put the desktop screens back in their layout (ft-layout reset), screens_toggle = hide or show the desktop screens,
 keyboard_toggle = open or close Frametop's keyboard, float_toggle = float the desktop window under the
 pointer (else the active one) in VR, or put it back if it floats, dock_all = put every floating
 window back (both to ft-floatd, @frametop_float), spin_next and spin_prev = turn every panel in the
@@ -66,12 +66,18 @@ Typing on a keyboard sends the helper "typing" (at most 4 times a second): it ta
 pinches right after a key, since typing touches thumb to index like a pinch.
 
 Keys also go to ft-screens (@ft_screens, the Frametop desktop's compositor), which
-types them into the desktop screen that has focus: from pass-through keyboards, and
-keys a pointer device passes through. Typing goes to the panel clicked last, and
-ft-screens says which ("keyboard desktop|steam" on the control socket, every second).
-While it's the desktop, pass-through keyboards are grabbed, so gamescope, which reads
-every keyboard itself, doesn't type them into its focused app too. Without word from
-ft-screens for 3 seconds they're released. With SHARE_KEYS=1 in ~/.config/frametop.conf,
+types them into the desktop screen that has focus: from pass-through keyboards, a USB or
+Bluetooth keyboard's media keys (its Consumer Control node, which has volume keys, so it's
+never grabbed and gamescope has them too), and keys a pointer device passes through. In
+pointer mode a mouse button passed through as a key (BTN_MOUSE..BTN_TASK, a side button for
+Back) goes there too, and ft-screens gives it the screen the pointer is on, not the one
+typing goes to (it releases the button itself when the pointer leaves the screens, they
+hide, or Frametop pauses). Other buttons and keys from KEY_OK up don't go there.
+Typing goes to the panel clicked last, and ft-screens says which ("keyboard
+desktop|steam" on the control socket, every second). While it's the desktop,
+pass-through keyboards are grabbed, so gamescope, which reads every keyboard itself,
+doesn't type them into its focused app too. Without word from ft-screens for 3 seconds
+they're released. With SHARE_KEYS=1 in ~/.config/frametop.conf,
 a grabbed keyboard's keys also go out as "key <code> <value> <device name>" datagrams on
 @frametop_keys, for programs that watch every keyboard for a hotkey and lose it to the grab.
 It's off by default: any local process that binds that name first gets every key typed
@@ -85,7 +91,7 @@ default: only while no pass-through keyboard is connected; a program's uinput ke
 doesn't count), "button" (only the keyboard_toggle action opens it), or "never"
 (keyboard_toggle does nothing either). With "vr_keyboard_persist" (the default), it stays
 open when the text field loses focus, until its Close key, keyboard_toggle, or a layout reset
-(ft-layout apply) closes it.
+(ft-layout reset) closes it.
 
 Volume keys, from every device that has them (the headset's own buttons included),
 are handled here: wpctl steps the default output. Nothing else may see a volume key,
@@ -153,6 +159,7 @@ KEY_A = 30
 REL_X, REL_Y, REL_WHEEL, REL_MAX = 0x00, 0x01, 0x08, 0x0F
 SCROLLS = {0x06, REL_WHEEL, 0x0B, 0x0C}  # REL_HWHEEL, REL_WHEEL and their _HI_RES
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA = 0x110, 0x111, 0x112, 0x113, 0x114
+BTN_MOUSE, BTN_TASK = 0x110, 0x117  # mouse buttons, the first and the last
 KEY_LEFTMETA, KEY_RIGHTMETA = 125, 126
 KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
 # Volume keys are remapped to KEY_MACRO28, KEY_MACRO29 and KEY_MACRO30: above 255, so X11
@@ -498,6 +505,10 @@ class Pointer:
         self.pending = 0
         self.pending_since = 0.0
         self.gaze_awake_until = 0.0  # the helper's gaze mode keeps the pointer until then
+        # Driver buttons this pointer pressed and hasn't released (trigger, b, x, joystick: the
+        # left, right, middle and back actions, from a mouse button, a mapped controller button
+        # or a key combination): pausing drops releases, so stand_down has to send them itself.
+        self.driver_down = set()
 
     def send(self, command, droppable=False):
         """To the helper, in order, without blocking. While the helper doesn't keep up (place and
@@ -607,6 +618,10 @@ class Pointer:
             self.wake(now)
             self.flush()
             self.send(f"btn {driver} {value}")
+            if value == 1:
+                self.driver_down.add(driver)
+            else:
+                self.driver_down.discard(driver)
         elif value != 1:
             return  # the rest act on press
         elif name in ("scroll_up", "scroll_down"):
@@ -643,7 +658,7 @@ class Pointer:
                 pass  # ft-screens not running
         elif name == "layout_reset":
             # Runs a few seconds and borrows the pointer; ft-layout refuses a second copy.
-            subprocess.Popen([FT_LAYOUT, "apply"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            subprocess.Popen([FT_LAYOUT, "reset"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
             log("layout reset")
         elif name in ("sens_up", "sens_down"):
@@ -706,18 +721,39 @@ class Pointer:
         return wait
 
     def stand_down(self):
-        """Frametop is pausing: a pulse under way ends now, and the pointer lets go."""
+        """Frametop is pausing: a pulse under way ends now, and the pointer lets go.
+
+        A click held into the pause (driver_down) comes up here, since pausing drops its
+        release; otherwise the driver keeps the button down and the virtual controller
+        reconnects with it pressed on resume. Gaze holds (gazekey, gazedrag, precision) aren't
+        tracked here: the helper ends them itself when the pointer hides.
+
+        The releases go before "hide", and "hide" follows them even when the pointer was off
+        already (the idle timeout or pointer_toggle with a button held): a helper built before
+        releases stopped waking it would wake on one and connect the virtual controller
+        during the game.
+
+        Not covered: gaze mode's held-back press (the helper's aim, before it becomes a real
+        press) turns into a click on its release. The helper drops it without a click when it
+        reads "hide" in the same loop as the release, as it normally does. If its socket was
+        full, the rest of these wait in the queue (send), "hide" can land a loop later, and
+        that press clicks once as the pause starts."""
+        releases = [f"btn {driver} 0" for driver in sorted(self.driver_down)]
+        self.driver_down.clear()
         if self.system_release is not None:
-            self.send("btn system 0")
+            releases.append("btn system 0")
         if self.claim_release is not None:
-            self.send("btn a 0")
+            releases.append("btn a 0")
         if self.scroll_until is not None:
-            self.send("scroll 0 0")
+            releases.append("scroll 0 0")
+        for command in releases:
+            self.send(command)
         self.system_at = self.system_release = self.claim_at = self.claim_release = self.scroll_until = None
         self.dx = self.dy = self.pending = 0
         self.gaze_awake_until = 0.0
-        if self.active:
+        if self.active or releases:
             self.send("hide")
+        if self.active:
             self.active = False
             log("pointer off (paused)")
 
@@ -896,9 +932,22 @@ def main():
         if not focused:
             if not state["rules"].get("vr_keyboard_persist", True):
                 vr_keyboard("hide")  # ft-screens closes it only if it opened it for a text field
-        elif mode == "always" or (mode == "no_keyboard" and not any(
-                n.candidate and n.is_keyboard and n.role == "passthrough" and not n.uinput for n in nodes.values())):
+            return
+        keyboards = sorted({n.name for n in nodes.values()
+                            if n.candidate and n.is_keyboard and n.role == "passthrough" and not n.uinput})
+        if mode == "always" or (mode == "no_keyboard" and not keyboards):
             vr_keyboard("show")
+            why = "asking ft-screens to open Frametop's keyboard"
+        elif mode == "no_keyboard":
+            why = (f"not opening Frametop's keyboard: a keyboard is connected ({', '.join(keyboards)}), "
+                   "and the Keyboard setting opens it only without one")
+        else:
+            why = f"not opening Frametop's keyboard (Keyboard setting: {mode})"
+        # For bug reports (scripts/report.sh): once per decision, again after 30 s.
+        now = time.monotonic()
+        if why != state.get("text_field_said") or now - state.get("text_field_said_at", 0.0) > 30:
+            log(f"text field focused: {why}")
+            state["text_field_said"], state["text_field_said_at"] = why, now
 
     def do_action(action, value, now, source="mouse"):
         """A mapped mouse or controller button, or key combination (pointer mode only, but
@@ -1019,9 +1068,14 @@ def main():
 
     screens_down = set()  # keys the desktop was told went down and not yet up (see reconcile_desktop_keys)
 
-    def to_screens(code, value):
-        """A key for the desktop screens (ft-screens decides whether it types)."""
-        if value in (0, 1) and code < BTN_MISC:
+    def to_screens(code, value, button=False):
+        """A key for the desktop screens (ft-screens decides whether it types): one below
+        BTN_MISC, or with button, a mouse button (BTN_MOUSE..BTN_TASK), which ft-screens gives
+        the screen the pointer is on. Nothing else (gamepad, joystick, digitizer buttons, keys
+        from KEY_OK up), but the release of anything the desktop has down."""
+        if value not in (0, 1):
+            return
+        if code < BTN_MISC or (button and BTN_MOUSE <= code <= BTN_TASK) or (not value and code in screens_down):
             try:
                 screens_sock.sendto(f"key {code} {value}".encode(), SCREENS)
             except OSError:
@@ -1281,9 +1335,12 @@ def main():
     vr_bind(time.monotonic())  # a helper that's already running keeps its buttons in step
     waiting = False  # a keyboard's grab waits for its keys to come up
     # A relay that went away with a key down left it down on the desktop, where this one
-    # never sent it: modifiers come up there now (a release of a key that isn't down is nothing).
+    # never sent it: modifiers and mouse buttons come up there now (a release of a key that
+    # isn't down is nothing).
     for code in sorted(MODIFIERS):
         to_screens(code, 0)
+    for code in range(BTN_MOUSE, BTN_TASK + 1):
+        to_screens(code, 0, button=True)
     while True:
         now = time.monotonic()
         pointer = state["pointer"]
@@ -1372,6 +1429,12 @@ def main():
                     volume.key(fd, code, value, now)
                     continue
                 if node.role == "volume":
+                    # A keyboard's media keys (its Consumer Control node) go to the desktop like a
+                    # pass-through keyboard's, and nowhere else: the node isn't grabbed, so gamescope
+                    # and SteamVR have them already. Not platform buttons: the headset's click button
+                    # is KEY_SELECT on gpio-keys (BUS_HOST). Nor a volume key a remap missed.
+                    if etype == EV_KEY and node.bus in (BUS_USB, BUS_BLUETOOTH) and code not in VOLUME_CODES:
+                        to_screens(code, value)
                     continue
                 if node.role != "pointer":
                     # Observed only, unless typing goes to the desktop. Key combinations work on
@@ -1406,7 +1469,11 @@ def main():
                         continue
                     target = mouse if code >= BTN_MISC else keyboard
                     target.emit(etype, code, value)
-                    to_screens(code, value)
+                    # A mouse button goes to the desktop only when pointer mode passes it through
+                    # as a key (a side button for Back there). The rest, like every click with
+                    # POINTER=0 or paused, reach the desktop through a laser, if at all. (A
+                    # key-mapped button still goes to the virtual mouse too.)
+                    to_screens(code, value, button=bool(pointer))
                     if value:
                         node.held.add(code)
                     else:

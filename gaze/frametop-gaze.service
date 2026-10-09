@@ -8,8 +8,8 @@ PartOf=steamvr.service
 Requisite=steamvr.service
 
 [Service]
-# Host Python; it runs ft-gaze in the dev container (distrobox enter), which quits when
-# the service's pipe to it closes.
+# Host Python; it runs ft-gaze in the container it was built in (scripts/in-box), which
+# quits when the service's pipe to it closes.
 ExecStart=/usr/bin/python3 @REPO@/gaze/ft-gazed
 Restart=on-failure
 RestartSec=3

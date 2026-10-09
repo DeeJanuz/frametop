@@ -1,0 +1,109 @@
+# Frametop runtime image (see pack/README.md).
+#
+# One image that holds everything Frametop needs: the frozen toolchain and C
+# libraries, its native binaries, and its locked Python environment. A given
+# image tag always behaves the same, on a PC and on the Frame.
+#
+# setup/dev-container.sh stays the source of truth for the package list on the
+# Frame's dev container; the list below freezes the runtime-relevant subset of
+# it plus the toolchain (the binaries are built in this image). Keep the two in
+# sync on purpose: dev-container.sh documents *why* each package is there.
+FROM registry.fedoraproject.org/fedora-toolbox:44@sha256:034cb7c472038e2d879ddc19568106a1342aa24403f0d641a0f73dda638707ad
+
+# Toolchain (the binaries are built in here) and the libraries they link.
+RUN dnf -y install --setopt=install_weak_deps=False \
+      gcc gcc-c++ make pkgconf-pkg-config curl unzip just git cmake ninja-build \
+      pipewire-devel libxkbcommon-devel libinput-devel systemd-devel dbus-devel \
+      libdrm-devel mesa-libgbm-devel wayland-devel vulkan-loader-devel \
+      vulkan-headers plasma-wayland-protocols wlroots-devel pixman-devel \
+      libstdc++-static glibc-static jsoncpp-devel zstd \
+      # remote displays (stream/): moonlight-embedded's libgamestream and
+      # moonlight-common-c, and the host's sound (Opus, PulseAudio)
+      openssl-devel libcurl-devel expat-devel libuuid-devel json-devel \
+      opus-devel pulseaudio-libs-devel \
+      # Frametop Input Settings (Kirigami, PySide6) and remote desktop (krdp):
+      # the KDE/Qt stack has no PyPI wheels, so it stays a dnf package
+      python3-pyside6 kf6-kirigami kf6-qqc2-desktop-style qt6-qtwayland \
+      breeze-icon-theme plasma-breeze krdp freerdp tigervnc-x11-server xrandr \
+    && dnf -y remove 'glibc-langpack-*' \
+    && dnf -y install glibc-langpack-en \
+    && dnf clean all \
+    && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
+              /usr/share/wallpapers
+
+# uv, pinned and checked. Python dependencies come from the committed uv.lock,
+# not from whatever PyPI serves on build day.
+RUN curl -fsSL https://github.com/astral-sh/uv/releases/download/0.12.23/uv-aarch64-unknown-linux-gnu.tar.gz \
+      -o /tmp/uv.tar.gz \
+ && echo "6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f  /tmp/uv.tar.gz" | sha256sum -c \
+ && tar -xzf /tmp/uv.tar.gz --strip-components=1 -C /usr/local/bin \
+ && rm /tmp/uv.tar.gz
+
+# OpenVR's API library for linking, from the SDK tag the build scripts pin
+# (scripts/openvr.sh fetches the headers). The image has no SteamVR, so the
+# binaries link this copy; their rpath names SteamVR's folder first, so on the
+# Frame they load SteamVR's own libopenvr_api, as the on-device builds do.
+RUN install -d /opt/frametop/bin /opt/frametop/lib \
+ && curl -fsSL https://github.com/ValveSoftware/openvr/raw/v2.15.6/bin/linuxarm64/libopenvr_api.so \
+      -o /opt/frametop/lib/libopenvr_api.so \
+ && echo "cc3671d24dd23fb61494e8a8327cf4fe7f638a60508ff7225984a03f2f5947e9  /opt/frametop/lib/libopenvr_api.so" | sha256sum -c
+
+# Python: Fedora's own python3 (the digest-pinned base freezes it), with the
+# locked packages in a venv on top. The venv sees the system site-packages,
+# because PySide6 and Kirigami come from dnf for this python3: one interpreter
+# imports both, as in the dev container on the Frame. Rebuilt only when the
+# lockfile changes, so source edits below reuse this layer.
+# uv sync --frozen --group tracker: the default dev group (pytest/ruff for CI's
+# in-image tests) plus the tracker stack; the types group (mypy) stays out.
+# --no-cache keeps uv's download cache out of the image.
+ENV UV_PROJECT_ENVIRONMENT=/opt/frametop/venv UV_PYTHON=/usr/bin/python3 UV_PYTHON_DOWNLOADS=never
+COPY pyproject.toml uv.lock .python-version /src/frametop/
+RUN uv venv --system-site-packages /opt/frametop/venv \
+ && cd /src/frametop && uv sync --frozen --group tracker --no-cache \
+ && /opt/frametop/venv/bin/python -c 'import PySide6, numpy, cv2'
+
+# The sources, then the binaries, built by the same build scripts as on the
+# Frame (FRAME_IN_BOX=1: they run here instead of entering the dev container).
+# Each program stays in its build/ folder in /src/frametop and is copied to
+# /opt/frametop. Hand tracking is deferred exactly as in install.sh: it builds
+# ncnn from source and isn't needed until hands/run.sh install runs.
+COPY . /src/frametop
+WORKDIR /src/frametop
+ENV FRAME_IN_BOX=1 OPENVR_LIB=/opt/frametop/lib
+RUN screens/build.sh \
+ && install -t /opt/frametop/bin screens/build/ft-screens screens/build/ft-handtest
+RUN pointer/helper/build.sh && pointer/driver/build.sh \
+ && install -t /opt/frametop/bin pointer/helper/build/ft-pointer \
+ && install -t /opt/frametop/lib pointer/driver/build/driver_ft_pointer.so
+RUN gaze/build.sh \
+ && install -t /opt/frametop/bin gaze/build/ft-gaze gaze/build/ft-gazepanel
+RUN power/build.sh \
+ && install -t /opt/frametop/bin power/build/ft-powerd
+RUN stream/build.sh \
+ && install -t /opt/frametop/bin stream/build/ft-stream
+# Our own eye tracker: ft-eyegrab (it runs on the host, as root) and ft-eyes'
+# build/venv, which here only points at the venv above.
+RUN gaze/tracker/build.sh \
+ && install -t /opt/frametop/bin gaze/tracker/build/ft-eyegrab
+
+# A release installs from this image (pack/install-release.sh): it copies
+# /src/frametop, built, to the Frame for its host side (services, the driver,
+# the desktop's scripts), and its install.sh installs this distrobox (1.8.2.5,
+# as a source install clones it, here by commit) to run the image as the
+# container those programs start in (scripts/in-box).
+RUN git init -q pack/build/distrobox \
+ && cd pack/build/distrobox \
+ && git fetch -q --depth 1 https://github.com/89luca89/distrobox.git 40c3cd724faa434aeb0a23e28776665b92de68bd \
+ && git checkout -q FETCH_HEAD \
+ && rm -rf .git
+# Programs built against OpenVR look for SteamVR's library here first. In the
+# container on the Frame, distrobox mounts the host at /run/host; elsewhere the
+# link leads nowhere and they use /opt/frametop/lib's.
+RUN ln -s /run/host/opt/steamvr /opt/steamvr
+
+# The default environment: Frametop's binaries and the venv's python3 (Fedora's
+# interpreter, with the locked packages and the dnf Qt stack) first.
+# sleep infinity as the default command keeps the image usable with distrobox
+# create, like the toolbox base.
+ENV PATH=/opt/frametop/venv/bin:/opt/frametop/bin:/usr/local/bin:/usr/bin:/usr/sbin
+CMD ["sleep", "infinity"]

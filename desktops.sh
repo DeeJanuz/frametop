@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Start, stop, or inspect the multi-screen Plasma desktop in VR on the Frame.
 # Usage: desktops.sh start [screens] | stop | restart | status | log [lines]
-#        desktops.sh install     # make the VR launcher's "Desktop" entry start Frametop
+#        desktops.sh install     # make the VR launcher's "Desktop" entry start Frametop, and add
+#                                # "Native Desktop" for the stock SteamOS desktop
 #        desktops.sh uninstall   # give the launcher back the stock SteamOS desktop
 #        desktops.sh screens N   # set the default screen count in ~/.config/frametop.conf
 #        desktops.sh remote on|off|info  # VNC access over the tailnet (applies on next start)
@@ -16,6 +17,8 @@ action=${1:-start}
 screens=${2:-${FT_SCREENS:-}}
 session=$FRAME_REPO/session
 override=.local/share/applications/deckard-nested-desktop.desktop
+native_copy=.local/share/applications/native-deckard-nested-desktop.desktop
+stock=/usr/share/applications/deckard-nested-desktop.desktop
 log=/tmp/frametop-session.log
 # Bracketed first letter so pgrep/pkill never match the ssh shell running them.
 match='[v]r-overlay-key frametop '
@@ -35,15 +38,23 @@ systemd-run --user --collect --quiet --unit frametop-desktop \
 sleep 12; echo \"plasmashell processes: \$(pgrep -c plasmashell)\"
 $running && echo 'started' || { echo 'failed:'; tail -20 $log; exit 1; }" ;;
   install)
+    # Also "Native Desktop", a copy of SteamOS's entry for its own desktop. Optional, so a SteamOS
+    # without the stock entry still installs. No X-Steam-Special, so Steam can only single out ours.
     "$root/scripts/sync.sh" >/dev/null
     "$frame" --host "set -e; mkdir -p ~/.local/share/applications
 sed 's|@SESSION@|$session/frametop-session.sh|' $session/deckard-nested-desktop.desktop > ~/$override
+if [ -r $stock ]; then
+  sed -e 's/^Name=.*/Name=Native Desktop/' -e '/^Name\\[/d' -e '/^X-Steam-Special=/d' -e '/pick this out/d' \\
+    $stock > ~/$native_copy.new && mv ~/$native_copy.new ~/$native_copy
+else
+  rm -f ~/$native_copy; echo 'no $stock: no Native Desktop entry' >&2
+fi
 [ -f ~/.config/frametop.conf ] || cp $session/frametop.conf.example ~/.config/frametop.conf
 echo \"installed ~/$override\"; grep ^Exec= ~/$override; echo; cat ~/.config/frametop.conf" ;;
   uninstall)
     # Also what the session puts in place at each start: Launch as Standalone's app copies and
     # the title bar decoration (float/ft_apps.py, decoration/).
-    "$frame" --host "rm -f ~/$override
+    "$frame" --host "rm -f ~/$override ~/$native_copy
 rm -rf ~/.local/share/frametop/apps ~/.local/share/kwin/decorations/kwin4_decoration_qml_frametop
 rmdir ~/.local/share/frametop 2>/dev/null; echo 'removed; the launcher uses the stock desktop again'" ;;
   screens)

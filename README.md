@@ -13,11 +13,13 @@ Two settings apps come with it: Frametop Display Settings for the screens, profi
 
 Frametop is an independent project, not made by or affiliated with Valve.
 
+Frametop's home is [Frametop/frametop](https://github.com/Frametop/frametop): the install command clones it, and its releases are built there. Issues and pull requests go to [DeeJanuz/frametop](https://github.com/DeeJanuz/frametop), the upstream it mirrors.
+
 Join the [Frametop Discord](https://discord.gg/W3X9f7z3Bc) for questions, ideas, and help with your setup.
 
 ## Install on the headset
 
-> **Frametop doesn't work on the SteamOS beta right now.** On the beta (SteamOS 0.4.3), gaze mode can't read the eye tracker, and the desktop has started without its taskbar ([#15](https://github.com/DeeJanuz/frametop/issues/15)). Use the stable SteamOS release until this note is gone.
+> **SteamOS 0.4:** SteamOS 0.4 moved the eye tracker's data that gaze mode reads. This version of Frametop reads both SteamOS 0.3's and 0.4's, and it's tested on 0.4.5. Run `scripts/doctor.sh` after the update: it says whether the eye tracker's layout is one Frametop knows. It also says whether the update deleted the Bluetooth fixes or our eye tracker's frame grabber, which happens when they were installed by Frametop 0.3.0-exp.3 or older. Reinstall what it names (`setup/bluetooth/install.sh install`, `gaze/tracker/install.sh`). From then on they're kept through updates.
 
 You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or the on-screen one), and about 3 GB of free space.
 
@@ -26,14 +28,16 @@ You need a Steam Frame with an internet connection, a keyboard (Bluetooth, or th
 3. Run:
 
    ```
-   curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash
+   curl -fsSL https://frametop.github.io/frametop/get.sh | bash
    ```
 
-   It asks which version you want: stable (the `main` branch, tested releases) or experimental (the `experimental` branch, the newest features, less tested). Then it clones the repo into `~/frametop` and runs `install.sh`. To choose without the question, add `-s -- --stable` or `-s -- --experimental` after `bash`. By hand, the same is `git clone https://github.com/DeeJanuz/frametop.git ~/frametop`, then `cd ~/frametop` and `./install.sh` (add `--branch experimental` to the clone for experimental).
+   It asks which version you want: stable (the `main` branch, tested releases) or experimental (the `experimental` branch, the newest features, less tested). Then it clones the repo into `~/frametop` and runs `install.sh`. To choose without the question, add `-s -- --stable` or `-s -- --experimental` after `bash`. By hand, the same is `git clone https://github.com/Frametop/frametop.git ~/frametop`, then `cd ~/frametop` and `./install.sh` (add `--branch experimental` to the clone for experimental).
+
+   The third and fourth choices, stable release and experimental release, download Frametop already built (`Frametop.zip`, about 1.1 GB, from the [releases](https://github.com/Frametop/frametop/releases)) and install it without compiling anything. `-s -- --release` picks the stable release without the question, and `-s -- --release --experimental` the experimental one.
 
    The installer sets up distrobox in your home folder (the system files aren't touched), a Fedora build container, and everything else. The first run downloads 1–2 GB. It asks you four things along the way: whether to install gaze mode (experimental, yes by default), our own eye tracker for it (yes by default), and the Bluetooth fixes, then whether to restart SteamVR. The eye tracker and the Bluetooth fixes need your `sudo` password; if you've never set one, run `passwd` first, or skip them for now. SteamVR has to restart once at the end, which closes everything open in VR, including the terminal. Rebooting the headset works too.
 
-After the restart, Launch a program → Desktop opens the multi-screen desktop, with its screens arranged around where you're facing. Frametop Display Settings and Frametop Input Settings are in the desktop's application menu, under Settings.
+After the restart, Launch a program → Desktop opens the multi-screen desktop, with its screens arranged around where you're facing. Frametop Display Settings and Frametop Input Settings are in the desktop's application menu, under Settings. SteamOS's own single-screen desktop is still there, as Native Desktop in the same list.
 
 If you work in the desktop for long stretches, or leave the headset on a stand, open Frametop Display Settings → Power. Turn on Stay awake while plugged in: by default Steam puts the Frame to sleep after an hour without input, even while it charges. And choose when the displays turn off while the headset isn't used. SteamVR turns them off a few seconds after you take the headset off, but a stand or mount that covers the proximity sensor inside it makes the headset seem worn, and its displays stay on all night.
 
@@ -133,7 +137,7 @@ With the displays off, the headset keeps tracking and rendering, so it uses abou
 
 ## Known limitations
 
-This is an early release, tested on one Steam Frame (SteamOS 0.3.0 build 20260922, SteamVR 2.17.10).
+This is an early release, tested on one Steam Frame (SteamOS 0.4.5 build 20261007, SteamVR 2.18.2; before that SteamOS 0.3.0 build 20260922, SteamVR 2.17.10).
 
 - A SteamOS or SteamVR update can break parts of it until Frametop catches up. After an update, run `cd ~/frametop && scripts/doctor.sh` in a terminal. It checks what Frametop needs from SteamOS, and says what changed since the versions you last marked as working and what to try. Once everything works, `scripts/doctor.sh --mark-good` records the versions. If something stops working, please report it.
 - The first install downloads 1–2 GB for the build container and compiles everything on the headset, which takes several minutes.
@@ -157,14 +161,18 @@ In a terminal on the headset, run:
 cd ~/frametop && scripts/report.sh
 ```
 
-This writes `frametop-report-<date>.txt` with version numbers, service states, settings, and recent logs. Bluetooth addresses and the headset's serial number are masked. Then [open an issue](https://github.com/DeeJanuz/frametop/issues), describe what you did, what you expected, and what happened, and attach the file. Quick questions can go to [Discord](https://discord.gg/W3X9f7z3Bc) instead.
+From a release, start in `~/.local/share/frametop/releases/current` instead of `~/frametop`.
+
+This writes `frametop-report-<date>.txt` with version numbers, service states, settings, Frametop's keyboard and the Steam menu, and recent logs. Bluetooth addresses and the headset's serial number are masked.
+
+If the problem is something you can make happen, like a window that won't drag or a keyboard that doesn't open, run `scripts/report.sh --watch` instead. After the usual report it records for 60 seconds (`--watch 120` for longer) while you make it happen in the headset. It notes when the Steam menu opens and closes, which laser drags what, where typing goes, and when Frametop's keyboard opens or why it doesn't. It takes up to half a minute, because it also checks gaze mode: it starts the gaze service for a moment to see whether the eye tracker sends. If gaze or its calibration doesn't work, run it while you wear the headset. `scripts/gaze-report.py` prints only the gaze part, with what looks wrong first. Then [open an issue](https://github.com/DeeJanuz/frametop/issues), describe what you did, what you expected, and what happened, and attach the file. Quick questions can go to [Discord](https://discord.gg/W3X9f7z3Bc) instead.
 
 ## Update
 
 Run the same command again. It updates `~/frametop` to the latest of the version you have (or switches, if you pick the other one) and installs it:
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/get.sh | bash
+curl -fsSL https://frametop.github.io/frametop/get.sh | bash
 ```
 
 Or by hand: `cd ~/frametop && git pull && ./install.sh`.
@@ -174,12 +182,12 @@ Or by hand: `cd ~/frametop && git pull && ./install.sh`.
 In a terminal on the headset, run:
 
 ```
-curl -fsSL https://deejanuz.github.io/frametop/uninstall.sh | bash
+curl -fsSL https://frametop.github.io/frametop/uninstall.sh | bash
 ```
 
 It works in two steps, so it never takes away the keyboard, mouse, or desktop you're using while it runs:
 
-1. It stops Frametop from starting. Launch a program → Desktop opens the stock desktop again, and Frametop's services, its SteamVR driver, its menu entries, and the system files of our eye tracker and the Bluetooth fixes are removed (those need your `sudo` password). Everything running now keeps running until you restart the headset, and it offers to restart it for you.
+1. It stops Frametop from starting. Launch a program → Desktop opens the stock desktop again, and the Native Desktop entry, Frametop's services, its SteamVR driver, and its menu entries are removed, along with the system files of our eye tracker and the Bluetooth fixes and the file capabilities of hand tracking's camera broker (those need your `sudo` password). Everything running now keeps running until you restart the headset, and it offers to restart it for you.
 2. After the restart, run the same command again. It deletes the code in `~/frametop`, and asks whether to delete your settings, any eye or hand recordings, and the build container (1–2 GB) too.
 
 To see what it would do without changing anything, add `-s -- --dry-run` after `bash`. If the code isn't in `~/frametop`, add `-s -- --dir <folder>`. From the repo, the same script is `./uninstall.sh`.
@@ -194,7 +202,7 @@ A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland com
 
 | Folder | What it is |
 | --- | --- |
-| `get.sh` | The one-line installer: picks stable or experimental, clones or updates the repo, and runs `install.sh`. |
+| `get.sh` | The one-line installer: picks stable or experimental, clones or updates the repo, and runs `install.sh`; or installs a built release (`--release`). |
 | `install.sh` | The one-step installer. Safe to re-run. |
 | `uninstall.sh` | The uninstaller: run it, restart the headset, and run it again. It doesn't need the rest of the repo. |
 | `desktops.sh` | Start, stop, and configure the desktop, and install the input relay. |
@@ -212,6 +220,10 @@ A Plasma session runs nested inside ft-screens (`screens/`), a small Wayland com
 | `remote/` | Frametop Remote Access, the app that turns remote desktop over VNC on and off. |
 | `setup/` | The build container and the Bluetooth fixes. See [setup/README.md](setup/README.md). |
 | `scripts/` | Helpers the installers use. They run commands locally on the Frame, or over SSH from a PC. |
+
+## Packaging
+
+`pack/` builds Frametop as an OCI image: the toolchain, the native binaries, and the locked Python environment (via [uv](https://docs.astral.sh/uv/)), built and tested by GitHub Actions. It is the groundwork for installing Frametop without building anything on the headset. No installer uses it yet. For development, `./ft dev build` builds the image and `./ft dev test` runs the tests inside it. [pack/design.md](pack/design.md) explains why an image and what is still open, and [pack/README.md](pack/README.md) documents the image itself.
 
 ## Developing from a PC
 

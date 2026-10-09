@@ -23,6 +23,12 @@ done
 [ $# -gt 0 ] || { echo "usage: $0 [--host] [-C subdir] command [args...]" >&2; exit 2; }
 dir=$FRAME_REPO${sub:+/$sub}
 
+# Already in the build container (FRAME_IN_BOX=1, the image build): no distrobox to enter.
+if [ "${FRAME_IN_BOX:-0}" = 1 ] && [ "$on_host" = 0 ]; then
+  cd "$dir"
+  exec bash -lc "$*"
+fi
+
 # distrobox is called by its full path: ~/.bashrc on the Frame returns early for
 # non-interactive shells, so ~/.local/bin isn't on PATH. distrobox enter keeps the cwd.
 if [ "$FRAME_LOCAL" = 1 ]; then
@@ -30,7 +36,7 @@ if [ "$FRAME_LOCAL" = 1 ]; then
   if [ "$on_host" = 1 ]; then
     exec bash -c "$*"
   fi
-  "$REPO_ROOT/scripts/container-up.sh"  # in a scope of its own, not this shell's session
+  "$REPO_ROOT/scripts/container-up.sh" "$FRAME_BOX"  # in a scope of its own, not this shell's session
   exec "$HOME/.local/bin/distrobox" enter "$FRAME_BOX" -- bash -lc "$*"
 fi
 
@@ -40,5 +46,5 @@ if [ "$on_host" = 1 ]; then
   exec ssh "${tty[@]}" "$FRAME_HOST" "cd $(printf %q "$dir") && $*"
 else
   exec ssh "${tty[@]}" "$FRAME_HOST" \
-    "$(printf %q "$FRAME_REPO")/scripts/container-up.sh; cd $(printf %q "$dir") && ~/.local/bin/distrobox enter $(printf %q "$FRAME_BOX") -- bash -lc $(printf %q "$*")"
+    "$(printf %q "$FRAME_REPO")/scripts/container-up.sh $(printf %q "$FRAME_BOX"); cd $(printf %q "$dir") && ~/.local/bin/distrobox enter $(printf %q "$FRAME_BOX") -- bash -lc $(printf %q "$*")"
 fi
