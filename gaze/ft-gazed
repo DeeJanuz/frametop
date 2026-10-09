@@ -106,7 +106,8 @@ Control socket: abstract unix datagram "@ft_gazed":
   fivecheck                        the five-dot check now (it otherwise follows a quick check
                                    that didn't fix the tracker)
   calaccept | calquit              from the pointer helper while the panel is up: take this dot
-                                   now (a left click, Meta+J) | close it (a right click, Meta+K)
+                                   now (a left click, Meta+J, or a gaze precision or gaze drag
+                                   press) | close it (a right click, Meta+K)
 
 Options: --source action|mmap1|mmap2 (the older one-source path with that source, whatever
 the settings say; set 2 was a little quieter in the probe, but loses the pointer whenever
@@ -944,6 +945,8 @@ class Service:
                     self.on_control()
                 elif key.data == "checks":
                     self.checks.on_readable()
+                elif key.data == "eyes_reply":
+                    self.checks.on_eyes_reply(key.fileobj)
                 elif key.data == "panel" and self.checks.panel_proc:
                     self.checks.read_panel()
                 elif key.data == "own":
