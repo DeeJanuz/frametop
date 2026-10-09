@@ -6,8 +6,9 @@
 #     isn't here (checked against its SHA-256 first).
 #  2. Frametop's build of Vibepollo's sunshine.exe (github.com/Frametop/frametop-vibepollo):
 #     it can stream any of your monitors (not only the main one), keeps your monitor layout
-#     when a virtual display goes away, and doesn't stall the Web UI. Checked against its
-#     SHA-256; the original is kept as sunshine.exe.2.0.0-original.
+#     when a virtual display goes away, turns an HDR monitor's HDR off while Frametop streams
+#     it (back on after), and doesn't stall the Web UI. Downloaded from its release and
+#     checked against its SHA-256; the original is kept as sunshine.exe.2.0.0-original.
 #  3. Settings Frametop needs (the rest of Vibepollo's settings stay as they are): remote
 #     displays carry the PC's sound, and a virtual display goes away when Frametop
 #     disconnects it, but stays through a dropped stream.
@@ -33,12 +34,13 @@ $VibepolloVersion = "2.0.0"
 $SetupUrl = "https://github.com/Nonary/Vibepollo/releases/download/2.0.0/VibepolloSetup-v2.0.0.exe"
 $SetupSha = "7B3500EC0C774644CE5A435A48F61C046C48494D0F18B67AFA0B3561931794B7"
 $OriginalSha = "2CC018FD92DDB4D3748D91D8DA25316909ED45DB3710D1FF278BD73D51EB00C1"  # its sunshine.exe
-# Frametop's build: Frametop/frametop-vibepollo branch frametop/2.0.0 at a84b6cfc (its CI).
-$BuildSha = "6AF4F34503C7F6F84D1F6967D9FCEFAF2BD8145B34044C992B5E26A614E37A91"
-$BuildUrl = ""  # not published yet
+# Frametop's build: Frametop/frametop-vibepollo release frametop-2.0.0-1 (its CI, from the tag).
+$BuildSha = "57EECCF9CA6ECEC4F0C5AEBBB27AAFE711A700C9E0986601344A52682856E94E"
+$BuildUrl = "https://github.com/Frametop/frametop-vibepollo/releases/download/frametop-2.0.0-1/sunshine.exe"
 # Earlier Frametop builds, replaced by this one like the original is.
 $OlderBuildShas = @(
     "B5B7D2E7353454AEA6D895D0B68DE235E4CC581684C9DD44F8EFAF2E872F517F"  # 2f032252, built by hand without WebRTC
+    "6AF4F34503C7F6F84D1F6967D9FCEFAF2BD8145B34044C992B5E26A614E37A91"  # a84b6cfc, CI, before the HDR-off guard
 )
 $Settings = [ordered]@{
     "remote_monitor_mute_audio"                      = "disabled"
