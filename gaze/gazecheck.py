@@ -487,9 +487,10 @@ class Checks:
         if time.monotonic() - self.sample_at > 2:
             return "error the headset is off or the eye tracker isn't sending"
         now = time.monotonic()
+        ignore = None if self.svc.one_eye is None else 1 - self.svc.one_eye  # the eye SteamVR ignores
         self.check = {"kind": "fit", "reason": reason, "own": False, "dots": [], "i": 0, "started": now, "shown": now,
                       "run": [], "accept": False, "done_at": None, "tries": 0, "skipped": 0, "captured": 0,
-                      "points": {}, "fit": FitCheck(), "drawn": {}, "drawn_at": 0.0, "step": None}
+                      "points": {}, "fit": FitCheck(ignore=ignore), "drawn": {}, "drawn_at": 0.0, "step": None}
         log(f"fit check: {reason}")
         self.to_helper("calpanel 1")
         self.to_panel("show fit")
@@ -559,7 +560,8 @@ class Checks:
         if self.pending:
             self.run_pending()
         unc = (s["src"].get("mmap1") or {}).get("unc")
-        if unc and min(unc) <= EYE_LOST:
+        one = self.svc.one_eye
+        if unc and (min(unc) if one is None else unc[one]) <= EYE_LOST:
             self.seen_at = time.monotonic()
             if self.away and self.back_since is None:
                 self.back_since = self.seen_at
@@ -648,7 +650,8 @@ class Checks:
                 svc.weights["own"].add(miss)
         else:
             why = {}
-            steady = steady_samples(samples, why=why)
+            one = svc.one_eye
+            steady = steady_samples(samples, why=why, eye=one)
             rec["dropped"] = why
             reads = {}
             for name in ("action", "mmap1", "mmap2", "left", "right"):
@@ -656,11 +659,20 @@ class Checks:
                        if "hy" in (smp["src"].get(name) or {})]
                 if len(pts) >= 15:
                     reads[name] = (statistics.median(p[0] for p in pts), statistics.median(p[1] for p in pts))
+            if one is not None:
+                # SteamVR tracks one eye (gazecal.tracked_eye): the other's reading isn't where
+                # you look, and set 2's average has it in, so mmap2 is that eye's own (as ft-gazed
+                # sends it then).
+                reads.pop(("left", "right")[1 - one], None)
+                reads.pop("mmap2", None)
+                if ("left", "right")[one] in reads:
+                    reads["mmap2"] = reads[("left", "right")[one]]
             rec["reads"] = reads
-            main = ("left", "right") if svc.kind == "eyes" else (svc.source,)
+            main = (("left", "right") if one is None else (("left", "right")[one],)) if svc.kind == "eyes" else (svc.source,)
             if not all(n in reads for n in main):
                 ok = False
-                rec["reply"] = f"only {len(steady)} of {len(samples)} samples had both eyes"
+                rec["reply"] = f"only {len(steady)} of {len(samples)} samples had " + (
+                    "both eyes" if one is None else f"your {('left', 'right')[one]} eye")
             elif c["kind"] == "full":
                 for name, (hy, hp) in reads.items():
                     c["points"].setdefault(name, []).append((hy, hp, yaw - hy, pitch - hp))
@@ -680,7 +692,7 @@ class Checks:
                     svc.lives[name].add({"time": time.time(), "hy": hy, "hp": hp, "dy": yaw - hy, "dp": pitch - hp,
                                          "wy": 1.0, "wp": 1.0, "how": "check"}, svc.models[name], svc.mode)
                 rec["miss"] = miss
-                if svc.kind == "eyes":
+                if svc.kind == "eyes" and len(miss) == 2:  # (one eye tracked: nothing to weigh)
                     svc.weights["steam"].add(miss)
                 svc.dirty = True
         if not ok:

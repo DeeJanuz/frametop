@@ -34,6 +34,7 @@ gazecheck.SCREENS = f"\0{tag}_screens"
 gazecheck.PANEL_PROG = gazed.REPO / "nonexistent-panel"  # "isn't built": no panel
 gazed.IDLE_AFTER, gazed.WAKE_SETTLE = 1.0, 3.0
 gazed.read_settings = lambda: ("steam", "steam", "auto", 55.0)
+gazed.TrackedEye = lambda: lambda now=None: None  # both eyes, whatever SteamVR's settings say
 logs = []
 gazed.log = gazecheck.log = lambda msg: logs.append(msg)
 
