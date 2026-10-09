@@ -204,7 +204,7 @@ def main():
     with open(path, "w") as f:
         f.write(text)
     print(f"Wrote {path}")
-    print("Attach it to https://github.com/DeeJanuz/frametop/issues/2 with what you saw at each step.")
+    print("Attach it to https://github.com/Frametop/frametop/issues/2 with what you saw at each step.")
 
 
 if __name__ == "__main__":

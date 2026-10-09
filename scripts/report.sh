@@ -199,4 +199,4 @@ fi
 
 sed -i -E 's/([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}/xx:xx:xx:xx:xx:xx/g; s/cv\.[A-Z0-9]{8,}/cv.<serial>/g' "$out"
 echo "wrote $out"
-echo "Attach it to an issue at https://github.com/DeeJanuz/frametop/issues, with what you did, what you expected, and what happened."
+echo "Attach it to an issue at https://github.com/Frametop/frametop/issues, with what you did, what you expected, and what happened."
