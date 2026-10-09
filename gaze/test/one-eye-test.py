@@ -20,6 +20,7 @@ from fitcheck import FitCheck  # noqa: E402
 from gazecal import (  # noqa: E402
     Correction,
     EyeFallback,
+    EyeWeights,
     Fixation,
     TrackedEye,
     steady_samples,
@@ -141,6 +142,30 @@ svc.models["right"].samples = 9
 check("right eye only and calibrated: each eye's own", svc.kind, "eyes")
 svc.one_eye = None
 check("both eyes judged: the left needs a calibration too", svc.kind, "source")
+
+
+# Our own tracker sees both eyes whatever SteamVR tracks; only the blinks come from SteamVR.
+def feed_own(svc, n=90, right_open=0.8):
+    for i in range(n):
+        svc.on_eyes_sample({"t": i / 90, "src": {
+            "mmap1": {"unc": [0.02, 0.001], "open": [0.0, right_open]},
+            "own": {"hy": 5.0, "hp": 2.0, "eyes": [[4.0, 2.0], [6.0, 2.0]]}}}, True)
+
+
+svc = service(1)
+svc.tracker, svc.weights = "own", {"own": EyeWeights()}
+check("own tracker, right eye only: our tracker", svc.kind, "own")
+feed_own(svc)
+check("own tracker, right eye only: SteamVR's closed left doesn't drop our left",
+      (len(svc.sent), svc.counts["one_eye"], svc.counts["blinks"]), (90, 0, 0))
+svc = service(1)
+svc.tracker, svc.weights = "own", {"own": EyeWeights()}
+feed_own(svc, right_open=0.0)
+check("own tracker, right eye only: its blink drops both", (svc.sent, svc.counts["blinks"]), ([], 90))
+svc = service(None)
+svc.tracker, svc.weights = "own", {"own": EyeWeights()}
+feed_own(svc)
+check("own tracker, both eyes judged: SteamVR's closed left still drops it", svc.counts["one_eye"], 90)
 
 for p in paths:
     if os.path.exists(p):
