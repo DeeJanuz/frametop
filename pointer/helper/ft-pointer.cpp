@@ -227,8 +227,9 @@
 // drags again from there. Without gaze mode they work from wherever the pointer is.
 //   The gaze calibration panel (gaze/panel/ft-gazepanel, run by the gaze service): while
 // ft-gazed says it's up ("calpanel 1", renewed every second; it lapses 3 s after the last),
-// the dot hides and a press answers the panel instead of clicking: a left click or gaze_left
-// sends "calaccept" to @ft_gazed (take this dot now), a right click or gaze_right "calquit".
+// the dot hides and a press answers the panel instead of clicking: a left click, gaze_left, or
+// a gaze_precision or gaze_drag press sends "calaccept" to @ft_gazed (take this dot now), a right
+// click or gaze_right "calquit" (calpanel.h).
 //   POINTER_ROLE (right, left, or stylus): the hand role our device takes while connected. A
 // Frame controller in your hand counts as used through its touch sensors and takes its hand's
 // role back, and then no click lands (see "no hand role" in the main loop): with a controller
@@ -316,6 +317,7 @@
 // POINTER_ROLE (right): gaze precision and keyboard clicks, above.
 #include <openvr.h>
 
+#include "calpanel.h"
 #include "vrbuttons.h"
 #include "vrmath.h"
 
@@ -1485,14 +1487,12 @@ int main() {
                 }
             }
             if (Clock::now() < calPanelUntil) {
-                const bool accept = !std::strncmp(buf, "btn trigger 1", 13) || !std::strncmp(buf, "gazekey left 1", 14);
-                const bool quit = !std::strncmp(buf, "btn b 1", 7) || !std::strncmp(buf, "gazekey right 1", 15);
-                if (accept || quit) {
-                    SendTo(out, "ft_gazed", accept ? "calaccept" : "calquit");
+                const CalPanelAnswer answer = calPanelAnswer(buf);
+                if (answer == CalPanelAnswer::Accept || answer == CalPanelAnswer::Quit) {
+                    SendTo(out, "ft_gazed", answer == CalPanelAnswer::Accept ? "calaccept" : "calquit");
                     continue;
                 }
-                if (!std::strncmp(buf, "btn ", 4) || !std::strncmp(buf, "gazekey ", 8) ||
-                    !std::strncmp(buf, "precision ", 10) || !std::strncmp(buf, "gazedrag ", 9))
+                if (answer == CalPanelAnswer::Ignore)
                     continue;  // their releases, and the other buttons: nothing to click now
             }
             {
