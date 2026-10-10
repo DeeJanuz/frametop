@@ -6,6 +6,9 @@
 //     never sized its windows and drew them all into one canvas of at most 1920x1080.
 //   - KWin renders into DMA-BUFs and hands them to us (linux-dmabuf). We draw nothing:
 //     each buffer goes to SteamVR as the panel's texture (vr.cpp, ImportDmabuf).
+//     KWin 6.6 puts those pixels on a synchronized subsurface and leaves a 1x1
+//     single-pixel buffer on the toplevel. The panel shows the largest DMA-BUF in
+//     that tree, and wp_presentation is answered on the toplevel so KWin keeps drawing.
 //   - Pointer input from the panels (controller lasers, the 3D mouse) goes to KWin through
 //     our seat, as if we were a normal desktop. KWin's nested backend adds our surface
 //     coordinates to its output's logical position without undoing its own scale, and its
@@ -57,12 +60,18 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_shm.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
+#include <wayland-protocols/presentation-time-enum.h>
 
 #include "vr.h"
 #include "controller-click.h"
@@ -90,8 +99,12 @@ struct screen {
     int index;
     struct wlr_xdg_toplevel *toplevel;
     struct wlr_buffer *held;      // on the panel now; unlocked when the next one arrives
+    struct wlr_buffer *latest;    // this frame's output-layer DMA-BUF, locked until the toplevel commits
+    struct wlr_surface *latest_surface;
+    int64_t latest_area;
     bool frame_pending;           // a commit waits for its frame callback
     unsigned commits;             // buffers committed, and the last one's size ("toplevels")
+    uint64_t present_seq;         // wp_presentation sequence, one per toplevel commit
     int buffer_width, buffer_height;
     struct wlr_xdg_toplevel_decoration_v1 *decoration;  // answered on the first commit
     struct wl_listener commit, destroy, decoration_destroy, set_title;
@@ -118,7 +131,7 @@ struct server {
     struct wlr_keyboard keyboard;
     struct wlr_xdg_shell *xdg_shell;
     struct wlr_xdg_decoration_manager_v1 *decoration;
-    struct wl_listener new_toplevel, new_decoration;
+    struct wl_listener new_toplevel, new_decoration, new_surface;
     struct screen *screens[MAX_SCREENS];
     struct config config[MAX_SCREENS];
     double scale[MAX_SCREENS];  // KWin's scale for each screen (panel pixels per logical unit)
@@ -204,6 +217,66 @@ static void note_damage(struct screen *sc, struct wlr_surface *surface, struct w
     if (sc->big == all && t - oldest <= VIDEO_COMMITS * 1000 / VIDEO_HZ) sc->video_until = t + VIDEO_HOLD;
 }
 
+// The screen whose toplevel owns this surface, walking synchronized subsurfaces up.
+// KWin 6.6's output layer is one of those children.
+static struct screen *screen_for_surface(struct server *s, struct wlr_surface *surface) {
+    for (int n = 0; n < 8 && surface; ++n) {
+        for (int i = 0; i < MAX_SCREENS; ++i) {
+            struct screen *sc = s->screens[i];
+            if (sc && sc->toplevel->base->surface == surface) return sc;
+        }
+        struct wlr_subsurface *sub = wlr_subsurface_try_from_wlr_surface(surface);
+        surface = sub ? sub->parent : NULL;
+    }
+    return NULL;
+}
+
+// wlroots drops a synchronized child's current buffer again before the parent's commit
+// signal, so the layer's DMA-BUF is only visible in the child's own commit. Keep it.
+static void note_layer_buffer(struct screen *sc, struct wlr_surface *surface) {
+    if (surface == sc->toplevel->base->surface) return;
+    struct wlr_buffer *buffer = surface->current.buffer;
+    struct wlr_dmabuf_attributes attrs;
+    if (!buffer || !wlr_buffer_get_dmabuf(buffer, &attrs)) return;
+    const int64_t area = (int64_t)buffer->width * buffer->height;
+    if (area < sc->latest_area) return;
+    if (sc->latest == buffer) {
+        sc->latest_surface = surface;
+        sc->latest_area = area;
+        return;
+    }
+    if (sc->latest) wlr_buffer_unlock(sc->latest);
+    sc->latest = wlr_buffer_lock(buffer);
+    sc->latest_surface = surface;
+    sc->latest_area = area;
+}
+
+// wlroots looks up a wl_output on this output's resource list before it sends
+// presented. An empty list skips that and still sends presented. KWin waits for it,
+// on the toplevel, including when the pixels came from a child.
+static void send_presented(struct wlr_surface *surface, uint32_t refresh, uint64_t seq) {
+    struct wlr_presentation_feedback *feedback = wlr_presentation_surface_sampled(surface);
+    if (!feedback) return;
+    static struct wlr_output output;
+    static bool ready;
+    if (!ready) {
+        wl_list_init(&output.resources);
+        ready = true;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const struct wlr_presentation_event event = {
+        .output = &output,
+        .tv_sec = (uint64_t)ts.tv_sec,
+        .tv_nsec = (uint32_t)ts.tv_nsec,
+        .refresh = refresh,
+        .seq = seq,
+        .flags = WP_PRESENTATION_FEEDBACK_KIND_VSYNC,
+    };
+    wlr_presentation_feedback_send_presented(feedback, &event);
+    wlr_presentation_feedback_destroy(feedback);
+}
+
 static void screen_commit(struct wl_listener *l, void *data) {
     struct screen *sc = wl_container_of(l, sc, commit);
     struct wlr_xdg_surface *xdg = sc->toplevel->base;
@@ -217,24 +290,36 @@ static void screen_commit(struct wl_listener *l, void *data) {
             wlr_xdg_toplevel_decoration_v1_set_mode(sc->decoration, WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
         return;
     }
-    struct wlr_buffer *buffer = xdg->surface->current.buffer;
-    static int logged;
-    if (logged < 6) {
-        ++logged;
-        wlr_log(WLR_INFO, "screen %d: commit, buffer %p (%dx%d), mapped %d", sc->index + 1, (void *)buffer,
-                buffer ? buffer->width : 0, buffer ? buffer->height : 0, xdg->surface->mapped);
-    }
-    if (!buffer) return;
+    struct wlr_buffer *buffer = sc->latest;
+    struct wlr_surface *content = sc->latest_surface;
+    sc->latest = NULL;
+    sc->latest_surface = NULL;
+    sc->latest_area = -1;
+    // Frame callbacks and presentation feedback are on the toplevel. KWin stops
+    // after two frames if either goes unanswered, even before the layer has a buffer.
     sc->frame_pending = true;
+    send_presented(xdg->surface, (uint32_t)sc->server->period_ns, ++sc->present_seq);
+    if (!buffer) {
+        if (sc->present_seq == 40 && sc->commits == 0)
+            wlr_log(WLR_ERROR, "screen %d: no DMA-BUF in 40 commits; the output layer was not presented",
+                    sc->index + 1);
+        return;
+    }
+    static int logged;
+    if (logged < 4) {
+        ++logged;
+        wlr_log(WLR_INFO, "screen %d: output layer %dx%d", sc->index + 1, buffer->width, buffer->height);
+    }
     ++sc->commits;
-    note_damage(sc, xdg->surface, buffer);
+    note_damage(sc, content, buffer);
     sc->buffer_width = buffer->width, sc->buffer_height = buffer->height;
-    if (buffer == sc->held) return;
+    if (buffer == sc->held) {
+        wlr_buffer_unlock(buffer); // the lock taken when this frame's layer committed
+        return;
+    }
     struct wlr_dmabuf_attributes a;
     if (!wlr_buffer_get_dmabuf(buffer, &a)) {
-        static bool warned;
-        if (!warned) wlr_log(WLR_ERROR, "screen %d: not a DMA-BUF (shm?); skipped", sc->index + 1);
-        warned = true;
+        wlr_buffer_unlock(buffer);
         return;
     }
     struct ft_dmabuf b = {.width = a.width, .height = a.height, .format = a.format, .modifier = a.modifier,
@@ -245,18 +330,24 @@ static void screen_commit(struct wl_listener *l, void *data) {
         b.fd[i] = a.fd[i];
     }
     track_buffer(sc->server, buffer);
-    if (!ft_vr_screen_present(sc->index, buffer, &b)) return;
+    if (!ft_vr_screen_present(sc->index, buffer, &b)) {
+        wlr_buffer_unlock(buffer);
+        return;
+    }
     // Keep this buffer until the next frame replaces it, so SteamVR never samples a
     // buffer KWin is drawing into; then let KWin have the previous one back.
+    // `buffer` is already locked for this frame. One more lock is the one `held` keeps.
     wlr_buffer_lock(buffer);
     if (sc->held) wlr_buffer_unlock(sc->held);
     sc->held = buffer;
+    wlr_buffer_unlock(buffer);
 }
 
 static void screen_destroy(struct wl_listener *l, void *data) {
     struct screen *sc = wl_container_of(l, sc, destroy);
     wlr_log(WLR_INFO, "screen %d closed", sc->index + 1);
     if (sc->held) wlr_buffer_unlock(sc->held);
+    if (sc->latest) wlr_buffer_unlock(sc->latest);
     ft_vr_screen_destroy(sc->index);
     if (sc->server->pointer_focus == sc) {
         release_relay_buttons(sc->server, "its screen closed");
@@ -292,6 +383,7 @@ static void new_toplevel(struct wl_listener *l, void *data) {
     sc->server = s;
     sc->index = index;
     sc->toplevel = toplevel;
+    sc->latest_area = -1;
     s->screens[index] = sc;
     if (index >= s->n_config) {
         wlr_log(WLR_INFO, "screen %d: KWin window, a spare output (floating window %d)", index + 1,
@@ -883,6 +975,33 @@ static int stop(int sig, void *data) {
 static void keyboard_led(struct wlr_keyboard *kb, uint32_t leds) {}
 static const struct wlr_keyboard_impl keyboard_impl = {.name = "ft-screens-keyboard", .led_update = keyboard_led};
 
+struct surface_watch {
+    struct server *server;
+    struct wl_listener commit, destroy;
+};
+static void surface_watch_destroy(struct wl_listener *l, void *data) {
+    struct surface_watch *w = wl_container_of(l, w, destroy);
+    wl_list_remove(&w->commit.link);
+    wl_list_remove(&w->destroy.link);
+    free(w);
+}
+static void surface_watch_commit(struct wl_listener *l, void *data) {
+    struct surface_watch *w = wl_container_of(l, w, commit);
+    struct wlr_surface *surface = data;
+    struct screen *sc = screen_for_surface(w->server, surface);
+    if (sc) note_layer_buffer(sc, surface);
+}
+static void surface_watch_new(struct wl_listener *l, void *data) {
+    struct server *s = wl_container_of(l, s, new_surface);
+    struct wlr_surface *surface = data;
+    struct surface_watch *w = calloc(1, sizeof *w);
+    w->server = s;
+    w->commit.notify = surface_watch_commit;
+    w->destroy.notify = surface_watch_destroy;
+    wl_signal_add(&surface->events.commit, &w->commit);
+    wl_signal_add(&surface->events.destroy, &w->destroy);
+}
+
 static bool setup_dmabuf(struct server *s) {
     struct stat st;
     const char *node = "/dev/dri/renderD128";
@@ -968,8 +1087,21 @@ int main(int argc, char **argv) {
     s.loop = wl_display_get_event_loop(s.display);
     ft_remote_init(s.loop, s.vr);
     wl_list_init(&s.buffers);
-    wlr_compositor_create(s.display, 6, NULL);
+    struct wlr_compositor *comp = wlr_compositor_create(s.display, 6, NULL);
+    s.new_surface.notify = surface_watch_new;
+    wl_signal_add(&comp->events.new_surface, &s.new_surface);
     wlr_subcompositor_create(s.display);
+    // KWin 6.6's nested backend exits unless the host offers these. The names are the
+    // Wayland interfaces; scripts/update-check.py looks for them in this binary.
+    if (!wlr_single_pixel_buffer_manager_v1_create(s.display) || !wlr_viewporter_create(s.display) ||
+        !wlr_pointer_constraints_v1_create(s.display) || !wlr_presentation_create(s.display, NULL, 2)) {
+        wlr_log(WLR_ERROR, "can't offer wp_single_pixel_buffer_manager_v1, wp_viewporter, "
+                           "zwp_pointer_constraints_v1, or wp_presentation");
+        return 1;
+    }
+    wlr_log(WLR_INFO, "host protocols: wl_compositor wl_subcompositor xdg_wm_base wl_shm wl_seat "
+                      "zwp_linux_dmabuf_v1 wp_single_pixel_buffer_manager_v1 wp_viewporter "
+                      "zwp_pointer_constraints_v1 wp_presentation");
     const uint32_t shm_formats[] = {DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888};  // wlroots wants DRM codes
     wlr_shm_create(s.display, 1, shm_formats, 2);
     if (!setup_dmabuf(&s)) return 1;
@@ -1048,6 +1180,7 @@ int main(int argc, char **argv) {
     // wlroots asserts that nothing still listens to its globals when they go.
     wl_list_remove(&s.new_toplevel.link);
     wl_list_remove(&s.new_decoration.link);
+    wl_list_remove(&s.new_surface.link);
     wl_display_destroy(s.display);
     return 0;
 }

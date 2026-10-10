@@ -17,6 +17,7 @@ read-only, and follows a controller on vrserver's web socket for a moment. It ne
 stops, or restarts anything.
 """
 import base64
+import glob
 import json
 import mmap
 import os
@@ -67,6 +68,24 @@ PACKAGES = {
     "holo-cursors": "the desktop keeps its Breeze cursor (over remote access, and with the gamescope backend)",
 }
 KERNEL_HINT = "display power (ft-powerd) and hand tracking"
+
+# KWin's nested backend exits when one of these is missing. The warning text is not always
+# the Wayland interface ft-screens has to offer (xdg_shell is xdg_wm_base, wp_presentation_time
+# is wp_presentation). Names absent from both maps are reported, so the next KWin bump shows up.
+KWIN_HOST_PROTOCOLS = {
+    "wl_compositor": "wl_compositor",
+    "wl_subcompositor": "wl_subcompositor",
+    "xdg_shell": "xdg_wm_base",
+    "wp_single_pixel_buffer_manager_v1": "wp_single_pixel_buffer_manager_v1",
+    "wp_viewporter": "wp_viewporter",
+    "wl_seat": "wl_seat",
+    "zwp_pointer_constraints_v1": "zwp_pointer_constraints_v1",
+    "wp_presentation_time": "wp_presentation",
+}
+KWIN_HOST_OPTIONAL = {
+    "xdg_toplevel_icon_manager_v1",
+    "zwp_keyboard_shortcuts_inhibit_manager_v1",
+}
 
 # Frametop's user services, and the control socket each binds once it's up.
 UNITS = {
@@ -218,6 +237,7 @@ def check_host():
     else:
         report("warn", "KWin effects", f"no built-in {', '.join(gone)} effect: renamed? The desktop's "
                "kwinrc may no longer turn it off (session/frametop-session.sh)")
+    check_kwin_host_protocols()
 
     if systemctl("cat", "steamvr.service"):
         report("ok", "steamvr.service", "Frametop's services start and stop with it")
@@ -276,6 +296,84 @@ def check_host():
             report("ok", "backlight", "ft-powerd can turn the displays off")
         else:
             report("FAIL", "backlight", f"{BACKLIGHT} isn't writable, so ft-powerd can't turn the displays off")
+
+
+def host_protocol_names(blob):
+    needle = b" isn't supported by the host compositor"
+    names, start = [], 0
+    while True:
+        i = blob.find(needle, start)
+        if i < 0:
+            break
+        j = i
+        while j > 0 and 32 <= blob[j - 1] < 127:
+            j -= 1
+        name = blob[j:i].decode("ascii", "replace")
+        if name and name not in names:
+            names.append(name)
+        start = i + len(needle)
+    return names
+
+
+def binary_has_token(blob, name):
+    return re.search(rb"(?<![A-Za-z0-9_])" + re.escape(name.encode()) + rb"(?![A-Za-z0-9_])", blob) is not None
+
+
+def ft_screens_binary():
+    session = launcher_session()
+    if session:
+        screens = os.path.normpath(os.path.join(os.path.dirname(os.path.realpath(session)),
+                                                "../screens/build/ft-screens"))
+        if os.path.isfile(screens):
+            return screens
+    try:
+        return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                             "../screens/build/ft-screens"))
+    except NameError:
+        return os.path.join(HOME, "frametop/screens/build/ft-screens")
+
+
+def check_kwin_host_protocols():
+    """KWin 6.6 exits when ft-screens lacks a host protocol. The built binary names the ones it offers."""
+    blob, src = b"", ""
+    for path in sorted(glob.glob("/usr/lib/libkwin.so*")):
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        if b"isn't supported by the host compositor" in data and len(data) >= len(blob):
+            blob, src = data, path
+    if not blob:
+        report("warn", "KWin host protocols", "libkwin has no host-compositor requirement strings")
+        return
+    names = host_protocol_names(blob)
+    required = [KWIN_HOST_PROTOCOLS[n] for n in names if n in KWIN_HOST_PROTOCOLS]
+    unknown = [n for n in names if n not in KWIN_HOST_PROTOCOLS and n not in KWIN_HOST_OPTIONAL]
+    if unknown:
+        report("warn", "KWin host protocols",
+               "new requirement(s) this check doesn't know: " + ", ".join(unknown)
+               + f" (in {os.path.basename(src)}). ft-screens may need them before KWin will start")
+    screens = ft_screens_binary()
+    try:
+        with open(screens, "rb") as f:
+            built = f.read()
+    except OSError:
+        report("FAIL", "KWin host protocols",
+               f"{screens} is not built, so it can't be checked against {os.path.basename(src)}; "
+               "run screens/build.sh")
+        return
+    missing = [iface for iface in required if not binary_has_token(built, iface)]
+    if missing:
+        report("FAIL", "KWin host protocols",
+               "this KWin exits unless the host compositor offers " + ", ".join(missing)
+               + "; rebuild ft-screens (screens/build.sh)")
+    elif required:
+        report("ok", "KWin host protocols",
+               f"ft-screens offers the {len(required)} {os.path.basename(src)} requires to start")
+    elif not unknown:
+        report("warn", "KWin host protocols",
+               f"{os.path.basename(src)} has the warning text but no known interface names")
 
 
 def launcher_keys(path):
